@@ -1,0 +1,27 @@
+Metadata-Version: 2.4
+Name: word_forge
+Version: 0.1.0
+Summary: A lexical data processing and enrichment system
+Author-email: Eidosian Forge Team <info@example.com>
+License: MIT
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Text Processing :: Linguistic
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: nltk>=3.6.0
+Requires-Dist: torch>=1.9.0
+Requires-Dist: rdflib>=6.0.0
+Requires-Dist: transformers>=4.15.0
+Provides-Extra: dev
+Requires-Dist: black; extra == "dev"
+Requires-Dist: isort; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"

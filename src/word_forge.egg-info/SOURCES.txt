@@ -1,0 +1,9 @@
+pyproject.toml
+src/word_forge.egg-info/PKG-INFO
+src/word_forge.egg-info/SOURCES.txt
+src/word_forge.egg-info/dependency_links.txt
+src/word_forge.egg-info/requires.txt
+src/word_forge.egg-info/top_level.txt
+src/word_forge/database/db_manager.py
+src/word_forge/parser/parser_refiner.py
+src/word_forge/queue/queue_manager.py
