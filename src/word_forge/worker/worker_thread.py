@@ -10,7 +10,7 @@ import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, TypedDict, Union
+from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
 
 from word_forge.database.db_manager import DBManager
 from word_forge.parser.parser_refiner import ParserRefiner
@@ -150,50 +150,56 @@ class WordForgeWorker(threading.Thread):
         daemon: bool = True,
         logger: Optional[logging.Logger] = None,
         result_callback: Optional[WorkerCallbackType] = None,
+        launch_auxiliary_workers: bool = True,
     ):
         """
-        Initialize a worker thread for background word processing.
+        Initialize the worker thread with required components.
 
         Args:
-            parser_refiner: Parser component that processes words
-            queue_manager: Queue providing words to process
-            db_manager: Optional database manager (uses parser_refiner.db_manager if None)
-            sleep_interval: Seconds to sleep when queue is empty
-            error_backoff_factor: Multiplier for sleep time after errors
-            max_errors_per_minute: Errors per minute before forced pause
-            daemon: Whether thread runs as daemon (terminates with main)
-            logger: Optional logger for status messages
-            result_callback: Optional callback for processing results
+            parser_refiner: Component that processes and refines word data
+            queue_manager: Queue system for word processing
+            db_manager: Database interface for persistent storage
+            sleep_interval: Time to wait when queue is empty
+            error_backoff_factor: Multiplier for increasing wait time after errors
+            max_errors_per_minute: Threshold before entering error backoff
+            daemon: Whether thread should be a daemon (terminates with main program)
+            logger: Logger for operational messages
+            result_callback: Function to call with processing results
+            launch_auxiliary_workers: Whether to start supporting worker threads
         """
         super().__init__(daemon=daemon)
         self.parser_refiner = parser_refiner
         self.queue_manager = queue_manager
-        self.db_manager = db_manager or getattr(parser_refiner, "db_manager", None)
-        self.base_sleep_interval = sleep_interval
+        self.db_manager = db_manager
         self.sleep_interval = sleep_interval
         self.error_backoff_factor = error_backoff_factor
         self.max_errors_per_minute = max_errors_per_minute
         self.result_callback = result_callback
-
-        # Setup logging
         self.logger = logger or logging.getLogger(__name__)
 
-        # Internal state tracking
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_until = 0.0
+        self._last_error_time = 0.0
+        self._error_count_window = []
+        self._current_backoff = sleep_interval
+
         self._state = WorkerState.INITIALIZING
+        self.stats = WorkerStatistics()
+        self.stats.start_time = time.time()
+
+        self.auxiliary_workers = []
+        self.launch_auxiliary_workers = launch_auxiliary_workers
+
+        self._register_signal_handlers()
+
         self._state_lock = threading.RLock()
-        self._stats = WorkerStatistics()
-        self._recent_errors: List[float] = []  # Timestamps of recent errors
-        self._pause_until: float = 0
         self._stop_requested = threading.Event()
-
-        # Performance tracking
-        self._processed_terms: Set[str] = set()
-        self._initial_queue_size = 0
-        self._productivity_metric = 0.0
-
-        # Register signal handlers if this is the main thread
-        if threading.current_thread() is threading.main_thread():
-            self._register_signal_handlers()
+        self._recent_errors = []
+        self._processed_terms = set()
+        self._initial_queue_size = queue_manager.size()
+        self._productivity_metric = 1.0
+        self.base_sleep_interval = sleep_interval
 
     def _register_signal_handlers(self) -> None:
         """Register handlers for graceful shutdown on system signals."""
@@ -224,7 +230,7 @@ class WordForgeWorker(threading.Thread):
             )
 
             # Record state change as an event
-            self._stats.add_event(
+            self.stats.add_event(
                 {
                     "timestamp": time.time(),
                     "event_type": "state_change",
@@ -244,13 +250,13 @@ class WordForgeWorker(threading.Thread):
         Returns:
             Dictionary with runtime statistics and state information
         """
-        runtime = self._stats.runtime_seconds
+        runtime = self.stats.runtime_seconds
         queue_size = self.queue_manager.size()
         unique_words = len(list(self.queue_manager.iter_seen()))
 
         # Calculate productivity metric: processed words relative to queue growth
         if self._initial_queue_size > 0:
-            words_processed = self._stats.processing_count
+            words_processed = self.stats.processing_count
             queue_growth = max(0, queue_size - self._initial_queue_size)
             if words_processed > 0:
                 self._productivity_metric = words_processed / (
@@ -262,20 +268,20 @@ class WordForgeWorker(threading.Thread):
             "state": self.state.name,
             "runtime_seconds": runtime,
             "runtime_formatted": str(datetime.timedelta(seconds=int(runtime))),
-            "processed_count": self._stats.processing_count,
-            "error_count": self._stats.error_count,
-            "empty_queue_count": self._stats.empty_queue_count,
-            "processing_rate_per_minute": self._stats.processing_rate,
-            "avg_processing_time": self._stats.average_processing_time,
+            "processed_count": self.stats.processing_count,
+            "error_count": self.stats.error_count,
+            "empty_queue_count": self.stats.empty_queue_count,
+            "processing_rate_per_minute": self.stats.processing_rate,
+            "avg_processing_time": self.stats.average_processing_time,
             "queue_size": queue_size,
             "total_unique_words": unique_words,
-            "last_processed": self._stats.last_processed,
-            "last_error": self._stats.last_error,
-            "idle_seconds": self._stats.idle_seconds,
+            "last_processed": self.stats.last_processed,
+            "last_error": self.stats.last_error,
+            "idle_seconds": self.stats.idle_seconds,
             "productivity_metric": self._productivity_metric,
-            "recent_events": self._stats.recent_events[-5:],  # Last 5 events
+            "recent_events": self.stats.recent_events[-5:],  # Last 5 events
             "performance": {
-                "mean_processing_time": self._stats.average_processing_time,
+                "mean_processing_time": self.stats.average_processing_time,
                 "current_sleep_interval": self.sleep_interval,
                 "error_rate_per_minute": len(self._recent_errors),
             },
@@ -302,49 +308,41 @@ class WordForgeWorker(threading.Thread):
         )
 
     def run(self) -> None:
-        """
-        Main worker loop that processes queued words until stopped.
-
-        The loop handles state transitions, error recovery, and
-        implements dynamic sleep intervals based on queue status.
-        """
-        self._stats.start_time = time.time()
-        self._stats.last_active = time.time()
-        self._initial_queue_size = self.queue_manager.size()
+        """Main worker thread execution loop."""
+        self.logger.info("WordForgeWorker started")
         self.state = WorkerState.RUNNING
 
-        while not self._stop_requested.is_set():
-            try:
-                # Handle paused state
-                if self.state == WorkerState.PAUSED:
-                    if time.time() < self._pause_until:
-                        time.sleep(min(1.0, self._pause_until - time.time()))
-                        continue
+        if self.launch_auxiliary_workers and self.db_manager:
+            self._start_auxiliary_workers()
+
+        try:
+            while not self._stop_event.is_set():
+                if self._pause_event.is_set():
+                    if time.time() >= self._pause_until or self._pause_until == 0:
+                        self.resume()
                     else:
-                        # Auto-resume after pause expires
-                        self.state = WorkerState.RUNNING
-                        self.sleep_interval = self.base_sleep_interval
+                        time.sleep(0.1)
+                        continue
 
-                # Process next word if available
-                self._process_next_word()
+                try:
+                    self._process_next_word()
+                except EmptyQueueError:
+                    self.stats.empty_queue_count += 1
+                    self._sleep_with_interruption(self.sleep_interval)
+                except Exception as e:
+                    self._handle_unexpected_error(e)
 
-            except Exception as e:
-                self._handle_unexpected_error(e)
+        except Exception as e:
+            self.state = WorkerState.ERROR
+            self.logger.error(f"Critical error in worker thread: {str(e)}")
+            import traceback
 
-        self.state = WorkerState.STOPPED
-        self.logger.info("Worker stopped gracefully")
+            self.logger.debug(traceback.format_exc())
 
-        # Record final event
-        self._stats.add_event(
-            {
-                "timestamp": time.time(),
-                "event_type": "worker_stopped",
-                "details": {
-                    "total_processed": self._stats.processing_count,
-                    "runtime_seconds": self._stats.runtime_seconds,
-                },
-            }
-        )
+        finally:
+            self._stop_auxiliary_workers()
+            self.state = WorkerState.STOPPED
+            self.logger.info("WordForgeWorker stopped")
 
     def _process_next_word(self) -> None:
         """
@@ -365,7 +363,7 @@ class WordForgeWorker(threading.Thread):
 
             # We have a word to process
             start_time = time.time()
-            self._stats.last_active = start_time
+            self.stats.last_active = start_time
             self.logger.debug(f"Processing: '{term}'")
 
             # Process the word and track result
@@ -394,14 +392,14 @@ class WordForgeWorker(threading.Thread):
             }
 
             if success:
-                self._stats.processing_count += 1
-                self._stats.last_processed = term
-                self._stats.record_processing_time(processing_duration)
+                self.stats.processing_count += 1
+                self.stats.last_processed = term
+                self.stats.record_processing_time(processing_duration)
                 # Reset sleep interval after successful processing
                 self.sleep_interval = self.base_sleep_interval
 
                 # Record successful processing event
-                self._stats.add_event(
+                self.stats.add_event(
                     {
                         "timestamp": time.time(),
                         "event_type": "processed",
@@ -415,9 +413,9 @@ class WordForgeWorker(threading.Thread):
                 )
             else:
                 # Record error
-                self._stats.error_count += 1
+                self.stats.error_count += 1
                 result["error"] = f"Processing failed for term: {term}"
-                self._stats.add_event(
+                self.stats.add_event(
                     {
                         "timestamp": time.time(),
                         "event_type": "processing_failed",
@@ -435,11 +433,11 @@ class WordForgeWorker(threading.Thread):
 
         except EmptyQueueError:
             # No items in queue, sleep and track empty queue event
-            self._stats.empty_queue_count += 1
+            self.stats.empty_queue_count += 1
 
             # Record empty queue encounter only occasionally to avoid spam
-            if self._stats.empty_queue_count % 10 == 1:
-                self._stats.add_event(
+            if self.stats.empty_queue_count % 10 == 1:
+                self.stats.add_event(
                     {
                         "timestamp": time.time(),
                         "event_type": "empty_queue",
@@ -455,13 +453,13 @@ class WordForgeWorker(threading.Thread):
         Args:
             error: The exception that was caught
         """
-        self._stats.error_count += 1
-        self._stats.last_error = str(error)
+        self.stats.error_count += 1
+        self.stats.last_error = str(error)
         error_trace = traceback.format_exc()
         self.logger.error(f"Unexpected error: {error}\n{error_trace}")
 
         # Record error event
-        self._stats.add_event(
+        self.stats.add_event(
             {
                 "timestamp": time.time(),
                 "event_type": "error",
@@ -503,7 +501,7 @@ class WordForgeWorker(threading.Thread):
         )
 
         # Record circuit breaker event
-        self._stats.add_event(
+        self.stats.add_event(
             {
                 "timestamp": time.time(),
                 "event_type": "circuit_breaker",
@@ -559,6 +557,87 @@ class WordForgeWorker(threading.Thread):
             self.logger.info("Resuming worker")
             self.state = WorkerState.RUNNING
             self.sleep_interval = self.base_sleep_interval
+
+    def _start_auxiliary_workers(self) -> None:
+        """Start additional specialized worker threads."""
+        try:
+            # Import here to avoid circular imports
+            from word_forge.emotion.emotion_worker import EmotionManager, EmotionWorker
+            from word_forge.graph.graph_worker import GraphManager, GraphWorker
+            from word_forge.vectorizer.vector_worker import (
+                StorageType,
+                TransformerEmbedder,
+                VectorStore,
+                VectorWorker,
+            )
+
+            # Start Graph Worker
+            graph_manager = GraphManager(self.db_manager)
+            graph_worker = GraphWorker(
+                graph_manager=graph_manager,
+                poll_interval=60.0,  # Check every minute
+                daemon=True,
+            )
+            graph_worker.start()
+            self.auxiliary_workers.append(graph_worker)
+            self.logger.info("Started auxiliary Graph Worker")
+
+            # Start Emotion Worker
+            emotion_manager = EmotionManager(self.db_manager)
+            emotion_worker = EmotionWorker(
+                db=self.db_manager,
+                emotion_manager=emotion_manager,
+                poll_interval=30.0,
+                batch_size=20,
+                daemon=True,
+            )
+            emotion_worker.start()
+            self.auxiliary_workers.append(emotion_worker)
+            self.logger.info("Started auxiliary Emotion Worker")
+
+            # Start Vector Worker
+            vector_store = VectorStore(
+                storage_type=StorageType.DISK,
+                dimension=int(1024),
+            )
+            embedder = TransformerEmbedder()
+            vector_worker = VectorWorker(
+                db=self.db_manager,
+                vector_store=vector_store,
+                embedder=embedder,
+                poll_interval=45.0,
+                daemon=True,
+                logger=self.logger,
+            )
+            vector_worker.start()
+            self.auxiliary_workers.append(vector_worker)
+            self.logger.info("Started auxiliary Vector Worker")
+
+        except ImportError as e:
+            self.logger.warning(f"Could not start auxiliary workers: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Error starting auxiliary workers: {str(e)}")
+
+    def _stop_auxiliary_workers(self) -> None:
+        """Stop all auxiliary worker threads gracefully."""
+        for worker in self.auxiliary_workers:
+            try:
+                if hasattr(worker, "stop") and callable(worker.stop):
+                    worker.stop()
+                elif hasattr(worker, "request_stop") and callable(worker.request_stop):
+                    worker.request_stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping auxiliary worker: {str(e)}")
+
+        # Wait for workers to stop
+        for worker in self.auxiliary_workers:
+            try:
+                worker.join(timeout=5.0)
+            except Exception:
+                pass
+
+        self.logger.info(f"Stopped {len(self.auxiliary_workers)} auxiliary workers")
+        self.auxiliary_workers = []
 
 
 def create_demo_files(data_dir: Path) -> None:
@@ -802,28 +881,31 @@ def main() -> None:
             worker.request_stop()
             worker.join(timeout=5.0)
 
-        # Display final statistics
-        stats = worker.get_statistics()
-        logger.info("\n=== Final Statistics ===")
-        logger.info(f"Total runtime: {stats['runtime_formatted']}")
-        logger.info(f"Words processed: {stats['processed_count']}")
-        logger.info(
-            f"Processing rate: {stats['processing_rate_per_minute']:.1f} words/minute"
-        )
-        logger.info(f"Queue size: {stats['queue_size']}")
-        logger.info(f"Unique words: {stats['total_unique_words']}")
-        logger.info(f"Errors: {stats['error_count']}")
+            # Display final statistics
+            stats = worker.get_statistics()
+            logger.info("\n=== Final Statistics ===")
+            logger.info(f"Total runtime: {stats['runtime_formatted']}")
+            logger.info(f"Words processed: {stats['processed_count']}")
+            logger.info(
+                f"Processing rate: {stats['processing_rate_per_minute']:.1f} words/minute"
+            )
+            logger.info(f"Queue size: {stats['queue_size']}")
+            logger.info(f"Unique words: {stats['total_unique_words']}")
+            logger.info(f"Errors: {stats['error_count']}")
 
-        # Print table with performance metrics
-        headers = ["Metric", "Value"]
-        rows = [
-            ["Processing time (avg)", f"{stats['avg_processing_time']*1000:.1f} ms"],
-            ["Words processed", f"{stats['processed_count']}"],
-            ["Queue depth", f"{stats['queue_size']}"],
-            ["Productivity", f"{stats['productivity_metric']:.2f}"],
-            ["Errors", f"{stats['error_count']}"],
-        ]
-        print_table(headers, rows, title="Performance Summary")
+            # Print table with performance metrics
+            headers = ["Metric", "Value"]
+            rows = [
+                [
+                    "Processing time (avg)",
+                    f"{stats['avg_processing_time']*1000:.1f} ms",
+                ],
+                ["Words processed", f"{stats['processed_count']}"],
+                ["Queue depth", f"{stats['queue_size']}"],
+                ["Productivity", f"{stats['productivity_metric']:.2f}"],
+                ["Errors", f"{stats['error_count']}"],
+            ]
+            print_table(headers, rows, title="Performance Summary")
 
 
 if __name__ == "__main__":

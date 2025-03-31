@@ -156,19 +156,18 @@ class WordForgeCLI:
     def start_worker(self) -> None:
         """Start the worker thread if not already running."""
         if self.worker_started:
-            self.logger.info(
-                f"{Fore.YELLOW}Worker is already running.{Style.RESET_ALL}"
-            )
+            self.logger.info(f"{Fore.YELLOW}Worker already running.{Style.RESET_ALL}")
             return
 
         self.logger.info(f"{Fore.GREEN}Starting WordForge worker...{Style.RESET_ALL}")
 
         # Create and start worker
         self.worker = WordForgeWorker(
+            parser_refiner=self.parser_refiner,
             queue_manager=self.queue_manager,
             db_manager=self.db_manager,
-            parser_refiner=self.parser_refiner,
-            callback=self._on_word_processed,
+            result_callback=self._on_word_processed,  # Changed from callback to result_callback
+            logger=self.logger,
         )
 
         self.worker.start()
@@ -180,9 +179,8 @@ class WordForgeCLI:
         # Log initial statistics
         current_time = time.time()
         if current_time - self._last_stats_time >= self._stats_interval:
+            self._log_stats_summary(self.worker.get_statistics())
             self._last_stats_time = current_time
-            stats: StatDict = self.worker.get_statistics()
-            self._log_stats_summary(stats)
 
     def _on_word_processed(self, result: ProcessingResult) -> None:
         """
