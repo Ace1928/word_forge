@@ -8,43 +8,8 @@ import threading
 import time
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-
-# Optional: for colorful/stylish output
-try:
-    from colorama import Fore, Style
-    from colorama import init as colorama_init
-
-    colorama_init(autoreset=True)
-    HAS_COLOR = True
-except ImportError:
-    # If colorama is not installed, just ignore (no color)
-    class _NoColor:
-        def __getattr__(self, _):
-            return ""
-
-    Fore = Style = _NoColor()
-    HAS_COLOR = False
-
-# For optional argument auto-completion in bash/zsh/fish:
-# 1) pip install argcomplete
-# 2) eval "$(register-python-argcomplete <your_script_name>)"
-try:
-    import argcomplete
-
-    HAS_ARGCOMPLETION = True
-except ImportError:
-    HAS_ARGCOMPLETION = False
-    argcomplete = None  # Define a null value to prevent unbound issues
-
-# WordForge modules
 from word_forge.database.db_manager import DBManager, WordEntryDict
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager
@@ -55,9 +20,66 @@ from word_forge.worker.worker_thread import (
     print_table,
 )
 
+# This module provides a command-line interface (CLI) for the WordForge application,
+
+# Type aliases for better readability
+StatDict = Dict[str, Union[int, float, str, List[Any], Dict[str, Any], None]]
+EventDict = Dict[str, Any]
+
+
+# Safe type conversion helpers
+def safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert a value to int with proper type handling."""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, (int, float, str)):
+            return int(value)
+        return default
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float with proper type handling."""
+    if value is None:
+        return default
+    try:
+        if isinstance(value, (int, float, str)):
+            return float(value)
+        return default
+    except (ValueError, TypeError):
+        return default
+
+
+# Argument completion setup
+try:
+    import argcomplete
+
+    has_argcompletion = True
+except ImportError:
+    has_argcompletion = False
+    argcomplete = None
+
+# Terminal color support
+try:
+    from colorama import Fore, Style
+    from colorama import init as colorama_init
+
+    colorama_init(autoreset=True)
+    has_color = True
+except ImportError:
+
+    class _NoColor:
+        def __getattr__(self, _):
+            return ""
+
+    Fore = Style = _NoColor()
+    has_color = False
+
 
 class CLIState(Enum):
-    """States for the WordForgeCLI application lifecycle."""
+    """States for the WordForge CLI application."""
 
     INITIALIZING = auto()
     RUNNING = auto()
@@ -65,20 +87,6 @@ class CLIState(Enum):
     STOPPING = auto()
     STOPPED = auto()
     ERROR = auto()
-
-
-class CLICommand(Enum):
-    """Available commands for the WordForgeCLI."""
-
-    START = "start"
-    STOP = "stop"
-    ADD_WORD = "add-word"
-    SEARCH = "search"
-    QUEUE = "queue"
-    STATS = "stats"
-    INTERACTIVE = "interactive"
-    BATCH = "batch"
-    HELP = "help"
 
 
 class WordForgeCLI:
@@ -92,150 +100,343 @@ class WordForgeCLI:
         db_path: str = "word_forge.sqlite",
         data_dir: str = "data",
         log_level: str = "INFO",
-    ):
+    ) -> None:
         """
-        Initialize the WordForgeCLI application.
+        Initialize the WordForge CLI.
 
         Args:
-            db_path: Path to the SQLite database file
+            db_path: Path to SQLite database file
             data_dir: Directory containing lexical resources
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         """
-        # Configure logging
-        self.logger = logging.getLogger("WordForgeCLI")
-        self.logger.setLevel(getattr(logging, log_level))
+        # Set up logging
+        self.logger = logging.getLogger("WordForge")
+        log_level_map = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "ERROR": logging.ERROR,
+        }
+        level = log_level_map.get(log_level.upper(), logging.INFO)
+        self.logger.setLevel(level)
+
+        # Add console handler if none exists
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+
+        # Initialize state and tracking variables
+        self.db_path = db_path
+        self.data_dir = data_dir
+        self.state = CLIState.INITIALIZING
+        self.worker_started = False
+        self.start_time = 0
+        self.processed_words: Set[str] = set()
+        self.worker: Optional[WordForgeWorker] = None
+        self.exit_event = threading.Event()
+        self._last_stats_time = 0
+        self._stats_interval = 10  # seconds between stats updates
 
         # Initialize components
         self._init_components(db_path, data_dir)
-
-        # State tracking
-        self.state = CLIState.INITIALIZING
-        self.worker_started = False
-        self._last_stats_time = 0
-        self._stats_interval = 5  # seconds
-        self._exit_event = threading.Event()
+        self.state = CLIState.STOPPED
 
     def _init_components(self, db_path: str, data_dir: str) -> None:
-        """
-        Initialize the core components of WordForge.
+        """Initialize the core components of WordForge."""
+        self.db_manager = DBManager(db_path)
+        self.parser_refiner = ParserRefiner()
+        self.queue_manager = QueueManager()
+        self.logger.info(f"Initialized with database: {db_path}")
+        self.logger.info(f"Data directory: {data_dir}")
 
-        Args:
-            db_path: Path to the SQLite database file
-            data_dir: Directory containing lexical resources
-        """
-        # Ensure data directory exists
-        os.makedirs(data_dir, exist_ok=True)
+    def start_worker(self) -> None:
+        """Start the worker thread if not already running."""
+        if self.worker_started:
+            self.logger.info(
+                f"{Fore.YELLOW}Worker is already running.{Style.RESET_ALL}"
+            )
+            return
 
-        # Initialize components
-        self.db_path = db_path
-        self.data_dir = data_dir
-        self.db_manager = DBManager(db_path=db_path)
-        # Explicitly type the queue manager
-        self.queue_manager = cast(QueueManager[str], QueueManager())
-        self.parser_refiner = ParserRefiner(
-            db_manager=self.db_manager,
-            queue_manager=self.queue_manager,
-            data_dir=data_dir,
-            enable_model=True,
-        )
+        self.logger.info(f"{Fore.GREEN}Starting WordForge worker...{Style.RESET_ALL}")
 
-        # Initialize worker with processing result callback
+        # Create and start worker
         self.worker = WordForgeWorker(
-            self.parser_refiner,
-            self.queue_manager,
-            sleep_interval=0.5,
-            result_callback=self._on_word_processed,
-            logger=self.logger,
+            queue_manager=self.queue_manager,
+            db_manager=self.db_manager,
+            parser_refiner=self.parser_refiner,
+            callback=self._on_word_processed,
         )
 
-        # Statistics
-        self.processed_words: Set[str] = set()
-        self.start_time = 0.0
-
+        self.worker.start()
+        self.worker_started = True
+        self.start_time = time.time()
         self.state = CLIState.RUNNING
-        self.logger.debug("WordForgeCLI initialized")
+        self.logger.info(f"{Fore.GREEN}Worker started successfully.{Style.RESET_ALL}")
+
+        # Log initial statistics
+        current_time = time.time()
+        if current_time - self._last_stats_time >= self._stats_interval:
+            self._last_stats_time = current_time
+            stats: StatDict = self.worker.get_statistics()
+            self._log_stats_summary(stats)
 
     def _on_word_processed(self, result: ProcessingResult) -> None:
         """
         Handle word processing results from the worker.
-
-        Args:
-            result: Processing result data
         """
-        term = result["term"]
-        success = result["success"]
+        try:
+            if not result:
+                self.logger.warning("Received invalid processing result")
+                return
 
-        if success:
-            self.processed_words.add(term)
+            term = result.get("term", "")
+            success = result.get("success", False)
 
-            # Log processing result at appropriate intervals
-            current_time = time.time()
-            if current_time - self._last_stats_time >= self._stats_interval:
-                self._last_stats_time = current_time
-                stats = self.worker.get_statistics()
+            if success:
+                self.processed_words.add(term)
 
-                proc_count = stats.get("processed_count", 0)
-                proc_rate = stats.get("processing_rate_per_minute", 0.0)
-                queue_size = stats.get("queue_size", 0)
+                # Log processing result at appropriate intervals
+                current_time = time.time()
+                if current_time - self._last_stats_time >= self._stats_interval:
+                    self._last_stats_time = current_time
+                    if self.worker is None:
+                        return
 
-                if HAS_COLOR:
-                    status_line = (
-                        f"{Fore.GREEN}Processed {proc_count} words "
-                        f"{Fore.CYAN}({proc_rate:.1f}/min) | "
-                        f"{Fore.YELLOW}Queue: {queue_size}{Style.RESET_ALL}"
-                    )
-                else:
-                    status_line = (
-                        f"Processed {proc_count} words "
-                        f"({proc_rate:.1f}/min) | "
-                        f"Queue: {queue_size}"
-                    )
+                    stats: StatDict = self.worker.get_statistics()
+                    self._log_stats_summary(stats)
+        except Exception as e:
+            self.logger.warning(f"Error processing result: {e}")
+            return
 
-                self.logger.info(status_line)
+    def _log_stats_summary(self, stats: StatDict) -> None:
+        """Log a summary of current statistics."""
+        proc_count = safe_int(stats.get("processed_count", 0))
+        proc_rate = safe_float(stats.get("processing_rate_per_minute", 0.0))
+        queue_size = safe_int(stats.get("queue_size", 0))
+        error_count = safe_int(stats.get("error_count", 0))
 
-    def start_worker(self) -> None:
-        """Start the worker thread if not already running."""
-        if not self.worker_started:
-            self.worker_started = True
-            self.start_time = time.time()
-            self.logger.info(f"{Fore.GREEN}Starting worker thread...{Style.RESET_ALL}")
-            self.worker.start()
-        else:
-            self.logger.info(
-                f"{Fore.YELLOW}Worker thread already running.{Style.RESET_ALL}"
-            )
+        self.logger.info(
+            f"{Fore.CYAN}Stats: {proc_count} words processed "
+            f"({proc_rate:.2f}/min), {queue_size} in queue, {error_count} errors{Style.RESET_ALL}"
+        )
 
     def stop_worker(self) -> None:
         """Stop the worker thread if running and wait for it to finish."""
-        if self.worker_started:
-            self.logger.info(f"{Fore.GREEN}Stopping worker thread...{Style.RESET_ALL}")
-            self.worker.request_stop()
-            self.worker.join(timeout=5.0)
-            self.worker_started = False
-
-            # Print final statistics
-            if self.start_time > 0:
-                runtime = time.time() - self.start_time
-                formatted_runtime = str(datetime.timedelta(seconds=int(runtime)))
-                stats = self.worker.get_statistics()
-
-                self.logger.info(
-                    f"\n{Fore.CYAN}=== Processing Summary ==={Style.RESET_ALL}"
-                )
-                self.logger.info(f"Runtime: {formatted_runtime}")
-                self.logger.info(f"Words processed: {stats.get('processed_count', 0)}")
-                self.logger.info(
-                    f"Processing rate: {stats.get('processing_rate_per_minute', 0.0):.2f} words/minute"
-                )
-                self.logger.info(f"Words in queue: {stats.get('queue_size', 0)}")
-                self.logger.info(
-                    f"Unique words seen: {stats.get('total_unique_words', 0)}"
-                )
-                self.logger.info(f"Error count: {stats.get('error_count', 0)}")
-        else:
+        if not self.worker_started or self.worker is None:
             self.logger.info(
                 f"{Fore.YELLOW}Worker thread is not running.{Style.RESET_ALL}"
             )
+            return
+
+        self.logger.info(f"{Fore.GREEN}Stopping worker thread...{Style.RESET_ALL}")
+        self.worker.request_stop()
+        self.worker.join(timeout=5.0)
+        self.worker_started = False
+
+        # Print final statistics
+        if self.start_time > 0:
+            runtime = time.time() - self.start_time
+            formatted_runtime = str(datetime.timedelta(seconds=int(runtime)))
+            stats: StatDict = self.worker.get_statistics()
+
+            self.logger.info(
+                f"\n{Fore.CYAN}=== Processing Summary ==={Style.RESET_ALL}"
+            )
+            self.logger.info(f"Runtime: {formatted_runtime}")
+            self.logger.info(
+                f"Words processed: {safe_int(stats.get('processed_count', 0))}"
+            )
+
+            processing_rate = safe_float(stats.get("processing_rate_per_minute", 0.0))
+            self.logger.info(f"Processing rate: {processing_rate:.2f} words/minute")
+
+            self.logger.info(f"Words in queue: {safe_int(stats.get('queue_size', 0))}")
+            self.logger.info(
+                f"Unique words seen: {safe_int(stats.get('total_unique_words', 0))}"
+            )
+            self.logger.info(f"Error count: {safe_int(stats.get('error_count', 0))}")
+
+    def run_demo(self, minutes: float = 1.0) -> None:
+        """
+        Run a demonstration of WordForge for a specified duration.
+
+        Args:
+            minutes: Duration to run the demo in minutes
+        """
+        run_seconds = minutes * 60
+
+        # Create some demo files
+        temp_dir = tempfile.mkdtemp()
+        demo_data_dir = os.path.join(temp_dir, "data")
+        os.makedirs(demo_data_dir, exist_ok=True)
+
+        # Create sample dictionary files
+        self._create_demo_files(Path(demo_data_dir))
+
+        # Reinitialize with demo data
+        self._init_components(
+            os.path.join(temp_dir, "word_forge_demo.sqlite"), demo_data_dir
+        )
+
+        # Seed the queue with initial words
+        seed_words = [
+            "algorithm",
+            "language",
+            "computer",
+            "data",
+            "program",
+            "network",
+            "code",
+            "function",
+            "logic",
+            "system",
+        ]
+
+        self.logger.info(f"Seeding queue with {len(seed_words)} initial words...")
+        for word in seed_words:
+            self.add_word(word)
+
+        # Start worker
+        self.logger.info(f"Starting worker for {minutes} minute(s)...")
+        self.start_worker()
+
+        # Monitor progress during runtime with periodic status updates
+        update_interval = 5  # Show stats every 5 seconds
+        start_time = time.time()
+        end_time = start_time + run_seconds
+
+        try:
+            while time.time() < end_time and self.worker_started:
+                # Sleep for the update interval or until end time
+                remaining = min(update_interval, end_time - time.time())
+                if remaining <= 0:
+                    break
+                time.sleep(remaining)
+
+                # Show progress
+                if self.worker is not None:
+                    # Display current statistics
+                    stats = self.worker.get_statistics()
+                    self._log_stats_summary(stats)
+
+                elapsed = time.time() - start_time
+                # Convert to integers to satisfy create_progress_bar's type requirements
+                self.logger.info(
+                    f"Progress: {create_progress_bar(int(elapsed), int(run_seconds))}"
+                )
+
+        except KeyboardInterrupt:
+            self.logger.info("Interrupted by user. Stopping gracefully...")
+
+        finally:
+            # Display final stats and summary
+            self.stop_worker()
+            self.logger.info(f"Demo files at: {temp_dir}")
+            self.logger.info("Demo complete!")
+
+    def _create_demo_files(self, data_dir: Path) -> None:
+        """
+        Create sample dictionary files for the demo.
+
+        Args:
+            data_dir: Directory to write demo files to
+        """
+        # Create a simple demo dictionary with explicit type annotation
+        demo_dict: Dict[str, List[Dict[str, Any]]] = {
+            "words": [
+                {
+                    "term": "algorithm",
+                    "definition": "A step-by-step procedure for solving a problem",
+                    "part_of_speech": "noun",
+                    "usage_examples": [
+                        "The sorting algorithm arranges elements in order."
+                    ],
+                },
+                {
+                    "term": "recursion",
+                    "definition": "A method where the solution depends on solutions to smaller instances of the same problem",
+                    "part_of_speech": "noun",
+                    "usage_examples": [
+                        "The function uses recursion to traverse the tree."
+                    ],
+                },
+                {
+                    "term": "function",
+                    "definition": "A named section of a program that performs a specific task",
+                    "part_of_speech": "noun",
+                    "usage_examples": [
+                        "This function calculates the average of a list of numbers."
+                    ],
+                },
+            ]
+        }
+
+        # Write demo dictionary to file
+        import json
+
+        with open(data_dir / "demo_dictionary.json", "w") as f:
+            json.dump(demo_dict, f, indent=2)
+
+        # Create a sample word list
+        with open(data_dir / "sample_words.txt", "w") as f:
+            f.write(
+                "\n".join(
+                    [
+                        "programming",
+                        "database",
+                        "interface",
+                        "object",
+                        "class",
+                        "inheritance",
+                        "polymorphism",
+                        "variable",
+                        "constant",
+                        "library",
+                    ]
+                )
+            )
+
+    def list_queue(self) -> None:
+        """Display the current queue size and a sample of queued items."""
+        queue_size = self.queue_manager.size()
+        self.logger.info(f"Current queue size: {queue_size}")
+
+        if queue_size > 0:
+            sample = self.queue_manager.get_sample(5)  # Get 5 sample items
+            self.logger.info("Sample queue items:")
+            for item in sample:
+                self.logger.info(f"  - {item}")
+
+    def shutdown(self) -> None:
+        """Gracefully shut down all components."""
+        self.state = CLIState.STOPPING
+        if self.worker_started:
+            self.stop_worker()
+        self.exit_event.set()
+        self.state = CLIState.STOPPED
+        self.logger.info("WordForge shutdown complete.")
+
+    def _display_help(self) -> None:
+        """Display help for interactive mode."""
+        print(f"\n{Fore.CYAN}=== WordForge Commands ==={Style.RESET_ALL}")
+        commands = [
+            ("help", "Show this help message"),
+            ("start", "Start the worker"),
+            ("stop", "Stop the worker"),
+            ("add <word>", "Add a word to the processing queue"),
+            ("batch <file>", "Add words from a file (one per line)"),
+            ("search <word>", "Search for a word in the database"),
+            ("queue", "Show current queue status"),
+            ("stats", "Show detailed statistics"),
+            ("exit", "Exit WordForge"),
+        ]
+
+        for cmd, desc in commands:
+            print(f"{Fore.GREEN}{cmd.ljust(15)}{Style.RESET_ALL}{desc}")
 
     def add_word(self, term: str) -> bool:
         """
@@ -304,72 +505,46 @@ class WordForgeCLI:
                 return None
 
             # Display the entry in a user-friendly manner
-            self.logger.info(
-                f"\n{Fore.CYAN}=== Word Entry: {term} ==={Style.RESET_ALL}"
-            )
-            self.logger.info(f"Definition: {entry.get('definition', '')}")
-            self.logger.info(f"Part of Speech: {entry.get('part_of_speech', '')}")
-
-            examples = entry.get("usage_examples", [])
-            if examples:
-                self.logger.info("Usage Examples:")
-                for idx, ex in enumerate(examples, 1):
-                    self.logger.info(f"  {idx}. {ex}")
-
-            rels = entry.get("relationships", [])
-            if rels:
-                # Group relationships by type
-                rel_by_type: Dict[str, List[str]] = {}
-                for r in rels:
-                    rel_type = r["relationship_type"]
-                    if rel_type not in rel_by_type:
-                        rel_by_type[rel_type] = []
-                    rel_by_type[rel_type].append(r["related_term"])
-
-                self.logger.info("Relationships:")
-                for rel_type, terms in rel_by_type.items():
-                    term_list = ", ".join(terms[:5])
-                    remaining = len(terms) - 5
-                    if remaining > 0:
-                        term_list += f" (+{remaining} more)"
-                    self.logger.info(f"  - {rel_type}: {term_list}")
+            self.logger.info(f"{Fore.CYAN}=== Entry for '{term}' ==={Style.RESET_ALL}")
+            self.logger.info(f"Definition: {entry['definition']}")
+            self.logger.info(f"Part of Speech: {entry['part_of_speech']}")
+            self.logger.info("Usage Examples:")
+            for example in entry["usage_examples"]:
+                self.logger.info(f"  - {example}")
+            self.logger.info("Relationships:")
+            for rel in entry["relationships"]:
+                self.logger.info(
+                    f"  - {rel['relationship_type']}: {rel['related_term']}"
+                )
 
             return entry
 
         except Exception as e:
-            self.logger.error(f"Error searching for '{term}': {str(e)}")
+            self.logger.error(f"Error searching for word: {str(e)}")
             return None
-
-    def list_queue(self) -> int:
-        """
-        Display the current queue status.
-
-        Returns:
-            The number of items in the queue
-        """
-        size = self.queue_manager.size()
-        self.logger.info(f"{Fore.BLUE}Queue has {size} items pending.{Style.RESET_ALL}")
-        return size
 
     def display_statistics(self) -> None:
         """Display detailed statistics about the worker and database."""
-        if not self.worker_started:
+        if not self.worker_started or self.worker is None:
             self.logger.info(
                 f"{Fore.YELLOW}Worker not running. No statistics available.{Style.RESET_ALL}"
             )
             return
 
-        stats = self.worker.get_statistics()
+        stats: StatDict = self.worker.get_statistics()
 
         # Print worker status
-        state_str = stats.get("state", "UNKNOWN")
-        status_color = {
+        state_str_value = stats.get("state", "UNKNOWN")
+        state_str = str(state_str_value) if state_str_value is not None else "UNKNOWN"
+
+        status_color_map = {
             "RUNNING": Fore.GREEN,
             "PAUSED": Fore.YELLOW,
             "STOPPING": Fore.RED,
             "STOPPED": Fore.RED,
             "ERROR": Fore.RED,
-        }.get(state_str, Fore.WHITE)
+        }
+        status_color = status_color_map.get(state_str, Fore.WHITE)
 
         # Format runtime
         runtime_secs = stats.get("runtime_seconds", 0)
@@ -380,7 +555,7 @@ class WordForgeCLI:
 
         # Create and print statistics table
         headers = ["Metric", "Value"]
-        rows = []
+        rows: List[List[str]] = []
 
         def format_stat(key: str, default: str, formatter: Optional[str] = None) -> str:
             """Format a statistic with proper type handling"""
@@ -389,13 +564,13 @@ class WordForgeCLI:
                 if formatter == "int":
                     return str(int(value))
                 elif formatter == "float1":
-                    return f"{value:.1f}"
+                    return f"{float(value):.1f}"
                 elif formatter == "float2":
-                    return f"{value:.2f}"
+                    return f"{float(value):.2f}"
                 elif formatter == "float3":
-                    return f"{value:.3f}"
+                    return f"{float(value):.3f}"
                 elif formatter == "ms":
-                    return f"{value * 1000:.2f} ms"
+                    return f"{float(value) * 1000:.2f} ms"
             return str(value)
 
         rows = [
@@ -419,24 +594,33 @@ class WordForgeCLI:
 
         # Show progress bar if processing
         if state_str == "RUNNING":
-            processed = int(stats.get("processed_count", 0))
-            queue_size = int(stats.get("queue_size", 0))
+            processed_value = stats.get("processed_count", 0)
+            queue_size_value = stats.get("queue_size", 0)
+
+            # Ensure values are integers
+            processed = safe_int(processed_value)
+            queue_size = safe_int(queue_size_value)
+
             if processed > 0 and queue_size > 0:
                 total = processed + queue_size
                 self.logger.info(f"\nProgress: {create_progress_bar(processed, total)}")
 
         # Show recent activities
-        recent_events = stats.get("recent_events", [])
-        if isinstance(recent_events, list) and recent_events:
+        recent_events_value = stats.get("recent_events", [])
+        recent_events: List[EventDict] = []
+
+        # Ensure recent_events is a list
+        if isinstance(recent_events_value, list):
+            recent_events = recent_events_value
+
+        if recent_events:
             self.logger.info(f"\n{Fore.CYAN}Recent Activity:{Style.RESET_ALL}")
             for event in recent_events[-3:]:  # Show last 3 events
-                if not isinstance(event, dict):
-                    continue
-
+                # Safe handling of event data
                 event_time_raw = event.get("timestamp")
-                event_type = event.get("event_type")
-                term = event.get("term", "unknown")
-                error = event.get("error", "unknown error")
+                event_type = event.get("event_type", "")
+                term = str(event.get("term", "unknown"))
+                error = str(event.get("error", "unknown error"))
 
                 # Safe timestamp conversion
                 if isinstance(event_time_raw, (int, float)):
@@ -451,10 +635,11 @@ class WordForgeCLI:
                 elif event_type == "error":
                     self.logger.info(f"  {event_time} - Error: {error}")
                 elif event_type == "state_change":
-                    details = event.get("details", {})
-                    if isinstance(details, dict):
-                        old_state = details.get("old_state", "?")
-                        new_state = details.get("new_state", "?")
+                    details_value = event.get("details", {})
+                    if isinstance(details_value, dict):
+                        details: Dict[str, Any] = details_value
+                        old_state = str(details.get("old_state", "?"))
+                        new_state = str(details.get("new_state", "?"))
                         self.logger.info(
                             f"  {event_time} - State changed: {old_state} → {new_state}"
                         )
@@ -520,157 +705,10 @@ class WordForgeCLI:
             elif main_cmd == "stats":
                 self.display_statistics()
             elif main_cmd == "exit":
-                self.stop_worker()
-                print(
-                    f"{Fore.GREEN}Exiting WordForge interactive mode.{Style.RESET_ALL}"
-                )
+                self.shutdown()
                 break
             else:
-                print(f"{Fore.RED}Unknown command: {main_cmd}{Style.RESET_ALL}")
-                print("Type 'help' for a list of commands.")
-
-    def _display_help(self) -> None:
-        """Display available commands for the interactive shell."""
-        print(
-            f"\n{Fore.CYAN}=== WordForge Commands ==={Style.RESET_ALL}\n"
-            f"  {Fore.GREEN}start{Style.RESET_ALL}            - Start the worker\n"
-            f"  {Fore.GREEN}stop{Style.RESET_ALL}             - Stop the worker\n"
-            f"  {Fore.GREEN}add <word>{Style.RESET_ALL}       - Enqueue a word for processing\n"
-            f"  {Fore.GREEN}batch <file>{Style.RESET_ALL}     - Enqueue words from a file (one per line)\n"
-            f"  {Fore.GREEN}search <word>{Style.RESET_ALL}    - Look up a word in the DB\n"
-            f"  {Fore.GREEN}queue{Style.RESET_ALL}            - Show queue size\n"
-            f"  {Fore.GREEN}stats{Style.RESET_ALL}            - Show detailed statistics\n"
-            f"  {Fore.GREEN}exit{Style.RESET_ALL}             - Stop worker & exit\n"
-            f"  {Fore.GREEN}help{Style.RESET_ALL}             - Show this help message\n"
-        )
-
-    def shutdown(self) -> None:
-        """
-        Stop the worker if running, then exit the application.
-        """
-        self.state = CLIState.STOPPING
-        self.stop_worker()
-        self.state = CLIState.STOPPED
-        print(f"{Fore.CYAN}--- Shutting down WordForge CLI ---{Style.RESET_ALL}")
-        sys.exit(0)
-
-    def run_demo(self, minutes: float = 1.0) -> None:
-        """
-        Run a demonstration of WordForge for a specified duration.
-
-        Args:
-            minutes: Duration to run the demo in minutes
-        """
-        run_seconds = minutes * 60
-
-        # Create some demo files
-        temp_dir = tempfile.mkdtemp()
-        demo_data_dir = os.path.join(temp_dir, "data")
-        os.makedirs(demo_data_dir, exist_ok=True)
-
-        # Create sample dictionary files
-        self._create_demo_files(Path(demo_data_dir))
-
-        # Reinitialize with demo data
-        self._init_components(
-            os.path.join(temp_dir, "word_forge_demo.sqlite"), demo_data_dir
-        )
-
-        # Seed the queue with initial words
-        seed_words = [
-            "algorithm",
-            "language",
-            "computer",
-            "data",
-            "program",
-            "network",
-            "code",
-            "function",
-            "logic",
-            "system",
-        ]
-
-        self.logger.info(f"Seeding queue with {len(seed_words)} initial words...")
-        for word in seed_words:
-            self.add_word(word)
-
-        # Start worker
-        self.logger.info(f"Starting worker for {minutes} minute(s)...")
-        self.start_worker()
-
-        # Monitor progress during runtime with periodic status updates
-        update_interval = 5  # Show stats every 5 seconds
-        start_time = time.time()
-        end_time = start_time + run_seconds
-
-        try:
-            while time.time() < end_time and self.worker_started:
-                # Sleep for the update interval or until end time
-                remaining = min(update_interval, end_time - time.time())
-                if remaining <= 0:
-                    break
-                time.sleep(remaining)
-
-                # Show progress
-                if hasattr(self.worker, "formatted_statistics"):
-                    self.logger.info(self.worker.formatted_statistics())
-
-                elapsed = time.time() - start_time
-                # Convert to integers to satisfy create_progress_bar's type requirements
-                self.logger.info(
-                    f"Progress: {create_progress_bar(int(elapsed), int(run_seconds))}"
-                )
-
-        except KeyboardInterrupt:
-            self.logger.info("Interrupted by user. Stopping gracefully...")
-
-        finally:
-            # Display final stats and summary
-            self.stop_worker()
-            self.logger.info(f"Demo files at: {temp_dir}")
-            self.logger.info("Demo complete!")
-
-    def _create_demo_files(self, data_dir: Path) -> None:
-        """
-        Create sample dictionary files for demonstration.
-
-        Args:
-            data_dir: Directory to create files in
-        """
-        with open(data_dir / "openthesaurus.jsonl", "w") as f:
-            f.write('{"words": ["algorithm"], "synonyms": ["procedure", "method"]}\n')
-            f.write(
-                '{"words": ["language"], "synonyms": ["tongue", "speech", "dialect"]}\n'
-            )
-            f.write(
-                '{"words": ["computer"], "synonyms": ["machine", "processor", "device"]}\n'
-            )
-            f.write('{"words": ["network"], "synonyms": ["web", "grid", "system"]}\n')
-            f.write(
-                '{"words": ["data"], "synonyms": ["information", "facts", "figures"]}\n'
-            )
-
-        with open(data_dir / "odict.json", "w") as f:
-            f.write(
-                """{
-                "algorithm": {"definition": "A step-by-step procedure", "examples": ["Sorting algorithms are fundamental."]},
-                "language": {"definition": "A system of communication", "examples": ["English is a global language."]},
-                "computer": {"definition": "An electronic device for processing data", "examples": ["The computer crashed."]},
-                "data": {"definition": "Facts and statistics collected together", "examples": ["The data shows an increasing trend."]},
-                "network": {"definition": "A group of interconnected systems", "examples": ["The computer network spans multiple buildings."]}
-            }"""
-            )
-
-        with open(data_dir / "opendict.json", "w") as f:
-            f.write("{}")
-
-        with open(data_dir / "thesaurus.jsonl", "w") as f:
-            f.write('{"word": "algorithm", "synonyms": ["process", "routine"]}\n')
-            f.write(
-                '{"word": "language", "synonyms": ["communication", "expression"]}\n'
-            )
-            f.write('{"word": "program", "synonyms": ["application", "software"]}\n')
-            f.write('{"word": "function", "synonyms": ["procedure", "routine"]}\n')
+                print(f"Unknown command: {cmd}")
 
 
 def main() -> None:
@@ -749,7 +787,7 @@ def main() -> None:
         "--minutes", type=float, default=1.0, help="Duration of the demo in minutes."
     )
 
-    if HAS_ARGCOMPLETION and argcomplete is not None:
+    if has_argcompletion and argcomplete is not None:
         argcomplete.autocomplete(parser)
 
     args = parser.parse_args()
@@ -782,7 +820,7 @@ def main() -> None:
             if args.minutes > 0:
                 end_time = time.time() + (args.minutes * 60)
                 try:
-                    while time.time() < end_time and not cli._exit_event.is_set():
+                    while time.time() < end_time and not cli.exit_event.is_set():
                         # Show statistics every 10 seconds
                         cli.display_statistics()
                         time.sleep(10)
@@ -794,7 +832,7 @@ def main() -> None:
                 # Indefinite run with stats display until interrupted
                 print("Worker started. Press Ctrl+C to stop.")
                 try:
-                    while not cli._exit_event.is_set():
+                    while not cli.exit_event.is_set():
                         cli.display_statistics()
                         time.sleep(10)
                 except KeyboardInterrupt:
@@ -824,10 +862,14 @@ def main() -> None:
             cli.list_queue()
 
         elif args.command == "stats":
+            worker_started_internally = False
             if not cli.worker_started:
                 cli.start_worker()
+                worker_started_internally = True
+
             cli.display_statistics()
-            if cli.worker_started:
+
+            if worker_started_internally:
                 cli.stop_worker()
 
         elif args.command == "interactive":
@@ -841,7 +883,8 @@ def main() -> None:
     except Exception as e:
         print(f"Error: {str(e)}")
     finally:
-        cli.shutdown()
+        if hasattr(cli, "state") and cli.state != CLIState.STOPPED:
+            cli.shutdown()
 
 
 if __name__ == "__main__":

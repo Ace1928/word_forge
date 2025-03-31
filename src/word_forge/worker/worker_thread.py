@@ -1,14 +1,16 @@
 import datetime
+import json
 import logging
 import os
 import signal
+import tempfile
 import threading
 import time
 import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, TypedDict, Union
+from typing import Any, Callable, Dict, List, Optional, Set, TypedDict, Union
 
 from word_forge.database.db_manager import DBManager
 from word_forge.parser.parser_refiner import ParserRefiner
@@ -34,7 +36,7 @@ class WorkerEvent(TypedDict, total=False):
     term: Optional[str]
     duration: Optional[float]
     error: Optional[str]
-    details: Dict[str, any]
+    details: Dict[str, Any]
 
 
 @dataclass
@@ -122,6 +124,10 @@ class ProcessingResult(TypedDict):
     new_terms_count: int
 
 
+# Type alias for worker result callback function
+WorkerCallbackType = Callable[[ProcessingResult], None]
+
+
 class WordForgeWorker(threading.Thread):
     """
     A robust background worker that processes queued words continuously.
@@ -137,12 +143,13 @@ class WordForgeWorker(threading.Thread):
         self,
         parser_refiner: ParserRefiner,
         queue_manager: QueueManager,
+        db_manager: Optional[DBManager] = None,
         sleep_interval: float = 1.0,
         error_backoff_factor: float = 1.5,
         max_errors_per_minute: int = 10,
         daemon: bool = True,
         logger: Optional[logging.Logger] = None,
-        result_callback: Optional[Callable[[ProcessingResult], None]] = None,
+        result_callback: Optional[WorkerCallbackType] = None,
     ):
         """
         Initialize a worker thread for background word processing.
@@ -150,6 +157,7 @@ class WordForgeWorker(threading.Thread):
         Args:
             parser_refiner: Parser component that processes words
             queue_manager: Queue providing words to process
+            db_manager: Optional database manager (uses parser_refiner.db_manager if None)
             sleep_interval: Seconds to sleep when queue is empty
             error_backoff_factor: Multiplier for sleep time after errors
             max_errors_per_minute: Errors per minute before forced pause
@@ -160,6 +168,7 @@ class WordForgeWorker(threading.Thread):
         super().__init__(daemon=daemon)
         self.parser_refiner = parser_refiner
         self.queue_manager = queue_manager
+        self.db_manager = db_manager or getattr(parser_refiner, "db_manager", None)
         self.base_sleep_interval = sleep_interval
         self.sleep_interval = sleep_interval
         self.error_backoff_factor = error_backoff_factor
@@ -226,7 +235,9 @@ class WordForgeWorker(threading.Thread):
                 }
             )
 
-    def get_statistics(self) -> Dict[str, Union[int, float, str, None, List, Dict]]:
+    def get_statistics(
+        self,
+    ) -> Dict[str, Union[int, float, str, None, List[Any], Dict[str, Any]]]:
         """
         Get worker statistics as a dictionary for monitoring.
 
@@ -367,9 +378,10 @@ class WordForgeWorker(threading.Thread):
             relationships_count = 0
             new_terms_count = self.queue_manager.size() - initial_queue_size
 
-            word_entry = self.parser_refiner.db_manager.get_word_if_exists(term)
-            if word_entry:
-                relationships_count = len(word_entry.get("relationships", []))
+            if self.db_manager:
+                word_entry = self.db_manager.get_word_if_exists(term)
+                if word_entry:
+                    relationships_count = len(word_entry.get("relationships", []))
 
             # Record result
             result: ProcessingResult = {
@@ -392,7 +404,7 @@ class WordForgeWorker(threading.Thread):
                 self._stats.add_event(
                     {
                         "timestamp": time.time(),
-                        "event_type": "word_processed",
+                        "event_type": "processed",
                         "term": term,
                         "duration": processing_duration,
                         "details": {
@@ -402,33 +414,38 @@ class WordForgeWorker(threading.Thread):
                     }
                 )
             else:
-                # Non-critical processing failure
-                result["error"] = f"Failed to process '{term}'"
-                self.logger.warning(f"Failed to process '{term}'")
-
-                # Record failure event
+                # Record error
+                self._stats.error_count += 1
+                result["error"] = f"Processing failed for term: {term}"
                 self._stats.add_event(
                     {
                         "timestamp": time.time(),
-                        "event_type": "processing_failure",
+                        "event_type": "processing_failed",
                         "term": term,
-                        "details": {"reason": "Failed to process word"},
+                        "error": result["error"],
                     }
                 )
 
-            # Call callback if provided
+            # Invoke callback if provided
             if self.result_callback:
                 try:
                     self.result_callback(result)
-                except Exception as e:
-                    self.logger.error(f"Error in result callback: {str(e)}")
+                except Exception as callback_error:
+                    self.logger.error(f"Error in result callback: {callback_error}")
 
         except EmptyQueueError:
-            # Queue is empty, apply backoff sleep
+            # No items in queue, sleep and track empty queue event
             self._stats.empty_queue_count += 1
-            self._stats.add_event(
-                {"timestamp": time.time(), "event_type": "empty_queue", "details": {}}
-            )
+
+            # Record empty queue encounter only occasionally to avoid spam
+            if self._stats.empty_queue_count % 10 == 1:
+                self._stats.add_event(
+                    {
+                        "timestamp": time.time(),
+                        "event_type": "empty_queue",
+                    }
+                )
+
             self._sleep_with_interruption(self.sleep_interval)
 
     def _handle_unexpected_error(self, error: Exception) -> None:
@@ -464,9 +481,10 @@ class WordForgeWorker(threading.Thread):
         if len(self._recent_errors) >= self.max_errors_per_minute:
             self._trigger_error_backoff()
         else:
-            # Apply exponential backoff for individual errors
-            self.sleep_interval = min(
-                30.0, self.sleep_interval * self.error_backoff_factor
+            # Increase sleep time for gradual backoff
+            self.sleep_interval *= self.error_backoff_factor
+            self.logger.warning(
+                f"Increased sleep interval to {self.sleep_interval:.2f}s after error"
             )
             self._sleep_with_interruption(self.sleep_interval)
 
@@ -520,16 +538,17 @@ class WordForgeWorker(threading.Thread):
 
     def pause(self, seconds: Optional[float] = None) -> None:
         """
-        Pause the worker for a specified duration or indefinitely.
+        Pause the worker temporarily or indefinitely.
 
         Args:
-            seconds: Duration to pause in seconds, or None for indefinite
+            seconds: Duration to pause in seconds, or None for indefinite pause
         """
         if seconds is not None:
             self._pause_until = time.time() + seconds
-            self.logger.info(f"Pausing worker for {seconds} seconds")
+            self.logger.info(f"Pausing worker for {seconds:.1f} seconds")
         else:
-            self._pause_until = float("inf")
+            # Use a very far future timestamp for indefinite pause
+            self._pause_until = time.time() + (365 * 24 * 60 * 60)  # ~1 year
             self.logger.info("Pausing worker indefinitely")
 
         self.state = WorkerState.PAUSED
@@ -538,7 +557,6 @@ class WordForgeWorker(threading.Thread):
         """Resume a paused worker."""
         if self.state == WorkerState.PAUSED:
             self.logger.info("Resuming worker")
-            self._pause_until = 0
             self.state = WorkerState.RUNNING
             self.sleep_interval = self.base_sleep_interval
 
@@ -550,39 +568,40 @@ def create_demo_files(data_dir: Path) -> None:
     Args:
         data_dir: Directory to create files in
     """
-    # Create sample dictionary files
+    # Create demo dictionary as JSON
+    demo_dict = {
+        "algorithm": {
+            "definition": "A step-by-step procedure for solving a problem",
+            "part_of_speech": "noun",
+            "examples": ["The sorting algorithm arranges elements in order."],
+        },
+        "data": {
+            "definition": "Facts or information used for analysis or reasoning",
+            "part_of_speech": "noun",
+            "examples": ["The program processes large amounts of data."],
+        },
+    }
+
+    # Create sample thesaurus entries
+    thesaurus_entries = [
+        {"word": "algorithm", "synonyms": ["procedure", "process", "method"]},
+        {"word": "data", "synonyms": ["information", "facts", "figures"]},
+    ]
+
+    # Write sample files
     with open(data_dir / "openthesaurus.jsonl", "w") as f:
-        f.write('{"words": ["algorithm"], "synonyms": ["procedure", "method"]}\n')
-        f.write(
-            '{"words": ["language"], "synonyms": ["tongue", "speech", "dialect"]}\n'
-        )
-        f.write(
-            '{"words": ["computer"], "synonyms": ["machine", "processor", "device"]}\n'
-        )
-        f.write('{"words": ["network"], "synonyms": ["web", "grid", "system"]}\n')
-        f.write(
-            '{"words": ["data"], "synonyms": ["information", "facts", "figures"]}\n'
-        )
+        for entry in thesaurus_entries:
+            f.write(json.dumps(entry) + "\n")
 
     with open(data_dir / "odict.json", "w") as f:
-        f.write(
-            """{
-            "algorithm": {"definition": "A step-by-step procedure", "examples": ["Sorting algorithms are fundamental."]},
-            "language": {"definition": "A system of communication", "examples": ["English is a global language."]},
-            "computer": {"definition": "An electronic device for processing data", "examples": ["The computer crashed."]},
-            "data": {"definition": "Facts and statistics collected together", "examples": ["The data shows an increasing trend."]},
-            "network": {"definition": "A group of interconnected systems", "examples": ["The computer network spans multiple buildings."]}
-        }"""
-        )
+        json.dump(demo_dict, f, indent=2)
 
     with open(data_dir / "opendict.json", "w") as f:
-        f.write("{}")
+        json.dump(demo_dict, f, indent=2)
 
     with open(data_dir / "thesaurus.jsonl", "w") as f:
-        f.write('{"word": "algorithm", "synonyms": ["process", "routine"]}\n')
-        f.write('{"word": "language", "synonyms": ["communication", "expression"]}\n')
-        f.write('{"word": "program", "synonyms": ["application", "software"]}\n')
-        f.write('{"word": "function", "synonyms": ["procedure", "routine"]}\n')
+        for entry in thesaurus_entries:
+            f.write(json.dumps(entry) + "\n")
 
 
 def create_progress_bar(current: int, total: int, width: int = 40) -> str:
@@ -618,7 +637,8 @@ def print_table(
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(str(cell)))
+            if i < len(col_widths):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
 
     # Create separator line
     separator = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
@@ -626,7 +646,6 @@ def print_table(
     # Print title if provided
     if title:
         print(f"\n{title}")
-        print("=" * len(title))
 
     # Print headers
     print(separator)
@@ -640,7 +659,8 @@ def print_table(
     for row in rows:
         row_str = "|"
         for i, cell in enumerate(row):
-            row_str += f" {str(cell).ljust(col_widths[i])} |"
+            if i < len(col_widths):
+                row_str += f" {str(cell).ljust(col_widths[i])} |"
         print(row_str)
 
     print(separator)
@@ -656,8 +676,6 @@ def main() -> None:
     3. Creates and runs a worker for a fixed duration
     4. Displays rich statistics about the worker's performance
     """
-    import tempfile
-
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
@@ -686,7 +704,7 @@ def main() -> None:
         db_manager,
         queue_manager,
         data_dir=str(data_dir),
-        enable_model=False,  # Disable model for demo
+        enable_model=False,
     )
 
     # Seed the queue with initial words
@@ -706,10 +724,13 @@ def main() -> None:
     # Process results callback
     def on_word_processed(result: ProcessingResult) -> None:
         if result["success"]:
-            logger.debug(
-                f"✓ Processed '{result['term']}' in {result['duration']:.3f}s - "
-                f"{result['relationships_count']} relationships, {result['new_terms_count']} new terms"
+            logger.info(
+                f"Processed '{result['term']}' in {result['duration']*1000:.1f}ms "
+                f"(found {result['relationships_count']} relationships, "
+                f"discovered {result['new_terms_count']} new terms)"
             )
+        else:
+            logger.warning(f"Failed to process '{result['term']}': {result['error']}")
 
     logger.info(f"Seeding queue with {len(seed_words)} initial words...")
     for word in seed_words:
@@ -720,7 +741,8 @@ def main() -> None:
     worker = WordForgeWorker(
         parser_refiner,
         queue_manager,
-        sleep_interval=0.05,  # Faster cycling for demo
+        db_manager=db_manager,
+        sleep_interval=0.05,
         logger=logger,
         result_callback=on_word_processed,
     )
@@ -743,102 +765,65 @@ def main() -> None:
 
     try:
         while time.time() < end_time and worker.is_alive():
-            # Sleep for the update interval or until end time
+            # Sleep for a bit, but wake up if we reach end time
             remaining = min(update_interval, end_time - time.time())
             if remaining <= 0:
                 break
             time.sleep(remaining)
 
-            # Show stats
+            # Display current statistics
             stats = worker.get_statistics()
             logger.info(worker.formatted_statistics())
 
-            # Show progress bar
-            elapsed = time.time() - start_time
-            progress = min(1.0, elapsed / run_seconds)
-            logger.info(f"Progress: {create_progress_bar(elapsed, run_seconds)}")
-
-            # Check processing milestones
-            processed_count = stats["processed_count"]
-            while (
+            # Check for milestone achievement
+            if (
                 next_milestone_idx < len(milestones)
-                and processed_count >= milestones[next_milestone_idx]
+                and stats["processed_count"] >= milestones[next_milestone_idx]
             ):
                 logger.info(
-                    f"🏆 Milestone reached: {milestones[next_milestone_idx]} words processed!"
+                    f"🎉 Milestone: {milestones[next_milestone_idx]} words processed!"
                 )
                 next_milestone_idx += 1
 
+            # Show progress bar
+            elapsed = time.time() - start_time
+            logger.info(
+                f"Progress: {create_progress_bar(int(elapsed), int(run_seconds))}"
+            )
+
     except KeyboardInterrupt:
-        logger.info("Interrupted by user. Stopping gracefully...")
+        logger.info("Interrupted by user. Stopping worker...")
+        worker.request_stop()
 
     finally:
-        # Request worker to stop
-        logger.info("Stopping worker...")
-        worker.request_stop()
-        worker.join(timeout=5.0)
+        # Request stop if still running
+        if worker.is_alive():
+            logger.info("Time's up. Stopping worker...")
+            worker.request_stop()
+            worker.join(timeout=5.0)
 
-        # Final statistics
-        final_stats = worker.get_statistics()
+        # Display final statistics
+        stats = worker.get_statistics()
+        logger.info("\n=== Final Statistics ===")
+        logger.info(f"Total runtime: {stats['runtime_formatted']}")
+        logger.info(f"Words processed: {stats['processed_count']}")
+        logger.info(
+            f"Processing rate: {stats['processing_rate_per_minute']:.1f} words/minute"
+        )
+        logger.info(f"Queue size: {stats['queue_size']}")
+        logger.info(f"Unique words: {stats['total_unique_words']}")
+        logger.info(f"Errors: {stats['error_count']}")
 
-        # Print summary table
-        print("\n" + "=" * 60)
-        print("📊 WORD FORGE WORKER STATISTICS 📊".center(60))
-        print("=" * 60)
-
-        # Print summary statistics as a table
+        # Print table with performance metrics
         headers = ["Metric", "Value"]
         rows = [
-            ["Runtime", final_stats["runtime_formatted"]],
-            ["Words processed", final_stats["processed_count"]],
-            [
-                "Processing rate",
-                f"{final_stats['processing_rate_per_minute']:.2f} words/min",
-            ],
-            [
-                "Avg processing time",
-                f"{final_stats['avg_processing_time']*1000:.2f} ms",
-            ],
-            ["Queue size", final_stats["queue_size"]],
-            ["Unique words", final_stats["total_unique_words"]],
-            ["Errors", final_stats["error_count"]],
-            ["Empty queue events", final_stats["empty_queue_count"]],
-            ["Worker state", final_stats["state"]],
+            ["Processing time (avg)", f"{stats['avg_processing_time']*1000:.1f} ms"],
+            ["Words processed", f"{stats['processed_count']}"],
+            ["Queue depth", f"{stats['queue_size']}"],
+            ["Productivity", f"{stats['productivity_metric']:.2f}"],
+            ["Errors", f"{stats['error_count']}"],
         ]
-        print_table(headers, rows)
-
-        # Show a sample of processed words from the database
-        processed_count = min(10, final_stats["processed_count"])
-        if processed_count > 0:
-            logger.info("\nSample of processed words:")
-            seen_words = list(worker._processed_terms)
-            sample_words = seen_words[:processed_count]
-
-            # Create table rows for processed words
-            word_headers = [
-                "Word",
-                "Relationships",
-                "Part of Speech",
-                "Definition Excerpt",
-            ]
-            word_rows = []
-
-            for word in sample_words:
-                word_entry = db_manager.get_word_if_exists(word)
-                if word_entry:
-                    rel_count = len(word_entry["relationships"])
-                    pos = word_entry.get("part_of_speech", "")
-                    definition = word_entry.get("definition", "")
-                    if definition and len(definition) > 40:
-                        definition = definition[:37] + "..."
-
-                    word_rows.append([word, rel_count, pos, definition])
-
-            if word_rows:
-                print_table(word_headers, word_rows, "Processed Words Sample")
-
-        logger.info(f"\nTemporary files at: {temp_dir}")
-        logger.info("Demo complete!")
+        print_table(headers, rows, title="Performance Summary")
 
 
 if __name__ == "__main__":

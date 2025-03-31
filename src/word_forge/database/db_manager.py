@@ -109,14 +109,14 @@ class DBManager:
     including words, definitions, and the relationships between words.
     """
 
-    def __init__(self, db_path: Union[str, Path] = "word_forge.sqlite"):
+    def __init__(self, db_path: Union[str, Path] = "word_forge.sqlite") -> None:
         """
         Initialize the database manager with path to SQLite database file.
 
         Args:
             db_path: Path to the SQLite database file (created if doesn't exist)
         """
-        self.db_path = str(db_path)
+        self.db_path: str = str(db_path)
         self._create_tables()
 
     def _create_tables(self) -> None:
@@ -170,12 +170,12 @@ class DBManager:
         if not term.strip():
             raise ValueError("Term cannot be empty")
 
-        usage_str = "; ".join(usage_examples) if usage_examples else ""
+        usage_str: str = "; ".join(usage_examples) if usage_examples else ""
 
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                timestamp = time.time()
+                timestamp: float = time.time()
 
                 cursor.execute(
                     SQL_INSERT_OR_UPDATE_WORD,
@@ -282,11 +282,14 @@ class DBManager:
 
                 # Get relationships
                 cursor.execute(SQL_GET_RELATIONSHIPS, (word_entry["id"],))
-                relationships = [
-                    {
-                        "related_term": row["related_term"],
-                        "relationship_type": row["relationship_type"],
-                    }
+                relationships: List[RelationshipDict] = [
+                    cast(
+                        RelationshipDict,
+                        {
+                            "related_term": row["related_term"],
+                            "relationship_type": row["relationship_type"],
+                        },
+                    )
                     for row in cursor.fetchall()
                 ]
 
@@ -306,7 +309,7 @@ class DBManager:
         Returns:
             Word entry dictionary without relationships
         """
-        usage_str = row_dict["usage_examples"]
+        usage_str: str = row_dict["usage_examples"] or ""
         usage_examples: List[str] = usage_str.split("; ") if usage_str else []
 
         return {
@@ -334,10 +337,8 @@ class DBManager:
         """
         try:
             return self.get_word_entry(term)
-        except TermNotFoundError:
+        except (TermNotFoundError, ValueError):
             return None
-        except ValueError:
-            return None  # Handle empty term gracefully
 
     @lru_cache(maxsize=128)
     def _get_word_id(self, term: str) -> Optional[int]:
@@ -363,6 +364,17 @@ class DBManager:
             raise DatabaseError(
                 f"Failed to retrieve word ID for term '{term}': {e}"
             ) from e
+
+    def get_all_words(self) -> List[Dict[str, Any]]:
+        """Return all words in the database with their data."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, term, definition, usage_examples FROM words")
+                return cursor.fetchall()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to retrieve all words: {e}") from e
 
 
 def main() -> None:

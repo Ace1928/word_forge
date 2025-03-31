@@ -1,8 +1,20 @@
 import queue
-from typing import Callable, Dict, Generic, Iterator, Optional, Protocol, Set, TypeVar
+import threading
+from typing import (
+    Callable,
+    Dict,
+    Generic,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    TypeVar,
+    cast,
+)
 
-T = TypeVar("T")
-R = TypeVar("R")
+T = TypeVar("T")  # Item type
+NormalizerFunc = Callable[[T], T]  # Type alias for normalization functions
 
 
 class Normalizable(Protocol):
@@ -28,10 +40,16 @@ class QueueManager(Generic[T]):
     Manages a FIFO queue of items to process with duplicate prevention.
 
     This generic implementation maintains queue order while ensuring each
-    item is processed exactly once through efficient tracking.
+    item is processed exactly once through efficient tracking. The class
+    is thread-safe, using reentrant locks to protect shared state access.
+
+    Typical usage:
+        queue = QueueManager[str]()
+        queue.enqueue("item1")
+        item = queue.dequeue()  # Returns "item1"
     """
 
-    def __init__(self, normalize_func: Optional[Callable[[T], T]] = None):
+    def __init__(self, normalize_func: Optional[NormalizerFunc[T]] = None):
         """
         Initialize an empty queue with tracking for seen items.
 
@@ -41,7 +59,8 @@ class QueueManager(Generic[T]):
         """
         self._queue: queue.Queue[T] = queue.Queue()
         self._seen_items: Set[T] = set()
-        self._normalize: Callable[[T], T] = normalize_func or self._default_normalize
+        self._normalize: NormalizerFunc[T] = normalize_func or self._default_normalize
+        self._lock = threading.RLock()  # Reentrant lock for thread safety
 
     def _default_normalize(self, item: T) -> T:
         """
@@ -54,7 +73,7 @@ class QueueManager(Generic[T]):
             Normalized version of the item (lowercase string with whitespace stripped)
         """
         if isinstance(item, str):
-            return item.strip().lower()  # type: ignore
+            return cast(T, str.strip(str.lower(item)))
         return item
 
     def enqueue(self, item: T) -> bool:
@@ -71,13 +90,16 @@ class QueueManager(Generic[T]):
             ValueError: If the item is empty or None
         """
         self._validate_item(item)
-        normalized_item = self._normalize(item)
 
-        if normalized_item not in self._seen_items:
-            self._queue.put(normalized_item)
-            self._seen_items.add(normalized_item)
-            return True
-        return False
+        with self._lock:
+            normalized_item = self._normalize(item)
+
+            if normalized_item not in self._seen_items:
+                self._queue.put(normalized_item)
+                self._seen_items.add(normalized_item)
+                return True
+
+            return False
 
     def _validate_item(self, item: T) -> None:
         """
@@ -118,10 +140,17 @@ class QueueManager(Generic[T]):
         if self.is_empty():
             return None
 
-        # Get item, put it back, and return a copy
-        item = self._queue.get()
-        self._queue.put(item)
-        return item
+        # Thread-safe peek operation to avoid race conditions
+        with self._lock:
+            try:
+                # Get item but don't mark as processed
+                item = self._queue.get(block=False)
+                # Put it back at the front
+                self._queue.put(item)
+                return item
+            except queue.Empty:
+                # Queue became empty between our check and get
+                return None
 
     def size(self) -> int:
         """
@@ -163,6 +192,15 @@ class QueueManager(Generic[T]):
         """
         return iter(self._seen_items)
 
+    def seen_count(self) -> int:
+        """
+        Get the total number of unique items that have been enqueued.
+
+        Returns:
+            Count of all unique items ever enqueued
+        """
+        return len(self._seen_items)
+
     def reset(self) -> None:
         """
         Clear the queue and the set of seen items.
@@ -170,9 +208,9 @@ class QueueManager(Generic[T]):
         This method resets the queue to its initial state. Use with caution
         as it eliminates all tracking of previously processed items.
         """
-        while not self._queue.empty():
-            self._queue.get()
-        self._seen_items.clear()
+        with self._lock:
+            self._queue = queue.Queue()
+            self._seen_items.clear()
 
     def batch_enqueue(self, items: Iterator[T]) -> Dict[T, bool]:
         """
@@ -192,8 +230,38 @@ class QueueManager(Generic[T]):
                 results[item] = False
         return results
 
+    def get_sample(self, n: int) -> List[T]:
+        """
+        Get a sample of up to n items currently in the queue without removing them.
 
-# Backward compatibility aliases
+        Args:
+            n: Maximum number of items to retrieve
+
+        Returns:
+            List of up to n items from the queue, or empty list if queue is empty
+        """
+        if self.is_empty() or n <= 0:
+            return []
+
+        with self._lock:
+            temp_items: List[T] = []
+            sample_size = min(n, self.size())
+
+            # Extract items (up to n)
+            for _ in range(sample_size):
+                if self.is_empty():
+                    break
+                item = self._queue.get()
+                temp_items.append(item)
+
+            # Put all items back into the queue
+            for item in temp_items:
+                self._queue.put(item)
+
+            return temp_items[:n]
+
+
+# Backward compatibility aliases - type signature enhanced but functionality preserved
 def enqueue_word(self: QueueManager[str], term: str) -> bool:
     """Backward compatibility alias for enqueue."""
     return self.enqueue(term)
@@ -213,9 +281,9 @@ def queue_size(self: QueueManager[T]) -> int:
 
 
 # Add backward compatibility methods to QueueManager class
-QueueManager.enqueue_word = enqueue_word  # type: ignore
-QueueManager.dequeue_word = dequeue_word  # type: ignore
-QueueManager.queue_size = queue_size  # type: ignore
+setattr(QueueManager, "enqueue_word", enqueue_word)
+setattr(QueueManager, "dequeue_word", dequeue_word)
+setattr(QueueManager, "queue_size", queue_size)
 
 
 def main() -> None:
@@ -236,7 +304,14 @@ def main() -> None:
 
     # Show queue status
     print(f"\nQueue size: {word_queue.size()}")
-    print(f"Total unique items seen: {len(list(word_queue.iter_seen()))}")
+    print(f"Total unique items seen: {word_queue.seen_count()}")
+
+    # Demonstrate sample functionality
+    if word_queue.size() > 0:
+        print("\n=== Queue Sample ===")
+        sample = word_queue.get_sample(3)
+        for idx, item in enumerate(sample, 1):
+            print(f"Sample item {idx}: {item}")
 
     # Process queue
     print("\n=== Processing Queue ===")
