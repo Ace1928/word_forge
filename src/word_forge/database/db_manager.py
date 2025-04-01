@@ -4,6 +4,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, Union, cast
 
+from word_forge.config import config
+
 
 class DatabaseError(Exception):
     """Base exception for database operations."""
@@ -36,38 +38,26 @@ class WordEntryDict(TypedDict):
     relationships: List[RelationshipDict]
 
 
-# SQL query constants to prevent duplication and enhance maintainability
-SQL_CREATE_WORDS_TABLE = """
-CREATE TABLE IF NOT EXISTS words (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    term TEXT UNIQUE NOT NULL,
-    definition TEXT,
-    part_of_speech TEXT,
-    usage_examples TEXT,
-    last_refreshed REAL
-);
-"""
+class WordDataDict(TypedDict):
+    """Type definition for word data returned by get_all_words."""
 
-SQL_CREATE_RELATIONSHIPS_TABLE = """
-CREATE TABLE IF NOT EXISTS relationships (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    word_id INTEGER NOT NULL,
-    related_term TEXT NOT NULL,
-    relationship_type TEXT NOT NULL,
-    FOREIGN KEY(word_id) REFERENCES words(id)
-);
-"""
+    id: int
+    term: str
+    definition: str
+    usage_examples: str
 
-SQL_CREATE_WORD_ID_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_relationships_word_id
-ON relationships(word_id);
-"""
 
-SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
-ON relationships(word_id, related_term, relationship_type);
-"""
+# Get SQL templates from config
+SQL_CREATE_WORDS_TABLE = config.database.sql_templates["create_words_table"]
+SQL_CREATE_RELATIONSHIPS_TABLE = config.database.sql_templates[
+    "create_relationships_table"
+]
+SQL_CREATE_WORD_ID_INDEX = config.database.sql_templates["create_word_id_index"]
+SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = config.database.sql_templates[
+    "create_unique_relationship_index"
+]
 
+# Other SQL query constants - not moved to config to maintain module encapsulation
 SQL_INSERT_OR_UPDATE_WORD = """
 INSERT INTO words (term, definition, part_of_speech, usage_examples, last_refreshed)
 VALUES (?, ?, ?, ?, ?)
@@ -100,6 +90,10 @@ SQL_GET_WORD_ID = """
 SELECT id FROM words WHERE term = ?
 """
 
+SQL_GET_ALL_WORDS = """
+SELECT id, term, definition, usage_examples FROM words
+"""
+
 
 class DBManager:
     """
@@ -109,15 +103,36 @@ class DBManager:
     including words, definitions, and the relationships between words.
     """
 
-    def __init__(self, db_path: Union[str, Path] = "word_forge.sqlite") -> None:
+    def __init__(self, db_path: Union[str, Path] = None) -> None:
         """
         Initialize the database manager with path to SQLite database file.
 
         Args:
-            db_path: Path to the SQLite database file (created if doesn't exist)
+            db_path: Path to the SQLite database file (defaults to config value if None)
         """
-        self.db_path: str = str(db_path)
+        self.db_path: str = str(db_path if db_path else config.database.get_db_path())
         self._create_tables()
+
+    def _create_connection(self) -> sqlite3.Connection:
+        """
+        Create an optimized database connection with pragmas applied.
+
+        Returns:
+            sqlite3.Connection: Configured database connection
+
+        Raises:
+            DatabaseError: If connection creation fails
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+
+            # Apply performance-optimizing pragmas from config
+            for pragma, value in config.database.pragmas.items():
+                conn.execute(f"PRAGMA {pragma} = {value}")
+
+            return conn
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to create database connection: {e}") from e
 
     def _create_tables(self) -> None:
         """
@@ -131,19 +146,19 @@ class DBManager:
             DatabaseError: If there's an issue with database initialization
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            conn = self._create_connection()
+            try:
                 cursor = conn.cursor()
 
-                # Enable foreign keys for referential integrity
-                cursor.execute("PRAGMA foreign_keys = ON;")
-
-                # Create tables and indexes
+                # Create tables and indexes using config templates
                 cursor.execute(SQL_CREATE_WORDS_TABLE)
                 cursor.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
                 cursor.execute(SQL_CREATE_WORD_ID_INDEX)
                 cursor.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
 
                 conn.commit()
+            finally:
+                conn.close()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to initialize database: {e}") from e
 
@@ -365,14 +380,22 @@ class DBManager:
                 f"Failed to retrieve word ID for term '{term}': {e}"
             ) from e
 
-    def get_all_words(self) -> List[Dict[str, Any]]:
-        """Return all words in the database with their data."""
+    def get_all_words(self) -> List[WordDataDict]:
+        """
+        Return all words in the database with their associated data.
+
+        Returns:
+            List of word dictionaries containing id, term, definition, and usage_examples
+
+        Raises:
+            DatabaseError: If the database operation fails
+        """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, term, definition, usage_examples FROM words")
-                return cursor.fetchall()
+                cursor.execute(SQL_GET_ALL_WORDS)
+                return [cast(WordDataDict, dict(row)) for row in cursor.fetchall()]
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to retrieve all words: {e}") from e
 

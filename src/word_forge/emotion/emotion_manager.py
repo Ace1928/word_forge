@@ -1,7 +1,7 @@
 import sqlite3
 import time
 from contextlib import contextmanager
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, TypedDict, cast
 
 from textblob import TextBlob
 
@@ -12,7 +12,52 @@ try:
 except ImportError:
     VADER_AVAILABLE = False
 
-from word_forge.database.db_manager import DBManager
+from word_forge.config import config
+from word_forge.database.db_manager import DatabaseError, DBManager
+
+
+class EmotionError(DatabaseError):
+    """Base exception for emotion analysis operations."""
+
+    pass
+
+
+class WordEmotionDict(TypedDict):
+    """Type definition for word emotion data structure."""
+
+    word_id: int
+    valence: float
+    arousal: float
+    timestamp: float
+
+
+class MessageEmotionDict(TypedDict):
+    """Type definition for message emotion data structure."""
+
+    message_id: int
+    label: str
+    confidence: float
+    timestamp: float
+
+
+class EmotionAnalysisDict(TypedDict):
+    """Type definition for emotion analysis results."""
+
+    emotion_label: str
+    confidence: float
+
+
+# Get SQL templates from config
+SQL_CREATE_WORD_EMOTION_TABLE = config.emotion.sql_templates[
+    "create_word_emotion_table"
+]
+SQL_CREATE_MESSAGE_EMOTION_TABLE = config.emotion.sql_templates[
+    "create_message_emotion_table"
+]
+SQL_INSERT_WORD_EMOTION = config.emotion.sql_templates["insert_word_emotion"]
+SQL_GET_WORD_EMOTION = config.emotion.sql_templates["get_word_emotion"]
+SQL_INSERT_MESSAGE_EMOTION = config.emotion.sql_templates["insert_message_emotion"]
+SQL_GET_MESSAGE_EMOTION = config.emotion.sql_templates["get_message_emotion"]
 
 
 class EmotionManager:
@@ -28,35 +73,37 @@ class EmotionManager:
     (when available) for more accurate sentiment detection in varied texts.
     """
 
-    # Emotion value constraints
-    VALENCE_RANGE = (-1.0, 1.0)  # Negative to positive
-    AROUSAL_RANGE = (0.0, 1.0)  # Calm to excited
-    CONFIDENCE_RANGE = (0.0, 1.0)  # Certainty level
-
-    # Emotion categories with their keywords for classification
-    EMOTION_KEYWORDS = {
-        "happiness": ["happy", "joy", "delight", "pleased", "glad", "excited"],
-        "sadness": ["sad", "unhappy", "depressed", "down", "miserable", "gloomy"],
-        "anger": ["angry", "furious", "enraged", "mad", "irritated", "annoyed"],
-        "fear": ["afraid", "scared", "frightened", "terrified", "anxious", "worried"],
-        "surprise": ["surprised", "astonished", "amazed", "shocked", "startled"],
-        "disgust": ["disgusted", "revolted", "repulsed", "sickened", "appalled"],
-        "neutral": ["okay", "fine", "neutral", "indifferent", "average"],
-    }
-
     def __init__(self, db_manager: DBManager) -> None:
         """Initialize the emotion tracking system.
 
         Args:
             db_manager: Database manager providing connection to storage
+
+        Raises:
+            EmotionError: If there's an issue initializing the emotion tables
         """
         self.db_manager = db_manager
         self._create_tables()
         self._init_sentiment_analyzers()
 
+        # Access emotion constraints from centralized config
+        self.VALENCE_RANGE = config.emotion.valence_range
+        self.AROUSAL_RANGE = config.emotion.arousal_range
+        self.CONFIDENCE_RANGE = config.emotion.confidence_range
+        self.EMOTION_KEYWORDS = config.emotion.emotion_keywords
+
+        # Hybrid analysis weights
+        self.vader_weight = config.emotion.vader_weight
+        self.textblob_weight = config.emotion.textblob_weight
+
     def _init_sentiment_analyzers(self) -> None:
         """Initialize sentiment analysis tools if available."""
-        self.vader = SentimentIntensityAnalyzer() if VADER_AVAILABLE else None
+        # Only initialize VADER if enabled in config
+        self.vader = (
+            SentimentIntensityAnalyzer()
+            if VADER_AVAILABLE and config.emotion.enable_vader
+            else None
+        )
 
     @contextmanager
     def _db_connection(self):
@@ -78,34 +125,18 @@ class EmotionManager:
         Creates two tables if they don't exist:
         - word_emotion: Links words to valence and arousal scores
         - message_emotion: Links messages to categorical emotion labels
-        """
-        with self._db_connection() as conn:
-            cursor = conn.cursor()
-            # Create word_emotion table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS word_emotion (
-                    word_id INTEGER PRIMARY KEY,
-                    valence REAL NOT NULL,
-                    arousal REAL NOT NULL,
-                    timestamp REAL NOT NULL,
-                    FOREIGN KEY(word_id) REFERENCES words(id)
-                )
-            """
-            )
 
-            # Create message_emotion table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS message_emotion (
-                    message_id INTEGER PRIMARY KEY,
-                    label TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    timestamp REAL NOT NULL
-                )
-            """
-            )
-            conn.commit()
+        Raises:
+            EmotionError: If there's an issue creating the emotion tables
+        """
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(SQL_CREATE_WORD_EMOTION_TABLE)
+                cursor.execute(SQL_CREATE_MESSAGE_EMOTION_TABLE)
+                conn.commit()
+        except sqlite3.Error as e:
+            raise EmotionError(f"Failed to initialize emotion tables: {e}") from e
 
     def set_word_emotion(self, word_id: int, valence: float, arousal: float) -> None:
         """Store or update emotional values for a word.
@@ -114,6 +145,9 @@ class EmotionManager:
             word_id: Database ID of the target word
             valence: Positivity/negativity score (-1.0 to 1.0)
             arousal: Excitement/calmness level (0.0 to 1.0)
+
+        Raises:
+            EmotionError: If the database operation fails
 
         Valence represents emotional positivity:
         - Negative values indicate negative emotions
@@ -126,19 +160,18 @@ class EmotionManager:
         valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
         arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
 
-        with self._db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO word_emotion
-                (word_id, valence, arousal, timestamp)
-                VALUES (?, ?, ?, ?)
-                """,
-                (word_id, valence, arousal, time.time()),
-            )
-            conn.commit()
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    SQL_INSERT_WORD_EMOTION,
+                    (word_id, valence, arousal, time.time()),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            raise EmotionError(f"Failed to store word emotion: {e}") from e
 
-    def get_word_emotion(self, word_id: int) -> Optional[Dict[str, Union[float, int]]]:
+    def get_word_emotion(self, word_id: int) -> Optional[WordEmotionDict]:
         """Retrieve emotional data for a word.
 
         Args:
@@ -147,23 +180,21 @@ class EmotionManager:
         Returns:
             Dictionary containing emotional data (valence, arousal, timestamp),
             or None if no data exists for the word
-        """
-        with self._db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT word_id, valence, arousal, timestamp FROM word_emotion WHERE word_id = ?",
-                (word_id,),
-            )
-            row = cursor.fetchone()
 
-            if row:
-                return {
-                    "word_id": row["word_id"],
-                    "valence": row["valence"],
-                    "arousal": row["arousal"],
-                    "timestamp": row["timestamp"],
-                }
-            return None
+        Raises:
+            EmotionError: If the database operation fails
+        """
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(SQL_GET_WORD_EMOTION, (word_id,))
+                row = cursor.fetchone()
+
+                if row:
+                    return cast(WordEmotionDict, dict(row))
+                return None
+        except sqlite3.Error as e:
+            raise EmotionError(f"Failed to retrieve word emotion: {e}") from e
 
     def set_message_emotion(
         self, message_id: int, label: str, confidence: float = 1.0
@@ -174,26 +205,26 @@ class EmotionManager:
             message_id: Database ID of the target message
             label: Emotional category name (e.g., 'happy', 'sad')
             confidence: Certainty level of the emotion (0.0 to 1.0)
+
+        Raises:
+            EmotionError: If the database operation fails
         """
         confidence = max(
             self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence)
         )
 
-        with self._db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO message_emotion
-                (message_id, label, confidence, timestamp)
-                VALUES (?, ?, ?, ?)
-                """,
-                (message_id, label, confidence, time.time()),
-            )
-            conn.commit()
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    SQL_INSERT_MESSAGE_EMOTION,
+                    (message_id, label, confidence, time.time()),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            raise EmotionError(f"Failed to store message emotion: {e}") from e
 
-    def get_message_emotion(
-        self, message_id: int
-    ) -> Optional[Dict[str, Union[str, float, int]]]:
+    def get_message_emotion(self, message_id: int) -> Optional[MessageEmotionDict]:
         """Retrieve emotional data for a message.
 
         Args:
@@ -202,23 +233,21 @@ class EmotionManager:
         Returns:
             Dictionary containing emotion label, confidence and timestamp,
             or None if no data exists for the message
-        """
-        with self._db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT message_id, label, confidence, timestamp FROM message_emotion WHERE message_id = ?",
-                (message_id,),
-            )
-            row = cursor.fetchone()
 
-            if row:
-                return {
-                    "message_id": row["message_id"],
-                    "label": row["label"],
-                    "confidence": row["confidence"],
-                    "timestamp": row["timestamp"],
-                }
-            return None
+        Raises:
+            EmotionError: If the database operation fails
+        """
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(SQL_GET_MESSAGE_EMOTION, (message_id,))
+                row = cursor.fetchone()
+
+                if row:
+                    return cast(MessageEmotionDict, dict(row))
+                return None
+        except sqlite3.Error as e:
+            raise EmotionError(f"Failed to retrieve message emotion: {e}") from e
 
     def _analyze_with_vader(self, text: str) -> Tuple[float, float]:
         """Analyze text sentiment using VADER.
@@ -272,9 +301,10 @@ class EmotionManager:
         if self.vader:
             vader_valence, vader_arousal = self._analyze_with_vader(text)
 
-            # Weighted fusion of both analyzers
-            # VADER gets higher weight as it's typically better for emotional expressions
-            valence = (vader_valence * 0.7) + (textblob_valence * 0.3)
+            # Weighted fusion of both analyzers using config weights
+            valence = (vader_valence * self.vader_weight) + (
+                textblob_valence * self.textblob_weight
+            )
 
             # Combine VADER arousal with text characteristics
             arousal_factors = [
@@ -356,15 +386,13 @@ class EmotionManager:
         keyword_strength = (
             min(keyword_counts[emotion] / 3, 1.0)
             if keyword_counts[emotion] > 0
-            else 0.3
+            else config.emotion.min_keyword_confidence
         )
-        confidence = 0.4 + (0.6 * keyword_strength)
+        confidence = 0.4 + (config.emotion.keyword_match_weight * keyword_strength)
 
         return emotion, confidence
 
-    def process_message(
-        self, message_id: int, text: str
-    ) -> Dict[str, Union[str, float]]:
+    def process_message(self, message_id: int, text: str) -> EmotionAnalysisDict:
         """Process a message to identify and store its emotional content.
 
         Args:
@@ -373,6 +401,9 @@ class EmotionManager:
 
         Returns:
             Dictionary containing the identified emotion data
+
+        Raises:
+            EmotionError: If storing the emotion data fails
         """
         # Classify the emotion in the text
         emotion_label, confidence = self.classify_emotion(text)

@@ -13,6 +13,8 @@ from typing import (
     cast,
 )
 
+from word_forge.config import config
+
 T = TypeVar("T")  # Item type
 NormalizerFunc = Callable[[T], T]  # Type alias for normalization functions
 
@@ -57,10 +59,43 @@ class QueueManager(Generic[T]):
             normalize_func: Optional function to normalize items before processing.
                 Defaults to lowercase string normalization if None.
         """
-        self._queue: queue.Queue[T] = queue.Queue()
+        self._queue: queue.Queue[T] = queue.Queue(
+            maxsize=config.queue.max_queue_size or 0
+        )
         self._seen_items: Set[T] = set()
-        self._normalize: NormalizerFunc[T] = normalize_func or self._default_normalize
-        self._lock = threading.RLock()  # Reentrant lock for thread safety
+
+        # Use normalize_func if provided, otherwise use default if configured
+        if normalize_func:
+            self._normalize = normalize_func
+        elif config.queue.apply_default_normalization:
+            self._normalize = self._default_normalize
+        else:
+            # Identity function if normalization disabled
+            self._normalize = lambda x: x
+
+        # Initialize thread locking based on config
+        if config.queue.use_threading:
+            if config.queue.lock_type == "reentrant":
+                self._lock = threading.RLock()
+            else:
+                self._lock = threading.Lock()
+        else:
+            # Null context manager for single-threaded mode
+            class NullLock:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            self._lock = NullLock()
+
+        # Initialize metrics if enabled
+        self._metrics = (
+            {"enqueued": 0, "dequeued": 0, "duplicates": 0}
+            if config.queue.track_metrics
+            else None
+        )
 
     def _default_normalize(self, item: T) -> T:
         """
@@ -97,8 +132,12 @@ class QueueManager(Generic[T]):
             if normalized_item not in self._seen_items:
                 self._queue.put(normalized_item)
                 self._seen_items.add(normalized_item)
+                if self._metrics is not None:
+                    self._metrics["enqueued"] += 1
                 return True
 
+            if self._metrics is not None:
+                self._metrics["duplicates"] += 1
             return False
 
     def _validate_item(self, item: T) -> None:
@@ -128,7 +167,10 @@ class QueueManager(Generic[T]):
         """
         if self.is_empty():
             raise EmptyQueueError("Cannot dequeue from an empty queue")
-        return self._queue.get()
+        item = self._queue.get()
+        if self._metrics is not None:
+            self._metrics["dequeued"] += 1
+        return item
 
     def peek(self) -> Optional[T]:
         """
@@ -209,8 +251,10 @@ class QueueManager(Generic[T]):
         as it eliminates all tracking of previously processed items.
         """
         with self._lock:
-            self._queue = queue.Queue()
+            self._queue = queue.Queue(maxsize=config.queue.max_queue_size or 0)
             self._seen_items.clear()
+            if self._metrics is not None:
+                self._metrics = {"enqueued": 0, "dequeued": 0, "duplicates": 0}
 
     def batch_enqueue(self, items: Iterator[T]) -> Dict[T, bool]:
         """
@@ -243,6 +287,9 @@ class QueueManager(Generic[T]):
         if self.is_empty() or n <= 0:
             return []
 
+        # Apply configured maximum sample size limit
+        n = min(n, config.queue.max_sample_size)
+
         with self._lock:
             temp_items: List[T] = []
             sample_size = min(n, self.size())
@@ -259,6 +306,15 @@ class QueueManager(Generic[T]):
                 self._queue.put(item)
 
             return temp_items[:n]
+
+    def get_metrics(self) -> Optional[Dict[str, int]]:
+        """
+        Get queue performance metrics if tracking is enabled.
+
+        Returns:
+            Dictionary with metrics or None if tracking is disabled
+        """
+        return self._metrics.copy() if self._metrics is not None else None
 
 
 # Backward compatibility aliases - type signature enhanced but functionality preserved
@@ -327,6 +383,13 @@ def main() -> None:
     check_words = ["python", "JAVA", "Ruby", "C#"]
     for word in check_words:
         print(f"Has seen '{word}': {word_queue.has_seen(word)}")
+
+    # Display metrics if enabled
+    metrics = word_queue.get_metrics()
+    if metrics:
+        print("\n=== Queue Metrics ===")
+        for name, value in metrics.items():
+            print(f"{name.capitalize()}: {value}")
 
 
 # Export public elements
