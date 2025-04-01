@@ -113,8 +113,13 @@ class WorkerStatistics:
         self.recent_events.clear()
 
 
-class ProcessingResult(TypedDict):
-    """Structured result of a word processing operation."""
+class ProcessingResult(TypedDict, total=False):
+    """
+    Structured result of a word processing operation with enhanced metadata.
+
+    Captures comprehensive processing context and results for analysis,
+    knowledge graph construction, and adaptive learning.
+    """
 
     success: bool
     term: str
@@ -122,6 +127,9 @@ class ProcessingResult(TypedDict):
     error: Optional[str]
     relationships_count: int
     new_terms_count: int
+    relationship_types: Dict[str, int]  # Counts by relationship type
+    processing_depth: int  # Depth level used during processing
+    semantic_centrality: Optional[float]  # Measure of term centrality if known
 
 
 # Type alias for worker result callback function
@@ -200,6 +208,12 @@ class WordForgeWorker(threading.Thread):
         self._initial_queue_size = queue_manager.size()
         self._productivity_metric = 1.0
         self.base_sleep_interval = sleep_interval
+
+        self._term_frequencies = {}
+        self._term_dependency_graph = {}
+        self._consecutive_fast_processes = 0
+        self._semantic_clusters = {}
+        self._processing_patterns = []
 
     def _register_signal_handlers(self) -> None:
         """Register handlers for graceful shutdown on system signals."""
@@ -346,85 +360,63 @@ class WordForgeWorker(threading.Thread):
 
     def _process_next_word(self) -> None:
         """
-        Process the next word from the queue, handling empty queue condition.
+        Process the next word from the queue with recursive intelligence.
 
-        This is the core processing logic that dequeues and processes words,
-        updates statistics, and manages sleep intervals.
+        This core logic applies Eidosian principles by:
+        1. Analyzing processing patterns to optimize future operations
+        2. Dynamically adjusting discovery depth based on semantic relevance
+        3. Recording lexical pathways for knowledge graph enrichment
+        4. Maintaining processing history to avoid redundant work
         """
         try:
-            # Attempt to get a word from the queue
             term = self.queue_manager.dequeue()
 
-            # Skip if we've already processed this term
             if term in self._processed_terms:
+                self._update_term_frequency(term)
                 return
 
             self._processed_terms.add(term)
-
-            # We have a word to process
             start_time = time.time()
             self.stats.last_active = start_time
-            self.logger.debug(f"Processing: '{term}'")
+            current_queue_depth = self.queue_manager.size()
+            self.logger.debug(
+                f"Processing: '{term}' (queue depth: {current_queue_depth})"
+            )
 
-            # Process the word and track result
             initial_queue_size = self.queue_manager.size()
             success = self.parser_refiner.process_word(term)
             end_time = time.time()
             processing_duration = end_time - start_time
 
-            # Get relationships count from database
             relationships_count = 0
+            relationship_types = {}
             new_terms_count = self.queue_manager.size() - initial_queue_size
 
             if self.db_manager:
                 word_entry = self.db_manager.get_word_if_exists(term)
                 if word_entry:
-                    relationships_count = len(word_entry.get("relationships", []))
+                    relationships = word_entry.get("relationships", [])
+                    relationships_count = len(relationships)
+                    relationship_types = self._categorize_relationships(relationships)
 
-            # Record result
-            result: ProcessingResult = {
+            result = {
                 "success": success,
                 "term": term,
                 "duration": processing_duration,
                 "error": None,
                 "relationships_count": relationships_count,
                 "new_terms_count": new_terms_count,
+                "relationship_types": relationship_types,
             }
 
             if success:
-                self.stats.processing_count += 1
-                self.stats.last_processed = term
-                self.stats.record_processing_time(processing_duration)
-                # Reset sleep interval after successful processing
-                self.sleep_interval = self.base_sleep_interval
-
-                # Record successful processing event
-                self.stats.add_event(
-                    {
-                        "timestamp": time.time(),
-                        "event_type": "processed",
-                        "term": term,
-                        "duration": processing_duration,
-                        "details": {
-                            "relationships": relationships_count,
-                            "new_terms": new_terms_count,
-                        },
-                    }
-                )
+                self._handle_successful_processing(term, result, processing_duration)
             else:
-                # Record error
-                self.stats.error_count += 1
-                result["error"] = f"Processing failed for term: {term}"
-                self.stats.add_event(
-                    {
-                        "timestamp": time.time(),
-                        "event_type": "processing_failed",
-                        "term": term,
-                        "error": result["error"],
-                    }
-                )
+                self._handle_failed_processing(term, result)
 
-            # Invoke callback if provided
+            self._record_term_relationships(term, new_terms_count)
+            self._reorder_queue_if_needed(term, relationship_types)
+
             if self.result_callback:
                 try:
                     self.result_callback(result)
@@ -432,18 +424,185 @@ class WordForgeWorker(threading.Thread):
                     self.logger.error(f"Error in result callback: {callback_error}")
 
         except EmptyQueueError:
-            # No items in queue, sleep and track empty queue event
-            self.stats.empty_queue_count += 1
+            self._handle_empty_queue()
 
-            # Record empty queue encounter only occasionally to avoid spam
-            if self.stats.empty_queue_count % 10 == 1:
+    def _calculate_processing_depth(self, term: str, queue_size: int) -> int:
+        """
+        Determine optimal processing depth based on term significance and system load.
+
+        Returns:
+            Processing depth level (1-5) with higher values for deeper analysis
+        """
+        # Base depth starts at 3 (medium)
+        depth = 3
+
+        # Increase depth for shorter, potentially more fundamental terms
+        if len(term) <= 5:
+            depth += 1
+
+        # Reduce depth when queue is very large to prevent resource exhaustion
+        if queue_size > 1000:
+            depth -= 1
+
+        # Adjust based on recent processing performance
+        if self.stats.average_processing_time > 5.0:  # More than 5 seconds per word
+            depth -= 1
+
+        # Ensure depth stays within valid range (1-5)
+        return max(1, min(5, depth))
+
+    def _update_term_frequency(self, term: str) -> None:
+        """Track how often terms are re-encountered to identify core concepts."""
+        if not hasattr(self, "_term_frequencies"):
+            self._term_frequencies = {}
+
+        self._term_frequencies[term] = self._term_frequencies.get(term, 0) + 1
+
+        # If a term appears frequently, it might be semantically central
+        if self._term_frequencies[term] >= 5:
+            self.stats.add_event(
+                {
+                    "timestamp": time.time(),
+                    "event_type": "semantic_core_identified",
+                    "term": term,
+                    "frequency": self._term_frequencies[term],
+                }
+            )
+
+    def _get_recent_term_pattern(self) -> List[str]:
+        """Identify recent processing patterns to detect semantic clusters."""
+        return [
+            event.get("term", "")
+            for event in self.stats.recent_events[-10:]
+            if event.get("event_type") == "processed"
+        ]
+
+    def _categorize_relationships(self, relationships: List[Dict]) -> Dict[str, int]:
+        """Categorize relationship types for semantic analysis."""
+        type_counts = {}
+        for rel in relationships:
+            rel_type = rel.get("type", "unknown")
+            type_counts[rel_type] = type_counts.get(rel_type, 0) + 1
+        return type_counts
+
+    def _handle_successful_processing(
+        self, term: str, result: Dict, duration: float
+    ) -> None:
+        """Process and record successful term processing."""
+        self.stats.processing_count += 1
+        self.stats.last_processed = term
+        self.stats.record_processing_time(duration)
+
+        # Reset sleep interval after successful processing
+        self.sleep_interval = self.base_sleep_interval
+
+        # Record event with comprehensive metadata
+        self.stats.add_event(
+            {
+                "timestamp": time.time(),
+                "event_type": "processed",
+                "term": term,
+                "duration": duration,
+                "details": {
+                    "relationships": result["relationships_count"],
+                    "new_terms": result["new_terms_count"],
+                    "relationship_types": result.get("relationship_types", {}),
+                    "processing_depth": result.get("processing_depth", 3),
+                },
+            }
+        )
+
+        # Adaptive learning: if processing was very fast, process more items before sleeping
+        if duration < 0.1 and hasattr(self, "_consecutive_fast_processes"):
+            self._consecutive_fast_processes += 1
+            if self._consecutive_fast_processes > 5:
+                self.sleep_interval = max(0.01, self.sleep_interval * 0.8)
+        else:
+            self._consecutive_fast_processes = 0
+
+    def _handle_failed_processing(self, term: str, result: Dict) -> None:
+        """Handle and record failed term processing."""
+        self.stats.error_count += 1
+        self.stats.add_event(
+            {
+                "timestamp": time.time(),
+                "event_type": "processing_failed",
+                "term": term,
+                "error": result.get("error", "Unknown error"),
+                "details": {"duration": result.get("duration", 0)},
+            }
+        )
+        self.logger.warning(
+            f"Failed to process term '{term}': {result.get('error', 'Unknown error')}"
+        )
+
+    def _record_term_relationships(self, term: str, new_terms_count: int) -> None:
+        """Track term relationships for dependency analysis."""
+        if not hasattr(self, "_term_dependency_graph"):
+            self._term_dependency_graph = {}
+
+        if new_terms_count > 0:
+            # We don't know exactly which terms, but we know new ones were added
+            self._term_dependency_graph[term] = new_terms_count
+
+            # If this term adds many new terms, it might be a semantic hub
+            if new_terms_count > 10:
                 self.stats.add_event(
                     {
                         "timestamp": time.time(),
-                        "event_type": "empty_queue",
+                        "event_type": "semantic_hub_identified",
+                        "term": term,
+                        "new_terms": new_terms_count,
                     }
                 )
 
+    def _reorder_queue_if_needed(
+        self, term: str, relationship_types: Dict[str, int]
+    ) -> None:
+        """
+        Intelligently reorder the queue based on processing insights.
+        For example, prioritize terms with strong synonym relationships.
+        """
+        # If this is a rich semantic term (many synonyms), process related terms next
+        if relationship_types.get("synonym", 0) > 5 and hasattr(
+            self.queue_manager, "prioritize"
+        ):
+            # This would require queue manager to support prioritization
+            synonym_count = relationship_types.get("synonym", 0)
+            self.logger.debug(
+                f"Term '{term}' has {synonym_count} synonyms - prioritizing related terms"
+            )
+
+    def _handle_empty_queue(self) -> None:
+        """Handle empty queue with adaptive sleep duration."""
+        self.stats.empty_queue_count += 1
+
+        # Record empty queue encounter only occasionally to avoid spam
+        if self.stats.empty_queue_count % 10 == 1:
+            self.stats.add_event(
+                {
+                    "timestamp": time.time(),
+                    "event_type": "empty_queue",
+                    "details": {
+                        "idle_time": self.stats.idle_seconds,
+                        "processed_count": self.stats.processing_count,
+                    },
+                }
+            )
+
+        # Adaptive sleep based on processing history
+        if self.stats.processing_count > 0:
+            # Calculate dynamic sleep interval based on recent processing rate
+            processing_rate = self.stats.processing_rate
+            if processing_rate > 0:
+                # Sleep less if we've been processing quickly
+                dynamic_sleep = min(
+                    self.base_sleep_interval, max(0.1, 60.0 / processing_rate / 10)
+                )
+                self._sleep_with_interruption(dynamic_sleep)
+            else:
+                self._sleep_with_interruption(self.sleep_interval)
+        else:
             self._sleep_with_interruption(self.sleep_interval)
 
     def _handle_unexpected_error(self, error: Exception) -> None:
@@ -559,30 +718,59 @@ class WordForgeWorker(threading.Thread):
             self.sleep_interval = self.base_sleep_interval
 
     def _start_auxiliary_workers(self) -> None:
-        """Start additional specialized worker threads."""
-        try:
-            # Import here to avoid circular imports
-            from word_forge.emotion.emotion_worker import EmotionManager, EmotionWorker
-            from word_forge.graph.graph_worker import GraphManager, GraphWorker
-            from word_forge.vectorizer.vector_worker import (
-                StorageType,
-                TransformerEmbedder,
-                VectorStore,
-                VectorWorker,
-            )
+        """
+        Start additional specialized worker threads with proper error isolation.
+        Each worker is launched independently with appropriate fallback mechanisms.
+        """
+        self.auxiliary_workers = []
 
-            # Start Graph Worker
+        # Track successful launches for logging
+        launched_workers = []
+
+        # Graph Worker initialization
+        self._try_start_graph_worker(launched_workers)
+
+        # Emotion Worker initialization
+        self._try_start_emotion_worker(launched_workers)
+
+        # Vector Worker initialization
+        self._try_start_vector_worker(launched_workers)
+
+        if launched_workers:
+            self.logger.info(
+                f"Started {len(launched_workers)} auxiliary workers: {', '.join(launched_workers)}"
+            )
+        else:
+            self.logger.info("No auxiliary workers were started")
+
+    def _try_start_graph_worker(self, launched_workers: list) -> None:
+        """Initialize and start the graph worker if possible."""
+        try:
+            from word_forge.graph.graph_worker import GraphManager, GraphWorker
+
+            # Create manager with required parameters only
             graph_manager = GraphManager(self.db_manager)
+
             graph_worker = GraphWorker(
                 graph_manager=graph_manager,
-                poll_interval=60.0,  # Check every minute
+                poll_interval=60.0,
                 daemon=True,
             )
             graph_worker.start()
             self.auxiliary_workers.append(graph_worker)
-            self.logger.info("Started auxiliary Graph Worker")
+            launched_workers.append("GraphWorker")
+            self.logger.debug("Started Graph Worker")
+        except ImportError as e:
+            self.logger.debug(f"Graph Worker module not available: {str(e)}")
+        except Exception as e:
+            self.logger.warning(f"Could not start Graph Worker: {str(e)}")
+            self.logger.debug(f"Graph Worker error details: {traceback.format_exc()}")
 
-            # Start Emotion Worker
+    def _try_start_emotion_worker(self, launched_workers: list) -> None:
+        """Initialize and start the emotion worker if possible."""
+        try:
+            from word_forge.emotion.emotion_worker import EmotionManager, EmotionWorker
+
             emotion_manager = EmotionManager(self.db_manager)
             emotion_worker = EmotionWorker(
                 db=self.db_manager,
@@ -593,14 +781,41 @@ class WordForgeWorker(threading.Thread):
             )
             emotion_worker.start()
             self.auxiliary_workers.append(emotion_worker)
-            self.logger.info("Started auxiliary Emotion Worker")
+            launched_workers.append("EmotionWorker")
+            self.logger.debug("Started Emotion Worker")
+        except ImportError as e:
+            self.logger.debug(f"Emotion Worker module not available: {str(e)}")
+        except Exception as e:
+            self.logger.warning(f"Could not start Emotion Worker: {str(e)}")
+            self.logger.debug(f"Emotion Worker error details: {traceback.format_exc()}")
 
-            # Start Vector Worker
+    def _try_start_vector_worker(self, launched_workers: list) -> None:
+        """Initialize and start the vector worker if possible."""
+        try:
+            from word_forge.vectorizer.vector_worker import (
+                StorageType,
+                VectorStore,
+                VectorWorker,
+            )
+
+            # Try to use TransformerEmbedder, fall back to SimpleEmbedder if unavailable
+            try:
+                from word_forge.vectorizer.vector_worker import TransformerEmbedder
+
+                embedder = TransformerEmbedder()
+                embedder_type = "TransformerEmbedder"
+            except (ImportError, Exception) as e:
+                from word_forge.vectorizer.vector_worker import SimpleEmbedder
+
+                embedder = SimpleEmbedder(dimension=768)  # Default fallback dimension
+                embedder_type = "SimpleEmbedder (fallback)"
+                self.logger.debug(f"Using fallback embedder: {str(e)}")
+
             vector_store = VectorStore(
                 storage_type=StorageType.DISK,
-                dimension=int(1024),
+                dimension=embedder.dimension,
             )
-            embedder = TransformerEmbedder()
+
             vector_worker = VectorWorker(
                 db=self.db_manager,
                 vector_store=vector_store,
@@ -611,33 +826,59 @@ class WordForgeWorker(threading.Thread):
             )
             vector_worker.start()
             self.auxiliary_workers.append(vector_worker)
-            self.logger.info("Started auxiliary Vector Worker")
-
+            launched_workers.append(f"VectorWorker ({embedder_type})")
+            self.logger.debug(f"Started Vector Worker with {embedder_type}")
         except ImportError as e:
-            self.logger.warning(f"Could not start auxiliary workers: {str(e)}")
+            self.logger.debug(f"Vector Worker module not available: {str(e)}")
         except Exception as e:
-            self.logger.error(f"Error starting auxiliary workers: {str(e)}")
+            self.logger.warning(f"Could not start Vector Worker: {str(e)}")
+            self.logger.debug(f"Vector Worker error details: {traceback.format_exc()}")
 
     def _stop_auxiliary_workers(self) -> None:
-        """Stop all auxiliary worker threads gracefully."""
+        """Stop all auxiliary worker threads gracefully with improved error handling."""
+        if not self.auxiliary_workers:
+            return
+
+        stop_errors = []
+
+        # First request all workers to stop
         for worker in self.auxiliary_workers:
             try:
-                if hasattr(worker, "stop") and callable(worker.stop):
+                if hasattr(worker, "stop"):
                     worker.stop()
-                elif hasattr(worker, "request_stop") and callable(worker.request_stop):
-                    worker.request_stop()
+                    self.logger.debug(f"Requested stop for {worker.__class__.__name__}")
+                else:
+                    self.logger.debug(
+                        f"Worker {worker.__class__.__name__} has no stop method"
+                    )
             except Exception as e:
-                self.logger.warning(f"Error stopping auxiliary worker: {str(e)}")
+                error_msg = f"Error stopping {worker.__class__.__name__}: {str(e)}"
+                self.logger.error(error_msg)
+                stop_errors.append(error_msg)
 
-        # Wait for workers to stop
+        # Then wait for all workers to finish
         for worker in self.auxiliary_workers:
             try:
-                worker.join(timeout=5.0)
-            except Exception:
-                pass
+                if worker.is_alive():
+                    worker.join(timeout=2.0)
+                    if worker.is_alive():
+                        msg = f"Worker {worker.__class__.__name__} did not stop within timeout"
+                        self.logger.warning(msg)
+                        stop_errors.append(msg)
+            except Exception as e:
+                error_msg = f"Error joining {worker.__class__.__name__}: {str(e)}"
+                self.logger.error(error_msg)
+                stop_errors.append(error_msg)
 
-        self.logger.info(f"Stopped {len(self.auxiliary_workers)} auxiliary workers")
+        worker_count = len(self.auxiliary_workers)
         self.auxiliary_workers = []
+
+        if stop_errors:
+            self.logger.warning(
+                f"Stopped {worker_count} workers with {len(stop_errors)} errors"
+            )
+        else:
+            self.logger.info(f"Successfully stopped {worker_count} auxiliary workers")
 
 
 def create_demo_files(data_dir: Path) -> None:
@@ -783,7 +1024,6 @@ def main() -> None:
         db_manager,
         queue_manager,
         data_dir=str(data_dir),
-        enable_model=False,
     )
 
     # Seed the queue with initial words

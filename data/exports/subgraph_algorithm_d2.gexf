@@ -1,0 +1,61 @@
+<?xml version='1.0' encoding='utf-8'?>
+<gexf xmlns="http://www.gexf.net/1.2draft" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.gexf.net/1.2draft http://www.gexf.net/1.2draft/gexf.xsd" version="1.2">
+  <meta lastmodifieddate="2025-04-02">
+    <creator>NetworkX 3.4.2</creator>
+  </meta>
+  <graph defaultedgetype="undirected" mode="static" name="">
+    <attributes mode="static" class="edge">
+      <attribute id="4" title="relationship_type" type="string" />
+      <attribute id="5" title="color" type="string" />
+      <attribute id="6" title="bidirectional" type="boolean" />
+    </attributes>
+    <attributes mode="static" class="node">
+      <attribute id="0" title="term" type="string" />
+      <attribute id="1" title="x" type="double" />
+      <attribute id="2" title="y" type="double" />
+      <attribute id="3" title="z" type="double" />
+    </attributes>
+    <nodes>
+      <node id="1" label="1">
+        <attvalues>
+          <attvalue for="0" value="algorithm" />
+          <attvalue for="1" value="0.18064484000205994" />
+          <attvalue for="2" value="-0.22842592000961304" />
+          <attvalue for="3" value="1.7112886905670166" />
+        </attvalues>
+      </node>
+      <node id="11" label="11">
+        <attvalues>
+          <attvalue for="0" value="algorithmic rule" />
+          <attvalue for="1" value="0.17719285190105438" />
+          <attvalue for="2" value="-0.22727878391742706" />
+          <attvalue for="3" value="1.7230162620544434" />
+        </attvalues>
+      </node>
+      <node id="12" label="12">
+        <attvalues>
+          <attvalue for="0" value="algorithmic program" />
+          <attvalue for="1" value="0.18459099531173706" />
+          <attvalue for="2" value="-0.23213735222816467" />
+          <attvalue for="3" value="1.7300351858139038" />
+        </attvalues>
+      </node>
+    </nodes>
+    <edges>
+      <edge source="1" target="11" id="0" weight="1.0">
+        <attvalues>
+          <attvalue for="4" value="synonym" />
+          <attvalue for="5" value="#4287f5" />
+          <attvalue for="6" value="true" />
+        </attvalues>
+      </edge>
+      <edge source="1" target="12" id="1" weight="1.0">
+        <attvalues>
+          <attvalue for="4" value="synonym" />
+          <attvalue for="5" value="#4287f5" />
+          <attvalue for="6" value="true" />
+        </attvalues>
+      </edge>
+    </edges>
+  </graph>
+</gexf>

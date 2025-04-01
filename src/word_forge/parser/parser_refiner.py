@@ -1,643 +1,417 @@
-import functools
-import json
 import os
 import re
-import tempfile
-from contextlib import contextmanager
-from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Iterator,
-    List,
-    Optional,
-    Set,
-    TypedDict,
-    TypeVar,
-    Union,
-    cast,
-)
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 import nltk
-import torch
 from nltk.corpus import wordnet as wn
-from rdflib import Graph
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-    PreTrainedTokenizerFast,
-)
 
+from word_forge.configs.config_types import LexicalDataset
 from word_forge.database.db_manager import DBManager
+from word_forge.parser.language_model import ModelState
+from word_forge.parser.lexical_functions import create_lexical_dataset
 from word_forge.queue.queue_manager import QueueManager
 
-# Initialize managers
-
-# Download NLTK data quietly
-nltk.download("wordnet", quiet=True)
-nltk.download("omw-1.4", quiet=True)
-
-
-class LexicalResourceError(Exception):
-    """Exception raised when a lexical resource cannot be accessed or processed."""
-
-    pass
-
-
-class ResourceNotFoundError(LexicalResourceError):
-    """Exception raised when a lexical resource cannot be found."""
-
-    pass
+# Download required NLTK resources preemptively and silently
+REQUIRED_NLTK_RESOURCES = frozenset(
+    [
+        "wordnet",
+        "omw-1.4",
+        "punkt",
+        "averaged_perceptron_tagger",
+        "stopwords",
+        "maxent_ne_chunker",
+        "words",
+    ]
+)
 
 
-class ResourceParsingError(LexicalResourceError):
-    """Exception raised when a lexical resource cannot be parsed."""
-
-    pass
-
-
-class ModelError(Exception):
-    """Exception raised when there's an issue with the language model."""
-
-    pass
+def _ensure_nltk_resources() -> None:
+    """Initialize all required NLTK resources silently."""
+    for resource in REQUIRED_NLTK_RESOURCES:
+        nltk.download(resource, quiet=True)
 
 
-T = TypeVar("T")
-JsonData = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
+# Preload NLTK resources at module initialization
+_ensure_nltk_resources()
 
 
-def file_exists(file_path: Union[str, Path]) -> bool:
-    """
-    Check if a file exists at the specified path.
+@dataclass
+class ProcessingStatistics:
+    """Tracks and reports processing metrics with atomic counters."""
 
-    Args:
-        file_path: Path to check for file existence
+    processed_count: int = 0
+    successful_count: int = 0
+    error_count: int = 0
 
-    Returns:
-        True if the file exists, False otherwise
-    """
-    return os.path.isfile(file_path)
+    def increment_processed(self) -> None:
+        """Increment the processed counter."""
+        self.processed_count += 1
 
+    def increment_successful(self) -> None:
+        """Increment the successful counter."""
+        self.successful_count += 1
 
-@contextmanager
-def safe_open(
-    file_path: Union[str, Path], mode: str = "r", encoding: str = "utf-8"
-) -> Iterator[Optional[Any]]:
-    """
-    Safely open a file, handling non-existent files and IO errors.
+    def increment_error(self) -> None:
+        """Increment the error counter."""
+        self.error_count += 1
 
-    Args:
-        file_path: Path to the file to open
-        mode: File mode (r, w, etc.)
-        encoding: Text encoding to use
-
-    Yields:
-        File handle if file exists and can be opened, None otherwise
-
-    Raises:
-        LexicalResourceError: If file exists but cannot be opened due to IO errors
-    """
-    if not file_exists(file_path):
-        yield None
-        return
-
-    try:
-        with open(file_path, mode, encoding=encoding) as f:
-            yield f
-    except (IOError, OSError) as e:
-        raise LexicalResourceError(f"Error opening file {file_path}: {str(e)}")
+    def as_dict(self, queue_size: int, unique_words: int) -> Dict[str, int]:
+        """Convert statistics to a dictionary including queue metrics."""
+        return {
+            "processed": self.processed_count,
+            "successful": self.successful_count,
+            "errors": self.error_count,
+            "queue_size": queue_size,
+            "unique_words": unique_words,
+        }
 
 
-def read_json_file(
-    file_path: Union[str, Path], default_value: T = None
-) -> Union[JsonData, T]:
-    """
-    Read and parse a JSON file, returning a default value if the file doesn't exist or is invalid.
+@dataclass
+class LexicalResources:
+    """Manages resource paths for lexical data sources."""
 
-    Args:
-        file_path: Path to the JSON file
-        default_value: Value to return if file doesn't exist or is invalid
+    data_dir: str
+    paths: Dict[str, str] = field(init=False)
 
-    Returns:
-        Parsed JSON data or the default value
+    def __post_init__(self) -> None:
+        """Initialize resource paths based on data directory."""
+        # Ensure data directory exists
+        os.makedirs(self.data_dir, exist_ok=True)
 
-    Raises:
-        LexicalResourceError: If file exists but cannot be opened
-    """
-    with safe_open(file_path) as fh:
-        if fh is None:
-            return default_value
-        try:
-            return json.load(fh)
-        except json.JSONDecodeError:
-            return default_value
+        # Define paths to all lexical resources
+        self.paths = {
+            "openthesaurus": f"{self.data_dir}/openthesaurus.jsonl",
+            "odict": f"{self.data_dir}/odict.json",
+            "dbnary": f"{self.data_dir}/dbnary.ttl",
+            "opendict": f"{self.data_dir}/opendict.json",
+            "thesaurus": f"{self.data_dir}/thesaurus.jsonl",
+        }
 
-
-def read_jsonl_file(
-    file_path: Union[str, Path], process_func: Callable[[Dict[str, Any]], Optional[T]]
-) -> List[T]:
-    """
-    Read and process a JSON Lines file line by line.
-
-    Args:
-        file_path: Path to the JSONL file
-        process_func: Function to process each parsed JSON line
-
-    Returns:
-        List of processed results
-
-    Raises:
-        LexicalResourceError: If file cannot be accessed or processing fails
-    """
-    results: List[T] = []
-    with safe_open(file_path) as fh:
-        if fh is None:
-            return results
-
-        line_num = 0
-        try:
-            for line in fh:
-                line_num += 1
-                if not line.strip():
-                    continue
-
-                data = json.loads(line)
-                processed = process_func(data)
-                if processed is not None:
-                    results.append(processed)
-        except Exception as e:
-            raise ResourceParsingError(
-                f"Error processing line {line_num} in {file_path}: {str(e)}"
-            )
-
-    return results
+    def get_path(self, resource_name: str) -> str:
+        """Get the path for a specific resource."""
+        return self.paths.get(resource_name, "")
 
 
-class WordnetEntry(TypedDict):
-    """Type definition for a WordNet entry."""
+class TermExtractor:
+    """Discovers and extracts terms from textual content using advanced NLP techniques."""
 
-    word: str
-    definition: str
-    examples: List[str]
-    synonyms: List[str]
-    antonyms: List[str]
-    part_of_speech: str
-
-
-@functools.lru_cache(maxsize=1024)
-def get_synsets(word: str) -> List[Any]:
-    """
-    Retrieve synsets from WordNet for a given word with caching.
-
-    Args:
-        word: Word to look up in WordNet
-
-    Returns:
-        List of WordNet synsets
-    """
-    return wn.synsets(word)
-
-
-def get_wordnet_data(word: str) -> List[WordnetEntry]:
-    """
-    Extract comprehensive linguistic data from WordNet for a given word.
-
-    Args:
-        word: Word to retrieve data for
-
-    Returns:
-        List of dictionaries containing definitions, examples, synonyms, antonyms, etc.
-    """
-    results: List[WordnetEntry] = []
-    synsets = get_synsets(word)
-
-    for synset in synsets:
-        lemmas = synset.lemmas()
-        synonyms = [lemma.name().replace("_", " ") for lemma in lemmas]
-
-        # Extract antonyms from lemmas
-        antonyms: List[str] = []
-        for lemma in lemmas:
-            for antonym in lemma.antonyms():
-                antonym_name = antonym.name().replace("_", " ")
-                if antonym_name not in antonyms:
-                    antonyms.append(antonym_name)
-
-        results.append(
-            {
-                "word": word,
-                "definition": synset.definition(),
-                "examples": synset.examples(),
-                "synonyms": synonyms,
-                "antonyms": antonyms,
-                "part_of_speech": synset.pos(),
-            }
+    def __init__(self) -> None:
+        """Initialize the term extractor with necessary NLP components."""
+        self._stop_words: FrozenSet[str] = frozenset(
+            nltk.corpus.stopwords.words("english")
         )
+        self._common_words: FrozenSet[str] = frozenset(
+            [
+                "the",
+                "and",
+                "that",
+                "have",
+                "this",
+                "with",
+                "from",
+                "they",
+                "you",
+                "what",
+                "which",
+                "their",
+                "will",
+                "would",
+                "make",
+                "when",
+                "more",
+                "other",
+                "about",
+                "some",
+                "then",
+                "than",
+            ]
+        )
+        self._lemmatizer = nltk.stem.WordNetLemmatizer()
 
-    return results
-
-
-def get_openthesaurus_data(word: str, openthesaurus_path: str) -> List[str]:
-    """
-    Extract synonyms from OpenThesaurus for a given word.
-
-    Args:
-        word: Word to retrieve synonyms for
-        openthesaurus_path: Path to the OpenThesaurus JSONL file
-
-    Returns:
-        List of unique synonyms
-    """
-
-    def process_line(d: Dict[str, Any]) -> Optional[List[str]]:
-        words = d.get("words", [])
-        if word in words:
-            return [w for w in words if w != word]
-        return None
-
-    synonyms: List[str] = []
-    for syns in read_jsonl_file(openthesaurus_path, process_line):
-        synonyms.extend(syns)
-
-    # Remove duplicates while preserving order
-    return list(dict.fromkeys(synonyms))
-
-
-class DictionaryEntry(TypedDict):
-    """Type definition for a dictionary entry."""
-
-    definition: str
-    examples: List[str]
-
-
-def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
-    """
-    Retrieve dictionary data from ODict for a given word.
-
-    Args:
-        word: Word to retrieve data for
-        odict_path: Path to the ODict JSON file
-
-    Returns:
-        Dictionary containing definition and examples
-    """
-    default_res: DictionaryEntry = {
-        "definition": "Not Found",
-        "examples": [],
-    }
-    odict_data = read_json_file(odict_path, {})
-    if not isinstance(odict_data, dict):
-        return default_res
-
-    return cast(DictionaryEntry, odict_data.get(word, default_res))
-
-
-class DbnaryEntry(TypedDict):
-    """Type definition for a DBnary entry."""
-
-    definition: str
-    translation: str
-
-
-def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
-    """
-    Extract linguistic data from DBnary RDF for a given word.
-
-    Args:
-        word: Word to retrieve data for
-        dbnary_path: Path to the DBnary TTL file
-
-    Returns:
-        List of dictionaries containing definitions and translations
-
-    Raises:
-        LexicalResourceError: If there's an error processing the DBnary data
-    """
-    if not file_exists(dbnary_path):
-        return []
-
-    try:
-        graph = Graph()
-        graph.parse(dbnary_path, format="ttl")
-
-        query = f"""
-        PREFIX ontolex: <http://www.w3.org/ns/lemon/ontolex#>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-
-        SELECT ?definition ?translation
-        WHERE {{
-          ?entry ontolex:canonicalForm/ontolex:writtenRep "{word}"@en .
-          OPTIONAL {{ ?entry ontolex:definition/rdfs:label ?definition . }}
-          OPTIONAL {{ ?entry ontolex:translation/rdfs:label ?translation . }}
-        }}
+    @lru_cache(maxsize=1024)
+    def _get_wordnet_pos(self, treebank_tag: str) -> str:
         """
-
-        results = graph.query(query)
-        output: List[DbnaryEntry] = []
-
-        for row in results:
-            # Initialize empty values
-            definition = ""
-            translation = ""
-
-            # Access using RDFLib's native row access pattern
-            # Row behaves like a tuple with named fields
-            if "definition" in row and row["definition"] is not None:
-                definition = str(row["definition"])
-
-            if "translation" in row and row["translation"] is not None:
-                translation = str(row["translation"])
-
-            if definition or translation:
-                output.append({"definition": definition, "translation": translation})
-
-        return output
-
-    except Exception as e:
-        raise LexicalResourceError(f"Error processing Dbnary data: {str(e)}")
-
-
-def get_opendictdata(word: str, opendict_path: str) -> DictionaryEntry:
-    """
-    Retrieve dictionary data from OpenDict for a given word.
-
-    Args:
-        word: Word to retrieve data for
-        opendict_path: Path to the OpenDict JSON file
-
-    Returns:
-        Dictionary containing definition and examples
-    """
-    default_res: DictionaryEntry = {
-        "definition": "Not Found",
-        "examples": [],
-    }
-    data = read_json_file(opendict_path, {})
-    if not isinstance(data, dict):
-        return default_res
-
-    return cast(DictionaryEntry, data.get(word, default_res))
-
-
-def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
-    """
-    Extract synonyms from Thesaurus for a given word.
-
-    Args:
-        word: Word to retrieve synonyms for
-        thesaurus_path: Path to the Thesaurus JSONL file
-
-    Returns:
-        List of synonyms
-    """
-
-    def process_line(d: Dict[str, Any]) -> Optional[List[str]]:
-        if word == d.get("word"):
-            return d.get("synonyms", [])
-        return None
-
-    results: List[str] = []
-    for syns in read_jsonl_file(thesaurus_path, process_line):
-        results.extend(syns)
-
-    return results
-
-
-class _ModelState:
-    """
-    Manages transformer model state safely with lazy initialization.
-
-    This singleton class ensures the model is only loaded when needed
-    and properly configured for efficient inference.
-    """
-
-    _initialized = False
-    tokenizer: Optional[Union[PreTrainedTokenizer, PreTrainedTokenizerFast]] = None
-    model: Optional[PreTrainedModel] = None
-    _model_name: str = "qwen/qwen2.5-0.5b-instruct"
-    _device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _inference_failures: int = 0
-    _max_failures: int = 5
-    _failure_threshold_reached: bool = False
-
-    @classmethod
-    def set_model(cls, model_name: str) -> None:
-        """
-        Set the model to use for text generation.
+        Convert TreeBank POS tag to WordNet POS tag for accurate lemmatization.
 
         Args:
-            model_name: Name of the Hugging Face model to use
-        """
-        cls._model_name = model_name
-        cls._initialized = False  # Force reinitialization with new model
-
-    @classmethod
-    def initialize(cls) -> bool:
-        """
-        Initialize the model and tokenizer if not already done.
+            treebank_tag: POS tag from NLTK's tagger
 
         Returns:
-            True if initialization was successful, False otherwise
+            WordNet POS constant for lemmatization
         """
-        if cls._initialized:
-            return True
+        tag_map = {"J": wn.ADJ, "V": wn.VERB, "N": wn.NOUN, "R": wn.ADV}
+        return tag_map.get(treebank_tag[0], wn.NOUN)
 
-        if cls._failure_threshold_reached:
-            return False
-
-        try:
-            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)
-            cls.model = AutoModelForCausalLM.from_pretrained(
-                cls._model_name,
-                device_map=cls._device,
-                torch_dtype=(
-                    torch.float16 if cls._device.type == "cuda" else torch.float32
-                ),
-            )
-            cls._initialized = True
-            return True
-        except Exception as e:
-            cls._inference_failures += 1
-            if cls._inference_failures >= cls._max_failures:
-                cls._failure_threshold_reached = True
-            print(f"Failed to initialize model: {str(e)}")
-            return False
-
-    @classmethod
-    def generate_text(
-        cls,
-        prompt: str,
-        max_new_tokens: int = 50,
-        temperature: float = 0.7,
-        num_beams: int = 3,
-    ) -> Optional[str]:
+    def extract_terms(
+        self, definition: str, examples: List[str], original_term: str
+    ) -> Tuple[List[str], List[str]]:
         """
-        Generate text using the loaded model.
+        Extract high-value lexical terms from definitions and examples.
 
         Args:
-            prompt: Input text to generate from
-            max_new_tokens: Maximum number of tokens to generate
-            temperature: Sampling temperature
-            num_beams: Number of beams for beam search
+            definition: Consolidated definition text
+            examples: List of usage examples
+            original_term: The term being processed (to exclude from results)
 
         Returns:
-            Generated text or None if generation failed
+            Tuple of (priority_terms, standard_terms) for processing
         """
-        if not cls.initialize():
-            return None
+        # Combine text with context markers to help NLP algorithms distinguish sources
+        text_to_parse = f"DEFINITION: {definition} EXAMPLES: {' '.join(examples)}"
+        original_term_lower = original_term.lower()
+
+        # Initialize term collections
+        discovered_terms: Set[str] = set()
+        multiword_expressions: Set[str] = set()
+        named_entities: Set[str] = set()
+
+        # Fallback basic extraction (always performed for reliability)
+        regex_terms = {
+            word.lower() for word in re.findall(r"\b[a-zA-Z]{3,}\b", text_to_parse)
+        }
+        discovered_terms.update(regex_terms)
 
         try:
-            inputs = cls.tokenizer(prompt, return_tensors="pt").to(cls._device)
-            outputs = cls.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                num_beams=num_beams,
-                do_sample=temperature > 0.1,
-                pad_token_id=cls.tokenizer.eos_token_id,
-            )
+            # Process text with advanced NLP techniques
+            sentences = nltk.sent_tokenize(text_to_parse)
+            for sentence in sentences:
+                self._process_sentence(
+                    sentence, discovered_terms, multiword_expressions, named_entities
+                )
 
-            result = cls.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Extract semantically related terms via WordNet
+            semantic_terms = self._extract_semantic_terms(frozenset(discovered_terms))
+            discovered_terms.update(semantic_terms)
 
-            # Remove the prompt from the result to get only generated content
-            if result.startswith(prompt):
-                result = result[len(prompt) :]
-
-            return result.strip()
         except Exception as e:
-            cls._inference_failures += 1
-            if cls._inference_failures >= cls._max_failures:
-                cls._failure_threshold_reached = True
-            print(f"Text generation failed: {str(e)}")
-            return None
+            # Fallback to regex-only results if NLP processing fails
+            print(f"Advanced NLP processing failed, using regex fallback: {str(e)}")
 
-
-def generate_example_usage(
-    word: str, definition: str, synonyms: List[str], antonyms: List[str], pos: str
-) -> str:
-    """
-    Generate an example sentence for a word using a language model.
-
-    Args:
-        word: The target word to use in the example
-        definition: The word's definition
-        synonyms: List of word synonyms
-        antonyms: List of word antonyms
-        pos: Part of speech
-
-    Returns:
-        A generated example sentence or an error message
-    """
-    # Construct prompt with word details
-    prompt = (
-        f"Word: {word}\n"
-        f"Part of Speech: {pos}\n"
-        f"Definition: {definition}\n"
-        f"Synonyms: {', '.join(synonyms[:5])}\n"
-        f"Antonyms: {', '.join(antonyms[:3])}\n"
-        f"Task: Generate a single concise example sentence using the word '{word}'.\n"
-        f"Example Sentence: "
-    )
-
-    # Use the improved model generation method
-    full_text = _ModelState.generate_text(prompt)
-
-    if not full_text:
-        return f"Could not generate example for '{word}'."
-
-    # Parse out just the generated example
-    if "Example Sentence:" in full_text:
-        parts = full_text.split("Example Sentence:")
-        if len(parts) > 1:
-            example = parts[1].strip()
-            # Capture up to first period for a complete sentence
-            if "." in example:
-                sentence_end = example.find(".") + 1
-                return example[:sentence_end].strip()
-            return example
-
-    # If we got text but couldn't parse it properly, return it as-is
-    if full_text and not full_text.startswith("Could not"):
-        # Try to find the first complete sentence
-        sentences = re.split(r"[.!?]", full_text)
-        if sentences and len(sentences[0]) > 5:  # Minimum length for a valid sentence
-            return sentences[0].strip() + "."
-        return full_text.strip()
-
-    return f"Could not extract valid example for '{word}'."
-
-
-class LexicalDataset(TypedDict):
-    """Type definition for the comprehensive lexical dataset."""
-
-    word: str
-    wordnet_data: List[WordnetEntry]
-    openthesaurus_synonyms: List[str]
-    odict_data: DictionaryEntry
-    dbnary_data: List[DbnaryEntry]
-    opendict_data: DictionaryEntry
-    thesaurus_synonyms: List[str]
-    example_sentence: str
-
-
-def create_lexical_dataset(
-    word: str,
-    openthesaurus_path: str = "data/openthesaurus.jsonl",
-    odict_path: str = "data/odict.json",
-    dbnary_path: str = "data/dbnary.ttl",
-    opendict_path: str = "data/opendict.json",
-    thesaurus_path: str = "data/thesaurus.jsonl",
-) -> LexicalDataset:
-    """
-    Create a comprehensive dataset of lexical information for a word.
-
-    Args:
-        word: The word to gather data for
-        openthesaurus_path: Path to OpenThesaurus data
-        odict_path: Path to ODict data
-        dbnary_path: Path to DBnary data
-        opendict_path: Path to OpenDict data
-        thesaurus_path: Path to Thesaurus data
-
-    Returns:
-        Dictionary containing comprehensive lexical data from all sources
-    """
-    wordnet_data = get_wordnet_data(word)
-
-    dataset: LexicalDataset = {
-        "word": word,
-        "wordnet_data": wordnet_data,
-        "openthesaurus_synonyms": get_openthesaurus_data(word, openthesaurus_path),
-        "odict_data": get_odict_data(word, odict_path),
-        "dbnary_data": get_dbnary_data(word, dbnary_path),
-        "opendict_data": get_opendictdata(word, opendict_path),
-        "thesaurus_synonyms": get_thesaurus_data(word, thesaurus_path),
-        "example_sentence": "",
-    }
-
-    # Generate an example sentence if WordNet data exists
-    if wordnet_data:
-        first_entry = wordnet_data[0]
-        example = generate_example_usage(
-            word,
-            definition=first_entry.get("definition", ""),
-            synonyms=dataset["openthesaurus_synonyms"],
-            antonyms=first_entry.get("antonyms", []),
-            pos=first_entry.get("part_of_speech", ""),
-        )
-        dataset["example_sentence"] = example
-    else:
-        dataset["example_sentence"] = (
-            "No example available due to missing WordNet data."
+        # Filter out problematic terms
+        filtered_terms = self._filter_terms(
+            discovered_terms, multiword_expressions, named_entities, original_term_lower
         )
 
-    return dataset
+        # Score and prioritize terms
+        priority_terms, standard_terms = self._score_and_sort_terms(filtered_terms)
 
+        return priority_terms, standard_terms
 
-# -- END Embedded Lexical Lookup Logic -- #
+    def _process_sentence(
+        self,
+        sentence: str,
+        discovered_terms: Set[str],
+        multiword_expressions: Set[str],
+        named_entities: Set[str],
+    ) -> None:
+        """
+        Process a single sentence with multiple NLP techniques.
+
+        Args:
+            sentence: Text sentence to process
+            discovered_terms: Set to collect individual terms
+            multiword_expressions: Set to collect multiword expressions
+            named_entities: Set to collect named entities
+        """
+        # Basic tokenization and POS tagging
+        tokens = nltk.word_tokenize(sentence)
+        tagged = nltk.pos_tag(tokens)
+
+        # Extract single words with POS filtering and lemmatization
+        for word, tag in tagged:
+            word_lower = word.lower()
+
+            # Skip punctuation, short words, stop words, and numbers
+            if (
+                len(word_lower) < 3
+                or not word_lower.isalpha()
+                or word_lower in self._stop_words
+            ):
+                continue
+
+            # Apply proper lemmatization based on part of speech
+            wordnet_pos = self._get_wordnet_pos(tag)
+            lemma = self._lemmatizer.lemmatize(word_lower, wordnet_pos)
+            if len(lemma) >= 3:
+                discovered_terms.add(lemma)
+
+        # Named Entity Recognition for proper nouns and terms
+        self._extract_named_entities(tagged, named_entities, discovered_terms)
+
+        # Detect useful multiword expressions
+        self._extract_multiword_expressions(tagged, multiword_expressions)
+
+    def _extract_named_entities(
+        self,
+        tagged: List[Tuple[str, str]],
+        named_entities: Set[str],
+        discovered_terms: Set[str],
+    ) -> None:
+        """
+        Extract named entities from tagged tokens.
+
+        Args:
+            tagged: POS-tagged tokens
+            named_entities: Set to add named entities to
+            discovered_terms: Set to add component terms to
+        """
+        try:
+            chunked = nltk.ne_chunk(tagged)
+            for subtree in chunked:
+                if isinstance(subtree, nltk.Tree):
+                    entity = " ".join(word for word, tag in subtree.leaves())
+                    if len(entity) > 3:  # Filter out very short entities
+                        entity_lower = entity.lower()
+                        named_entities.add(entity_lower)
+                        # Also add individual terms from the entity
+                        for word in entity_lower.split():
+                            if len(word) >= 3 and word not in self._stop_words:
+                                discovered_terms.add(word)
+        except Exception as e:
+            # Soft fail for NER - continue with other extraction methods
+            print(f"Named entity recognition failed: {str(e)}")
+
+    def _extract_multiword_expressions(
+        self, tagged: List[Tuple[str, str]], multiword_expressions: Set[str]
+    ) -> None:
+        """
+        Extract multiword expressions using POS patterns.
+
+        Args:
+            tagged: POS-tagged tokens
+            multiword_expressions: Set to collect found expressions
+        """
+        if len(tagged) < 2:
+            return
+
+        # Extract phrases based on common linguistic patterns
+        for i in range(len(tagged) - 1):
+            # Adjective + Noun pattern (e.g., "blue sky")
+            if tagged[i][1].startswith("JJ") and tagged[i + 1][1].startswith("NN"):
+                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                if len(bigram) > 5:  # Avoid very short bigrams
+                    multiword_expressions.add(bigram)
+
+            # Noun + Noun pattern (e.g., "database system")
+            if tagged[i][1].startswith("NN") and tagged[i + 1][1].startswith("NN"):
+                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                if len(bigram) > 5:  # Avoid very short bigrams
+                    multiword_expressions.add(bigram)
+
+            # Verb + Particle/Adverb pattern (e.g., "log in", "set up")
+            if tagged[i][1].startswith("VB") and (
+                tagged[i + 1][1] == "RP" or tagged[i + 1][1].startswith("RB")
+            ):
+                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                if len(bigram) > 5:  # Avoid very short bigrams
+                    multiword_expressions.add(bigram)
+
+    @lru_cache(maxsize=128)
+    def _extract_semantic_terms(self, base_terms: FrozenSet[str]) -> Set[str]:
+        """
+        Find semantically related terms through WordNet.
+
+        Args:
+            base_terms: Initial set of discovered terms
+
+        Returns:
+            Set of semantically related terms
+        """
+        semantic_terms: Set[str] = set()
+        # Use only a subset of terms to avoid excessive processing
+        term_sample = list(base_terms)[:75]
+
+        for base_term in term_sample:
+            try:
+                for synset in wn.synsets(base_term):
+                    # Add synonyms (lemma names)
+                    for lemma in synset.lemmas():
+                        lemma_name = lemma.name().replace("_", " ").lower()
+                        if len(lemma_name) >= 3:
+                            semantic_terms.add(lemma_name)
+
+                    # Add hypernyms (broader terms)
+                    for hypernym in synset.hypernyms():
+                        for lemma in hypernym.lemmas():
+                            hyper_name = lemma.name().replace("_", " ").lower()
+                            if len(hyper_name) >= 3:
+                                semantic_terms.add(hyper_name)
+
+                    # Add hyponyms (narrower terms) - limited to direct hyponyms
+                    for hyponym in synset.hyponyms():
+                        for lemma in hyponym.lemmas():
+                            hypo_name = lemma.name().replace("_", " ").lower()
+                            if len(hypo_name) >= 3:
+                                semantic_terms.add(hypo_name)
+            except Exception:
+                # Silently continue if WordNet lookup fails for a term
+                continue
+
+        # Limit returned set to avoid overwhelming the system
+        return set(list(semantic_terms)[:200])
+
+    def _filter_terms(
+        self,
+        discovered_terms: Set[str],
+        multiword_expressions: Set[str],
+        named_entities: Set[str],
+        original_term: str,
+    ) -> Set[str]:
+        """
+        Filter the collected terms to remove unwanted items.
+
+        Args:
+            discovered_terms: All collected terms
+            multiword_expressions: Multiword expressions to preserve
+            named_entities: Named entities to preserve
+            original_term: Original term being processed (to exclude)
+
+        Returns:
+            Filtered set of terms
+        """
+        # Create combined set with all terms
+        all_terms = discovered_terms.union(multiword_expressions, named_entities)
+
+        # Remove the original term
+        all_terms.discard(original_term)
+
+        # Remove very common function words
+        all_terms -= self._common_words
+
+        return all_terms
+
+    def _score_and_sort_terms(self, terms: Set[str]) -> Tuple[List[str], List[str]]:
+        """
+        Score and sort terms by potential lexical value.
+
+        Args:
+            terms: Set of all filtered terms
+
+        Returns:
+            Tuple of (priority_terms, standard_terms)
+        """
+        scored_terms: List[Tuple[str, int]] = []
+
+        for term in terms:
+            # Scoring heuristics: length, complexity, multiword bonus
+            score = len(term)  # Base score is length
+            score += term.count(" ") * 3  # Multiword expressions get a boost
+            score += sum(
+                1 for c in term if c not in "aeiou"
+            )  # Consonant density correlates with specificity
+            scored_terms.append((term, score))
+
+        # Sort by score (higher is better)
+        sorted_terms = sorted(scored_terms, key=lambda x: x[1], reverse=True)
+
+        # Split into two categories: priority and standard
+        priority_terms = [term for term, _ in sorted_terms if " " in term][:100]
+        other_terms = [term for term, _ in sorted_terms if " " not in term][:150]
+
+        return priority_terms, other_terms
 
 
 class ParserRefiner:
@@ -653,7 +427,6 @@ class ParserRefiner:
         db_manager: Optional[DBManager] = None,
         queue_manager: Optional[QueueManager[str]] = None,
         data_dir: str = "data",
-        enable_model: bool = True,
         model_name: Optional[str] = None,
     ):
         """
@@ -663,33 +436,20 @@ class ParserRefiner:
             db_manager: DBManager instance for database operations
             queue_manager: QueueManager instance for enqueuing new terms
             data_dir: Path to the folder containing lexical resources
-            enable_model: Whether to enable language model for example generation
             model_name: Custom model name to use (if None, uses default)
         """
         self.db_manager = db_manager or DBManager()
         self.queue_manager = queue_manager or QueueManager[str]()
-        self.data_dir = data_dir
+        self.resources = LexicalResources(data_dir)
+        self.term_extractor = TermExtractor()
+        self.stats = ProcessingStatistics()
 
-        # Ensure data directory exists
-        os.makedirs(self.data_dir, exist_ok=True)
+        # Configure model if specified
+        if model_name:
+            ModelState.set_model(model_name)
 
-        # Configure model if needed
-        if enable_model and model_name:
-            _ModelState.set_model(model_name)
-
-        # Initialize resource paths
-        self.resource_paths = {
-            "openthesaurus": f"{self.data_dir}/openthesaurus.jsonl",
-            "odict": f"{self.data_dir}/odict.json",
-            "dbnary": f"{self.data_dir}/dbnary.ttl",
-            "opendict": f"{self.data_dir}/opendict.json",
-            "thesaurus": f"{self.data_dir}/thesaurus.jsonl",
-        }
-
-        # Tracking metrics
-        self.processed_count = 0
-        self.successful_count = 0
-        self.error_count = 0
+        # Initialize thread pool for parallel processing
+        self._executor = ThreadPoolExecutor(max_workers=5)
 
     def process_word(self, term: str) -> bool:
         """
@@ -708,31 +468,25 @@ class ParserRefiner:
             return False
 
         try:
-            self.processed_count += 1
+            self.stats.increment_processed()
 
             # Retrieve comprehensive lexical data
             dataset = create_lexical_dataset(
                 term_lower,
-                openthesaurus_path=self.resource_paths["openthesaurus"],
-                odict_path=self.resource_paths["odict"],
-                dbnary_path=self.resource_paths["dbnary"],
-                opendict_path=self.resource_paths["opendict"],
-                thesaurus_path=self.resource_paths["thesaurus"],
+                openthesaurus_path=self.resources.get_path("openthesaurus"),
+                odict_path=self.resources.get_path("odict"),
+                dbnary_path=self.resources.get_path("dbnary"),
+                opendict_path=self.resources.get_path("opendict"),
+                thesaurus_path=self.resources.get_path("thesaurus"),
             )
 
-            # Consolidate definitions
-            combined_definitions = self._extract_all_definitions(dataset)
-            full_definition = (
-                " | ".join(combined_definitions) if combined_definitions else ""
-            )
-
-            # Determine part_of_speech
+            # Extract and consolidate word information
+            definitions = self._extract_all_definitions(dataset)
+            full_definition = " | ".join(definitions) if definitions else ""
             part_of_speech = self._extract_part_of_speech(dataset)
-
-            # Gather usage examples
             usage_examples = self._extract_usage_examples(dataset)
 
-            # Insert or update in DB
+            # Store in database
             self.db_manager.insert_or_update_word(
                 term=term_lower,
                 definition=full_definition,
@@ -740,15 +494,17 @@ class ParserRefiner:
                 usage_examples=usage_examples,
             )
 
-            # Process relationships and discovered terms
-            self._process_relationships(term_lower, dataset)
-            self._discover_new_terms(term_lower, full_definition, usage_examples)
+            # Process relationships and discovered terms in parallel tasks
+            self._executor.submit(self._process_relationships, term_lower, dataset)
+            self._executor.submit(
+                self._discover_new_terms, term_lower, full_definition, usage_examples
+            )
 
-            self.successful_count += 1
+            self.stats.increment_successful()
             return True
 
         except Exception as e:
-            self.error_count += 1
+            self.stats.increment_error()
             print(f"Error processing word '{term_lower}': {str(e)}")
             return False
 
@@ -762,38 +518,30 @@ class ParserRefiner:
         Returns:
             List of unique definitions from all sources
         """
-        combined_definitions: List[str] = []
+        combined_definitions: Set[str] = set()
 
         # WordNet definitions
         for wn_data in dataset["wordnet_data"]:
             defn = wn_data.get("definition", "")
-            if defn and defn not in combined_definitions:
-                combined_definitions.append(defn)
+            if defn:
+                combined_definitions.add(defn)
 
         # ODict / OpenDictData
         odict_def = dataset["odict_data"].get("definition", "")
-        if (
-            odict_def
-            and odict_def != "Not Found"
-            and odict_def not in combined_definitions
-        ):
-            combined_definitions.append(odict_def)
+        if odict_def and odict_def != "Not Found":
+            combined_definitions.add(odict_def)
 
         open_dict_def = dataset["opendict_data"].get("definition", "")
-        if (
-            open_dict_def
-            and open_dict_def != "Not Found"
-            and open_dict_def not in combined_definitions
-        ):
-            combined_definitions.append(open_dict_def)
+        if open_dict_def and open_dict_def != "Not Found":
+            combined_definitions.add(open_dict_def)
 
         # Dbnary definitions
         for item in dataset["dbnary_data"]:
             defn = item.get("definition", "")
-            if defn and defn not in combined_definitions:
-                combined_definitions.append(defn)
+            if defn:
+                combined_definitions.add(defn)
 
-        return combined_definitions
+        return list(combined_definitions)
 
     def _extract_part_of_speech(self, dataset: LexicalDataset) -> str:
         """
@@ -819,24 +567,20 @@ class ParserRefiner:
         Returns:
             List of unique usage examples from all sources
         """
-        usage_examples: List[str] = []
+        usage_examples: Set[str] = set()
 
         # WordNet examples
         for wn_data in dataset["wordnet_data"]:
             for ex in wn_data.get("examples", []):
-                if ex and ex not in usage_examples:
-                    usage_examples.append(ex)
+                if ex:
+                    usage_examples.add(ex)
 
         # Add auto-generated example sentence
         auto_ex = dataset["example_sentence"]
-        if (
-            auto_ex
-            and auto_ex not in usage_examples
-            and "No example available" not in auto_ex
-        ):
-            usage_examples.append(auto_ex)
+        if auto_ex and "No example available" not in auto_ex:
+            usage_examples.add(auto_ex)
 
-        return usage_examples
+        return list(usage_examples)
 
     def _process_relationships(self, term: str, dataset: LexicalDataset) -> None:
         """
@@ -846,68 +590,95 @@ class ParserRefiner:
             term: The base term
             dataset: Comprehensive lexical dataset for the term
         """
+        # Counter for deduplication of identical relationship types
+        relationship_cache: Dict[Tuple[str, str, str], bool] = {}
+
+        # Track discovered terms for batch processing
+        discovered_terms: Set[str] = set()
+
         # Process WordNet relationships
         for wn_data in dataset["wordnet_data"]:
             # Synonyms
             for syn in wn_data.get("synonyms", []):
                 syn_lower = syn.lower()
                 if syn_lower != term:  # Skip self-references
-                    self.db_manager.insert_relationship(term, syn_lower, "synonym")
-                    self.queue_manager.enqueue(syn_lower)
+                    rel_key = (term, syn_lower, "synonym")
+                    if rel_key not in relationship_cache:
+                        self.db_manager.insert_relationship(term, syn_lower, "synonym")
+                        relationship_cache[rel_key] = True
+                        discovered_terms.add(syn_lower)
 
             # Antonyms
             for ant in wn_data.get("antonyms", []):
                 ant_lower = ant.lower()
-                self.db_manager.insert_relationship(term, ant_lower, "antonym")
-                self.queue_manager.enqueue(ant_lower)
+                rel_key = (term, ant_lower, "antonym")
+                if rel_key not in relationship_cache:
+                    self.db_manager.insert_relationship(term, ant_lower, "antonym")
+                    relationship_cache[rel_key] = True
+                    discovered_terms.add(ant_lower)
 
         # OpenThesaurus synonyms
         for s in dataset["openthesaurus_synonyms"]:
             s_lower = s.lower()
             if s_lower != term:
-                self.db_manager.insert_relationship(term, s_lower, "synonym")
-                self.queue_manager.enqueue(s_lower)
+                rel_key = (term, s_lower, "synonym")
+                if rel_key not in relationship_cache:
+                    self.db_manager.insert_relationship(term, s_lower, "synonym")
+                    relationship_cache[rel_key] = True
+                    discovered_terms.add(s_lower)
 
         # Thesaurus synonyms
         for s in dataset["thesaurus_synonyms"]:
             s_lower = s.lower()
             if s_lower != term:
-                self.db_manager.insert_relationship(term, s_lower, "synonym")
-                self.queue_manager.enqueue(s_lower)
+                rel_key = (term, s_lower, "synonym")
+                if rel_key not in relationship_cache:
+                    self.db_manager.insert_relationship(term, s_lower, "synonym")
+                    relationship_cache[rel_key] = True
+                    discovered_terms.add(s_lower)
 
         # Translations from DBnary
         for item in dataset["dbnary_data"]:
             translation = item.get("translation", "")
             if translation:
                 trans_lower = translation.lower()
-                self.db_manager.insert_relationship(term, trans_lower, "translation")
-                self.queue_manager.enqueue(trans_lower)
+                rel_key = (term, trans_lower, "translation")
+                if rel_key not in relationship_cache:
+                    self.db_manager.insert_relationship(
+                        term, trans_lower, "translation"
+                    )
+                    relationship_cache[rel_key] = True
+                    discovered_terms.add(trans_lower)
+
+        # Batch enqueue all discovered terms
+        for discovered_term in discovered_terms:
+            self.queue_manager.enqueue(discovered_term)
 
     def _discover_new_terms(
         self, term: str, definition: str, examples: List[str]
     ) -> None:
         """
-        Discover and enqueue new terms from definitions and examples.
+        Discover and enqueue new terms from definitions and examples using advanced NLP techniques.
 
         Args:
-            term: The base term
-            definition: The term's definition
-            examples: List of usage examples
+            term: The base term being processed
+            definition: The term's consolidated definition
+            examples: List of usage examples for the term
         """
-        # Combine all text for parsing
-        text_to_parse = definition + " " + " ".join(examples)
+        # Extract valuable terms
+        priority_terms, standard_terms = self.term_extractor.extract_terms(
+            definition, examples, term
+        )
 
-        # Use regex to extract words (could be enhanced with NLP)
-        discovered_terms: Set[str] = {
-            word.lower() for word in re.findall(r"\b[a-zA-Z]{3,}\b", text_to_parse)
-        }
+        # Enqueue priority terms first (multiword expressions and specialized terms)
+        for new_term in priority_terms:
+            if new_term != term.lower():
+                self.queue_manager.enqueue(new_term)
 
-        # Remove the original term and short words
-        discovered_terms.discard(term)
-
-        # Enqueue discovered terms
-        for new_term in discovered_terms:
-            self.queue_manager.enqueue(new_term)
+        # Then enqueue other discovered terms
+        for new_term in standard_terms:
+            if new_term != term.lower():
+                self.queue_manager.enqueue(new_term)
 
     def get_stats(self) -> Dict[str, int]:
         """
@@ -916,104 +687,182 @@ class ParserRefiner:
         Returns:
             Dictionary containing processing statistics
         """
-        return {
-            "processed": self.processed_count,
-            "successful": self.successful_count,
-            "errors": self.error_count,
-            "queue_size": self.queue_manager.size(),
-            "unique_words": len(list(self.queue_manager.iter_seen())),
-        }
+        return self.stats.as_dict(
+            queue_size=self.queue_manager.size(),
+            unique_words=len(list(self.queue_manager.iter_seen())),
+        )
+
+    def shutdown(self) -> None:
+        """Gracefully shut down resources like thread pools."""
+        self._executor.shutdown(wait=True)
 
 
-def main() -> None:
+def run_demonstration() -> None:
     """
-    Demonstrate the functionality of the parser_refiner module.
+    Run a comprehensive demonstration of the ParserRefiner capabilities.
 
-    This function shows a complete workflow of:
-    1. Setting up the database and queue managers
-    2. Processing a sample word
-    3. Displaying the extracted lexical data
-    4. Showing how words discovered during processing are enqueued
+    This function showcases the full linguistic processing pipeline including:
+    - Term extraction and processing
+    - Database storage and retrieval
+    - Relationship mapping
+    - Semantic enrichment
+    - Processing statistics
     """
+    import os
+    import time
+    from pathlib import Path
 
-    # Set up a temporary directory for our demo
-    temp_dir = Path(tempfile.mkdtemp())
-    db_path = temp_dir / "word_forge_demo.sqlite"
+    print("Word Forge Parser Demonstration")
+    print("===============================\n")
 
-    db_manager = DBManager(db_path)
-    queue_manager = QueueManager[str]()
+    # Configure demonstration environment
+    data_dir = Path("data").absolute()
+    os.makedirs(data_dir, exist_ok=True)
+    print(f"Using data directory: {data_dir}")
 
-    # Create data directory with minimal sample files
-    data_dir = temp_dir / "data"
-    data_dir.mkdir(exist_ok=True)
+    # Initialize components
+    print("\nInitializing parser components...")
+    parser = ParserRefiner(data_dir=str(data_dir))
+    print("- ParserRefiner initialized")
+    print("- Database connection established")
+    print("- Queue system ready")
 
-    # Create minimal sample files
-    with open(data_dir / "openthesaurus.jsonl", "w") as f:
-        f.write('{"words": ["algorithm", "procedure", "process"]}\n')
-        f.write('{"words": ["recursion", "recursive process"]}\n')
+    # Process a set of linguistically rich terms
+    demo_terms = ["algorithm", "linguistics", "quantum", "philosophy"]
+    results = {}
 
-    with open(data_dir / "odict.json", "w") as f:
-        f.write(
-            '{"algorithm": {"definition": "A step-by-step procedure for solving a problem", "examples": ["Quicksort is an efficient sorting algorithm."]}}'
-        )
+    print("\nProcessing demonstration terms:")
+    for term in demo_terms:
+        print(f"\n[PROCESSING] {term}")
+        start_time = time.time()
+        success = parser.process_word(term)
+        processing_time = time.time() - start_time
 
-    with open(data_dir / "opendict.json", "w") as f:
-        f.write(
-            '{"algorithm": {"definition": "A finite sequence of well-defined instructions", "examples": []}}'
-        )
+        results[term] = {"success": success, "time": processing_time}
 
-    with open(data_dir / "thesaurus.jsonl", "w") as f:
-        f.write(
-            '{"word": "algorithm", "synonyms": ["formula", "method", "technique"]}\n'
-        )
+        print(f"  Status: {'✓ Success' if success else '✗ Failed'}")
+        print(f"  Processing time: {processing_time:.2f}s")
 
-    print("=== Word Forge Parser Refiner Demo ===")
-    print(f"Database: {db_path}")
-    print(f"Data directory: {data_dir}")
+        # If successful, retrieve and display the enriched entry
+        if success:
+            try:
+                entry = parser.db_manager.get_word_entry(term)
 
-    # Create the refiner and process a word
-    refiner = ParserRefiner(
-        db_manager,
-        queue_manager,
-        str(data_dir),
-        enable_model=False,
-    )
+                # Display core word data
+                print(f"\n  [WORD DATA] {term.upper()}")
+                print(
+                    f"  Definition: {entry['definition'][:100]}..."
+                    if len(entry["definition"]) > 100
+                    else f"  Definition: {entry['definition']}"
+                )
+                print(f"  Part of speech: {entry['part_of_speech']}")
+                print(
+                    f"  Usage examples ({len(entry['usage_examples'])}): "
+                    + (
+                        entry["usage_examples"][0]
+                        if entry["usage_examples"]
+                        else "None"
+                    )
+                )
 
-    print("\nProcessing word: 'algorithm'...")
-    refiner.process_word("algorithm")
+                # Display relationships
+                rel_by_type = {}
+                for rel in entry["relationships"]:
+                    rel_type = rel["relationship_type"]
+                    if rel_type not in rel_by_type:
+                        rel_by_type[rel_type] = []
+                    rel_by_type[rel_type].append(rel["related_term"])
 
-    # Display the result from the database
-    word_entry = db_manager.get_word_if_exists("algorithm")
-    if word_entry:
-        print("\n=== Processed Word Entry ===")
-        print(f"Term: {word_entry['term']}")
-        print(f"Definition: {word_entry['definition']}")
-        print(f"Part of Speech: {word_entry['part_of_speech']}")
-        print("Usage Examples:")
-        for example in word_entry["usage_examples"]:
-            print(f"  - {example}")
+                print("\n  [RELATIONSHIPS]")
+                for rel_type, terms in rel_by_type.items():
+                    sample_terms = terms[:5]
+                    print(
+                        f"  {rel_type.capitalize()} ({len(terms)}): {', '.join(sample_terms)}"
+                        + (f" and {len(terms)-5} more..." if len(terms) > 5 else "")
+                    )
 
-        print("\nRelationships:")
-        for rel in word_entry["relationships"]:
-            print(f"  - {rel['relationship_type']}: {rel['related_term']}")
+                # Show queue growth from term
+                current_queue_size = parser.queue_manager.size()
+                print(
+                    f"\n  [QUEUE] Discovered {current_queue_size} new candidate terms"
+                )
 
-    # Show discovered words that were enqueued
-    print("\n=== Discovered Words (Enqueued) ===")
-    enqueued_words = list(queue_manager.iter_seen())
-    print(f"Total words enqueued: {len(enqueued_words)}")
+                # Show sample of discovered terms
+                if current_queue_size > 0:
+                    sample = parser.queue_manager.get_sample(5)
+                    print(
+                        f"  Sample terms: {', '.join(sample)}"
+                        + (
+                            f" and {current_queue_size-5} more..."
+                            if current_queue_size > 5
+                            else ""
+                        )
+                    )
 
-    # Print a sample of the enqueued words
-    sample_size = min(10, len(enqueued_words))
-    print(f"Sample: {', '.join(enqueued_words[:sample_size])}")
+            except Exception as e:
+                print(f"  Error retrieving processed data: {str(e)}")
 
-    # Demonstrate processing the next word in the queue
-    if not queue_manager.is_empty():
-        next_word: str = queue_manager.dequeue()
-        print(f"\nProcessing next word from queue: '{next_word}'...")
-        refiner.process_word(next_word)
+        # Show current statistics after each term
+        stats = parser.get_stats()
+        print("\n  [STATISTICS]")
+        print(f"  Processed: {stats['processed']}")
+        print(f"  Successful: {stats['successful']}")
+        print(f"  Errors: {stats['errors']}")
+        print(f"  Queue size: {stats['queue_size']}")
+        print(f"  Unique words: {stats['unique_words']}")
 
-    print("\nDemo complete!")
+    # Process a term from the queue if available
+    print("\n[QUEUE PROCESSING]")
+    if parser.queue_manager.size() > 0:
+        queued_term = parser.queue_manager.dequeue()
+        print(f"Processing term from queue: '{queued_term}'")
+        success = parser.process_word(queued_term)
+        print(f"  Status: {'✓ Success' if success else '✗ Failed'}")
+
+        if success:
+            print("\n  [SEMANTIC NETWORK GROWTH]")
+            print(
+                "  This demonstrates how the lexical graph expands through relationship chaining"
+            )
+            try:
+                # Get all words to show how the database has grown
+                all_words = parser.db_manager.get_all_words()
+                print(f"  Database now contains {len(all_words)} words")
+                print("  Sample entries:")
+                for i, word in enumerate(all_words[:5]):
+                    print(
+                        f"   {i+1}. {word['term']}: {word['definition'][:50]}..."
+                        if len(word["definition"]) > 50
+                        else f"   {i+1}. {word['term']}: {word['definition']}"
+                    )
+            except Exception as e:
+                print(f"  Error retrieving database data: {str(e)}")
+    else:
+        print("Queue is empty, no additional terms to process")
+
+    # Final statistics
+    print("\n[FINAL STATISTICS]")
+    final_stats = parser.get_stats()
+    for stat, value in final_stats.items():
+        print(f"{stat.capitalize()}: {value}")
+
+    # Clean shutdown
+    print("\nShutting down parser resources...")
+    parser.shutdown()
+    print("Demonstration complete")
 
 
+# Export all components for module usage
+__all__ = ["ParserRefiner", "TermExtractor", "LexicalResources", "ProcessingStatistics"]
+
+
+# Run demonstration when executed directly
 if __name__ == "__main__":
-    main()
+    # Import missing modules only needed for executing directly
+    import os
+    import re
+
+    import nltk
+
+    # Run the comprehensive demonstration
+    run_demonstration()

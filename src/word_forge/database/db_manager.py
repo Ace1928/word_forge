@@ -2,7 +2,7 @@ import sqlite3
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict, Union, cast
+from typing import Any, Dict, List, Optional, Protocol, TypedDict, Union, cast
 
 from word_forge.config import config
 
@@ -10,13 +10,30 @@ from word_forge.config import config
 class DatabaseError(Exception):
     """Base exception for database operations."""
 
-    pass
+    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+        """
+        Initialize with detailed error message and optional cause.
+
+        Args:
+            message: Error description
+            cause: Original exception that caused this error
+        """
+        super().__init__(message)
+        self.__cause__ = cause
 
 
 class TermNotFoundError(DatabaseError):
     """Raised when a term cannot be found in the database."""
 
-    pass
+    def __init__(self, term: str) -> None:
+        """
+        Initialize with specific term that was not found.
+
+        Args:
+            term: The term that could not be found
+        """
+        super().__init__(f"Term '{term}' not found in database")
+        self.term = term
 
 
 class RelationshipDict(TypedDict):
@@ -45,6 +62,18 @@ class WordDataDict(TypedDict):
     term: str
     definition: str
     usage_examples: str
+
+
+class SQLExecutor(Protocol):
+    """Protocol for objects that can execute SQL queries."""
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Union[tuple[Any, ...], list[Any], dict[str, Any]] = (),
+    ) -> Any: ...
+    def fetchone(self) -> Optional[tuple[Any, ...]]: ...
+    def fetchall(self) -> List[tuple[Any, ...]]: ...
 
 
 # Get SQL templates from config
@@ -103,14 +132,14 @@ class DBManager:
     including words, definitions, and the relationships between words.
     """
 
-    def __init__(self, db_path: Union[str, Path] = None) -> None:
+    def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
         """
         Initialize the database manager with path to SQLite database file.
 
         Args:
             db_path: Path to the SQLite database file (defaults to config value if None)
         """
-        self.db_path: str = str(db_path if db_path else config.database.get_db_path())
+        self.db_path: str = str(db_path if db_path else config.database.get_db_path)
         self._create_tables()
 
     def _create_connection(self) -> sqlite3.Connection:
@@ -118,7 +147,7 @@ class DBManager:
         Create an optimized database connection with pragmas applied.
 
         Returns:
-            sqlite3.Connection: Configured database connection
+            Configured database connection
 
         Raises:
             DatabaseError: If connection creation fails
@@ -132,7 +161,7 @@ class DBManager:
 
             return conn
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to create database connection: {e}") from e
+            raise DatabaseError(f"Failed to create database connection: {e}", e)
 
     def _create_tables(self) -> None:
         """
@@ -160,7 +189,7 @@ class DBManager:
             finally:
                 conn.close()
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to initialize database: {e}") from e
+            raise DatabaseError(f"Failed to initialize database: {e}", e)
 
     def insert_or_update_word(
         self,
@@ -188,7 +217,7 @@ class DBManager:
         usage_str: str = "; ".join(usage_examples) if usage_examples else ""
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._create_connection() as conn:
                 cursor = conn.cursor()
                 timestamp: float = time.time()
 
@@ -202,7 +231,7 @@ class DBManager:
                 self._get_word_id.cache_clear()
 
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to insert or update term '{term}': {e}") from e
+            raise DatabaseError(f"Failed to insert or update term '{term}': {e}", e)
 
     def insert_relationship(
         self, base_term: str, related_term: str, relationship_type: str
@@ -216,7 +245,7 @@ class DBManager:
             relationship_type: The type of relationship (e.g., synonym, antonym)
 
         Returns:
-            bool: True if the relationship was inserted, False if base_term doesn't exist
+            True if the relationship was inserted, False if base_term doesn't exist
 
         Raises:
             ValueError: If any parameter is empty
@@ -229,7 +258,7 @@ class DBManager:
             return False  # Base term doesn't exist
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._create_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     SQL_INSERT_RELATIONSHIP,
@@ -239,8 +268,9 @@ class DBManager:
                 return cursor.rowcount > 0
         except sqlite3.Error as e:
             raise DatabaseError(
-                f"Failed to insert relationship from '{base_term}' to '{related_term}': {e}"
-            ) from e
+                f"Failed to insert relationship from '{base_term}' to '{related_term}': {e}",
+                e,
+            )
 
     def _validate_relationship_params(
         self, base_term: str, related_term: str, relationship_type: str
@@ -282,7 +312,7 @@ class DBManager:
             raise ValueError("Term cannot be empty")
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._create_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -290,7 +320,7 @@ class DBManager:
                 cursor.execute(SQL_GET_WORD_ENTRY, (term,))
                 row = cursor.fetchone()
                 if not row:
-                    raise TermNotFoundError(f"Term '{term}' not found in database")
+                    raise TermNotFoundError(term)
 
                 # Extract data from row
                 word_entry = self._create_word_entry_from_row(dict(row))
@@ -312,7 +342,7 @@ class DBManager:
                 return cast(WordEntryDict, word_entry)
 
         except sqlite3.Error as e:
-            raise DatabaseError(f"Database error retrieving term '{term}': {e}") from e
+            raise DatabaseError(f"Database error retrieving term '{term}': {e}", e)
 
     def _create_word_entry_from_row(self, row_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -370,15 +400,13 @@ class DBManager:
             DatabaseError: If the database operation fails
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._create_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(SQL_GET_WORD_ID, (term,))
                 result = cursor.fetchone()
                 return result[0] if result else None
         except sqlite3.Error as e:
-            raise DatabaseError(
-                f"Failed to retrieve word ID for term '{term}': {e}"
-            ) from e
+            raise DatabaseError(f"Failed to retrieve word ID for term '{term}': {e}", e)
 
     def get_all_words(self) -> List[WordDataDict]:
         """
@@ -391,13 +419,13 @@ class DBManager:
             DatabaseError: If the database operation fails
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._create_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(SQL_GET_ALL_WORDS)
                 return [cast(WordDataDict, dict(row)) for row in cursor.fetchall()]
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to retrieve all words: {e}") from e
+            raise DatabaseError(f"Failed to retrieve all words: {e}", e)
 
 
 def main() -> None:

@@ -1,0 +1,157 @@
+"""
+Emotional Configuration module for Word Forge.
+"""
+
+from dataclasses import dataclass, field
+from typing import ClassVar, Dict, List
+
+from word_forge.configs.config_essentials import EmotionRange  # Type variables
+from word_forge.configs.config_types import EnvMapping
+
+
+@dataclass
+class EmotionConfig:
+    """
+    Configuration for emotion analysis.
+
+    Controls sentiment analysis parameters, emotion classification rules,
+    and database schema for emotion data.
+
+    Attributes:
+        enable_vader: Whether to use VADER for sentiment analysis
+        vader_weight: Weight given to VADER in hybrid sentiment analysis
+        textblob_weight: Weight given to TextBlob in hybrid sentiment analysis
+        valence_range: Range constraints for valence values
+        arousal_range: Range constraints for arousal values
+        confidence_range: Range constraints for confidence levels
+        sql_templates: SQL templates for emotion tables and queries
+        emotion_keywords: Emotion category keywords for classification
+        min_keyword_confidence: Minimum confidence when no keywords found
+        keyword_match_weight: Weight given to keyword matches in classification
+        ENV_VARS: Mapping of environment variables to config attributes
+    """
+
+    # VADER configuration
+    enable_vader: bool = True
+
+    # Default mixing weights for hybrid sentiment analysis
+    vader_weight: float = 0.7
+    textblob_weight: float = 0.3
+
+    # Emotion range constraints
+    valence_range: EmotionRange = (-1.0, 1.0)  # Negative to positive
+    arousal_range: EmotionRange = (0.0, 1.0)  # Calm to excited
+    confidence_range: EmotionRange = (0.0, 1.0)  # Certainty level
+
+    # SQL templates for emotion tables
+    sql_templates: Dict[str, str] = field(
+        default_factory=lambda: {
+            "create_word_emotion_table": """
+                CREATE TABLE IF NOT EXISTS word_emotion (
+                    word_id INTEGER PRIMARY KEY,
+                    valence REAL NOT NULL,
+                    arousal REAL NOT NULL,
+                    timestamp REAL NOT NULL,
+                    FOREIGN KEY(word_id) REFERENCES words(id)
+                );
+            """,
+            "create_message_emotion_table": """
+                CREATE TABLE IF NOT EXISTS message_emotion (
+                    message_id INTEGER PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    timestamp REAL NOT NULL
+                );
+            """,
+            "insert_word_emotion": """
+                INSERT OR REPLACE INTO word_emotion
+                (word_id, valence, arousal, timestamp)
+                VALUES (?, ?, ?, ?)
+            """,
+            "get_word_emotion": """
+                SELECT word_id, valence, arousal, timestamp
+                FROM word_emotion
+                WHERE word_id = ?
+            """,
+            "insert_message_emotion": """
+                INSERT OR REPLACE INTO message_emotion
+                (message_id, label, confidence, timestamp)
+                VALUES (?, ?, ?, ?)
+            """,
+            "get_message_emotion": """
+                SELECT message_id, label, confidence, timestamp
+                FROM message_emotion
+                WHERE message_id = ?
+            """,
+        }
+    )
+
+    # Emotion category keywords for classification
+    emotion_keywords: Dict[str, List[str]] = field(
+        default_factory=lambda: {
+            "happiness": ["happy", "joy", "delight", "pleased", "glad", "excited"],
+            "sadness": ["sad", "unhappy", "depressed", "down", "miserable", "gloomy"],
+            "anger": ["angry", "furious", "enraged", "mad", "irritated", "annoyed"],
+            "fear": [
+                "afraid",
+                "scared",
+                "frightened",
+                "terrified",
+                "anxious",
+                "worried",
+            ],
+            "surprise": ["surprised", "astonished", "amazed", "shocked", "startled"],
+            "disgust": ["disgusted", "revolted", "repulsed", "sickened", "appalled"],
+            "neutral": ["okay", "fine", "neutral", "indifferent", "average"],
+        }
+    )
+
+    # Analysis parameters
+    min_keyword_confidence: float = 0.3  # Minimum confidence when no keywords found
+    keyword_match_weight: float = (
+        0.6  # Weight given to keyword matches in classification
+    )
+
+    # Environment variable mapping for configuration overrides
+    ENV_VARS: ClassVar[EnvMapping] = {
+        "WORD_FORGE_ENABLE_VADER": ("enable_vader", bool),
+    }
+
+    def is_valid_valence(self, value: float) -> bool:
+        """
+        Check if a valence value is within the configured range.
+
+        Args:
+            value: The valence value to validate
+
+        Returns:
+            True if the value is within the valid range
+        """
+        min_val, max_val = self.valence_range
+        return min_val <= value <= max_val
+
+    def is_valid_arousal(self, value: float) -> bool:
+        """
+        Check if an arousal value is within the configured range.
+
+        Args:
+            value: The arousal value to validate
+
+        Returns:
+            True if the value is within the valid range
+        """
+        min_val, max_val = self.arousal_range
+        return min_val <= value <= max_val
+
+    def is_valid_confidence(self, value: float) -> bool:
+        """
+        Check if a confidence value is within the configured range.
+
+        Args:
+            value: The confidence value to validate
+
+        Returns:
+            True if the value is within the valid range
+        """
+        min_val, max_val = self.confidence_range
+        return min_val <= value <= max_val

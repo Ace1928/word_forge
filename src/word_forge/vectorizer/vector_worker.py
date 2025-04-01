@@ -8,12 +8,24 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Protocol, TypedDict
+from typing import Dict, Iterator, List, Optional, Protocol, TypedDict, final
 
 import numpy as np
 
 from word_forge.database.db_manager import DBManager
 from word_forge.vectorizer.vector_store import StorageType, VectorStore
+
+
+class VectorState(Enum):
+    """Worker lifecycle states for monitoring and control."""
+
+    RUNNING = auto()
+    STOPPED = auto()
+    ERROR = auto()
+
+    def __str__(self) -> str:
+        """Return lowercase state name for consistent string representation."""
+        return self.name.lower()
 
 
 class EmbeddingError(Exception):
@@ -58,7 +70,7 @@ class WordData(Protocol):
         ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class Word:
     """Data object for storing word information."""
 
@@ -76,6 +88,18 @@ class ProcessingResult(Enum):
     STORAGE_ERROR = auto()
 
 
+class VectorWorkerStatus(TypedDict):
+    """Type definition for worker status information."""
+
+    running: bool
+    processed_count: int
+    successful_count: int
+    error_count: int
+    last_update: Optional[float]
+    uptime: Optional[float]
+    state: str
+
+
 @dataclass
 class ProcessingStats:
     """Statistics about word processing operations."""
@@ -84,10 +108,13 @@ class ProcessingStats:
     successful: int = 0
     failed: int = 0
     errors: Dict[str, int] = field(default_factory=dict)
+    last_update: Optional[float] = None
 
     def record_result(self, word_id: int, result: ProcessingResult) -> None:
         """Record the result of processing a word."""
         self.processed += 1
+        self.last_update = time.time()
+
         if result == ProcessingResult.SUCCESS:
             self.successful += 1
         else:
@@ -101,6 +128,7 @@ class ProcessingStats:
         self.successful = 0
         self.failed = 0
         self.errors.clear()
+        self.last_update = None
 
 
 class WordRow(TypedDict):
@@ -131,6 +159,16 @@ class Embedder(Protocol):
         ...
 
 
+class VectorWorkerInterface(Protocol):
+    """Protocol defining the required interface for vector workers."""
+
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def get_status(self) -> VectorWorkerStatus: ...
+    def is_alive(self) -> bool: ...
+
+
+@final
 class VectorWorker(threading.Thread):
     """
     Continuously scans the DB for words, generates embeddings, and stores them.
@@ -145,7 +183,7 @@ class VectorWorker(threading.Thread):
         db: DBManager,
         vector_store: VectorStore,
         embedder: Embedder,
-        poll_interval: float = 10.0,
+        poll_interval: Optional[float] = None,
         daemon: bool = True,
         logger: Optional[logging.Logger] = None,
     ):
@@ -156,7 +194,7 @@ class VectorWorker(threading.Thread):
             db: Database manager providing access to word data
             vector_store: Vector store for saving embeddings
             embedder: Text embedding generator
-            poll_interval: Time in seconds between database polling cycles
+            poll_interval: Time in seconds between database polling cycles (defaults to config)
             daemon: Whether to run as a daemon thread
             logger: Optional logger for error reporting
         """
@@ -164,8 +202,13 @@ class VectorWorker(threading.Thread):
         self.db = db
         self.vector_store = vector_store
         self.embedder = embedder
-        self.poll_interval = poll_interval
+        self.poll_interval = poll_interval or 10.0
+
         self._stop_flag = False
+        self._current_state = VectorState.STOPPED
+        self._status_lock = threading.RLock()
+        self._start_time: Optional[float] = None
+
         self.logger = logger or logging.getLogger(__name__)
         self.stats = ProcessingStats()
 
@@ -176,6 +219,10 @@ class VectorWorker(threading.Thread):
         Continuously fetches words from the database, generates embeddings,
         and stores them in the vector store with each word's ID.
         """
+        with self._status_lock:
+            self._start_time = time.time()
+            self._current_state = VectorState.RUNNING
+
         self.logger.info("Vector worker started")
 
         while not self._stop_flag:
@@ -193,9 +240,15 @@ class VectorWorker(threading.Thread):
                 # Wait before next cycle
                 time.sleep(self.poll_interval)
             except Exception as e:
+                with self._status_lock:
+                    self._current_state = VectorState.ERROR
+
                 self.logger.error(f"Error in vector worker cycle: {str(e)}")
                 # Continue running despite errors
-                time.sleep(self.poll_interval)
+                time.sleep(max(1.0, self.poll_interval / 2))
+
+        with self._status_lock:
+            self._current_state = VectorState.STOPPED
 
         self.logger.info("Vector worker stopped")
 
@@ -203,6 +256,37 @@ class VectorWorker(threading.Thread):
         """Signal the worker thread to stop after the current cycle."""
         self._stop_flag = True
         self.logger.info("Vector worker stop requested")
+
+    def get_status(self) -> VectorWorkerStatus:
+        """
+        Return the current status of the vector worker.
+
+        Returns:
+            Dictionary containing operational metrics including:
+            - running: Whether the worker is active
+            - processed_count: Number of words processed
+            - successful_count: Number of successful embeddings
+            - error_count: Number of encountered errors
+            - last_update: Timestamp of last successful update
+            - uptime: Seconds since thread start if running
+            - state: Current worker state as string
+        """
+        with self._status_lock:
+            uptime = None
+            if self._start_time:
+                uptime = time.time() - self._start_time
+
+            status: VectorWorkerStatus = {
+                "running": self.is_alive() and not self._stop_flag,
+                "processed_count": self.stats.processed,
+                "successful_count": self.stats.successful,
+                "error_count": self.stats.failed,
+                "last_update": self.stats.last_update,
+                "uptime": uptime,
+                "state": str(self._current_state),
+            }
+
+            return status
 
     def _get_all_words(self) -> List[Word]:
         """
