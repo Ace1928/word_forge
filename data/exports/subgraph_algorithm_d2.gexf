@@ -19,25 +19,25 @@
       <node id="1" label="1">
         <attvalues>
           <attvalue for="0" value="algorithm" />
-          <attvalue for="1" value="0.18064484000205994" />
-          <attvalue for="2" value="-0.22842592000961304" />
-          <attvalue for="3" value="1.7112886905670166" />
+          <attvalue for="1" value="-1.197882056236267" />
+          <attvalue for="2" value="0.853104829788208" />
+          <attvalue for="3" value="-0.1759658306837082" />
         </attvalues>
       </node>
       <node id="11" label="11">
         <attvalues>
           <attvalue for="0" value="algorithmic rule" />
-          <attvalue for="1" value="0.17719285190105438" />
-          <attvalue for="2" value="-0.22727878391742706" />
-          <attvalue for="3" value="1.7230162620544434" />
+          <attvalue for="1" value="-1.2106705904006958" />
+          <attvalue for="2" value="0.8624748587608337" />
+          <attvalue for="3" value="-0.18091028928756714" />
         </attvalues>
       </node>
       <node id="12" label="12">
         <attvalues>
           <attvalue for="0" value="algorithmic program" />
-          <attvalue for="1" value="0.18459099531173706" />
-          <attvalue for="2" value="-0.23213735222816467" />
-          <attvalue for="3" value="1.7300351858139038" />
+          <attvalue for="1" value="-1.2064443826675415" />
+          <attvalue for="2" value="0.8576143383979797" />
+          <attvalue for="3" value="-0.1699441820383072" />
         </attvalues>
       </node>
     </nodes>
