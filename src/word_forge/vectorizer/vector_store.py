@@ -48,9 +48,7 @@ class ChromaClient(Protocol):
         """Get or create a collection."""
         ...
 
-    def persist(self) -> None:
-        """Persist data to disk."""
-        ...
+    # Note: persist() may not exist on all client types
 
 
 class StorageType(Enum):
@@ -120,6 +118,7 @@ class VectorStore:
         self.dimension = dimension
         self.index_path = Path(index_path)
         self.storage_type = storage_type
+        self._has_persist_method = False  # Track if client has persist method
 
         # Determine collection name from path if not provided
         if collection_name is None:
@@ -127,6 +126,10 @@ class VectorStore:
 
         try:
             self.client = self._create_client()
+            # Check if client has persist method
+            self._has_persist_method = hasattr(self.client, "persist") and callable(
+                getattr(self.client, "persist")
+            )
             self.collection = self._initialize_collection(collection_name)
         except Exception as e:
             raise InitializationError(
@@ -231,7 +234,7 @@ class VectorStore:
         self._validate_vector_dimension(query_vector, "Query vector")
 
         # For backward compatibility with FAISS interface
-        if self.collection.count() == 0.0:
+        if self.collection.count() == 0:
             return []
 
         try:
@@ -272,15 +275,30 @@ class VectorStore:
         return [1.0 - similarity for similarity in similarities]
 
     def _persist_if_needed(self) -> None:
-        """Persist to disk if using disk storage."""
-        if self.storage_type == StorageType.DISK:
-            self.client.persist()
+        """
+        Persist to disk if using disk storage and client supports it.
+
+        This safely handles clients that may not have a persist method.
+        """
+        if self.storage_type == StorageType.DISK and self._has_persist_method:
+            try:
+                # Only call persist if the method exists
+                getattr(self.client, "persist")()
+            except Exception as e:
+                # Log but don't crash on persistence failure
+                import logging
+
+                logging.warning(f"Failed to persist vector store: {e}")
 
     def __del__(self) -> None:
         """Ensure persistent storage is properly finalized."""
         try:
-            if hasattr(self, "client") and self.storage_type == StorageType.DISK:
-                self.client.persist()
+            if (
+                hasattr(self, "client")
+                and self.storage_type == StorageType.DISK
+                and self._has_persist_method
+            ):
+                getattr(self.client, "persist")()
         except Exception:
             # Silently continue with destruction if cleanup fails
             # This prevents errors during garbage collection
