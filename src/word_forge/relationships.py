@@ -1,5 +1,50 @@
+"""
+Word relationship type definitions for the Word Forge lexical network.
+
+This module defines semantic and emotional relationship types used throughout
+the application to represent connections between lexical items. Each relationship
+has properties defining its weight (importance), visual representation, and
+directionality characteristics.
+
+The relationships are organized into semantic categories with consistent
+property patterns for each relationship type.
+
+Typical usage:
+    from word_forge.relationships import RELATIONSHIP_TYPES
+
+    # Get properties for a specific relationship
+    synonym_props = RELATIONSHIP_TYPES["synonym"]
+    weight = synonym_props["weight"]  # 1.0
+
+    # Check if a relationship is bidirectional
+    is_bidirectional = RELATIONSHIP_TYPES["hypernym"]["bidirectional"]  # False
+
+    # Fall back to default when a relationship isn't defined
+    props = RELATIONSHIP_TYPES.get("unknown_type", RELATIONSHIP_TYPES["default"])
+"""
+
+from typing import Dict, Final, TypedDict
+
+
+class RelationshipProperties(TypedDict):
+    """Properties defining a lexical or emotional relationship type.
+
+    Attributes:
+        weight: Float between 0.0-1.0 indicating relationship strength/importance.
+            Higher values represent stronger relationships (1.0 = strongest).
+        color: Hexadecimal color code for visual representation in UI.
+        bidirectional: Whether the relationship applies equally in both directions.
+            If True, the relationship is symmetric (A→B implies B→A).
+            If False, the relationship is directional (A→B does not imply B→A).
+    """
+
+    weight: float
+    color: str
+    bidirectional: bool
+
+
 # Expanded relationship types to include all relationships from ParserRefiner
-RELATIONSHIP_TYPES = {
+RELATIONSHIP_TYPES: Final[Dict[str, RelationshipProperties]] = {
     # Core relationships
     "synonym": {"weight": 1.0, "color": "#4287f5", "bidirectional": True},
     "antonym": {"weight": 0.9, "color": "#f54242", "bidirectional": True},
