@@ -17,11 +17,11 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Optional
+from typing import Any, ClassVar, Dict, List, Optional, TypedDict
 
 from word_forge.configs.config_essentials import (
     LOGS_ROOT,
@@ -32,6 +32,76 @@ from word_forge.configs.config_essentials import (
     LogRotationStrategy,
 )
 from word_forge.configs.config_types import EnvMapping
+
+
+class RotationConfigDict(TypedDict):
+    """
+    Type definition for rotation configuration settings.
+
+    Used as the return type for get_rotation_config() to provide
+    type-safe access to rotation settings.
+
+    Attributes:
+        enabled: Whether log rotation is enabled
+        strategy: The rotation strategy name (if enabled)
+        max_size_mb: Maximum file size before rotation (if enabled)
+        max_files: Maximum number of log files to keep (if enabled)
+    """
+
+    enabled: bool
+    strategy: Optional[str]
+    max_size_mb: Optional[int]
+    max_files: Optional[int]
+
+
+class PythonLoggingHandlerDict(TypedDict):
+    """
+    Type definition for Python logging handler configuration.
+
+    Represents the structure of a handler configuration entry
+    in the Python logging configuration dictionary.
+
+    Attributes:
+        class: The handler class name
+        level: The logging level for this handler
+        formatter: The formatter name for this handler
+        stream: Stream to use (for StreamHandler)
+        filename: Log file path (for file handlers)
+        maxBytes: Maximum file size (for RotatingFileHandler)
+        backupCount: Maximum backup file count
+        when: Rotation time specification (for TimedRotatingFileHandler)
+    """
+
+    class_: str  # Using class_ as class is a reserved keyword
+    level: str
+    formatter: str
+    stream: Optional[str]
+    filename: Optional[str]
+    maxBytes: Optional[int]
+    backupCount: Optional[int]
+    when: Optional[str]
+
+
+class PythonLoggingConfigDict(TypedDict):
+    """
+    Type definition for Python logging configuration dictionary.
+
+    Represents the full structure of a configuration dictionary
+    compatible with logging.config.dictConfig().
+
+    Attributes:
+        version: The logging configuration format version
+        disable_existing_loggers: Whether to disable existing loggers
+        formatters: Dictionary of formatter configurations
+        handlers: Dictionary of handler configurations
+        loggers: Dictionary of logger configurations
+    """
+
+    version: int
+    disable_existing_loggers: bool
+    formatters: Dict[str, Dict[str, str]]
+    handlers: Dict[str, Any]  # Using Any for handlers due to varying structure
+    loggers: Dict[str, Dict[str, Any]]
 
 
 @dataclass
@@ -56,6 +126,7 @@ class LoggingConfig:
         log_initialization: Whether to log when configuration is initialized
 
     Usage:
+        ```python
         from word_forge.config import config
 
         # Get log level
@@ -66,6 +137,10 @@ class LoggingConfig:
 
         # Check if file logging is enabled
         uses_file = config.logging.uses_file_logging
+
+        # Create configuration for debugging
+        debug_config = config.logging.with_level("DEBUG")
+        ```
     """
 
     # Log level and format
@@ -110,6 +185,16 @@ class LoggingConfig:
         Returns:
             Path: Path object representing the log file location,
                   or None if file logging is disabled
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            path = config.get_log_path
+            if path:
+                print(f"Logs will be written to: {path}")
+            else:
+                print("File logging is disabled")
+            ```
         """
         if not self.file_path:
             return None
@@ -122,6 +207,13 @@ class LoggingConfig:
 
         Returns:
             bool: True if logs are written to a file, False otherwise
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            if config.uses_file_logging:
+                print(f"File logging enabled at: {config.get_log_path}")
+            ```
         """
         return (
             self.destination in (LogDestination.FILE, LogDestination.BOTH)
@@ -135,6 +227,13 @@ class LoggingConfig:
 
         Returns:
             bool: True if logs are written to console, False otherwise
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            if config.uses_console_logging:
+                print("Console logging is enabled")
+            ```
         """
         return self.destination in (LogDestination.CONSOLE, LogDestination.BOTH)
 
@@ -152,6 +251,13 @@ class LoggingConfig:
         Returns:
             Path: Path with timestamp added, or regular path if not enabled,
                   or None if file_path is None
+
+        Example:
+            ```python
+            config = LoggingConfig(include_timestamp_in_filename=True)
+            timestamped_path = config.get_log_path_with_timestamp()
+            # Result: /path/to/word_forge_20230401_120530.log
+            ```
         """
         if not self.file_path:
             return None
@@ -177,20 +283,15 @@ class LoggingConfig:
 
         Returns:
             LoggingConfig: New configuration instance with updated level
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            debug_config = config.with_level("DEBUG")
+            print(f"New log level: {debug_config.level}")
+            ```
         """
-        return LoggingConfig(
-            level=level,
-            format=self.format,
-            file_path=self.file_path,
-            destination=self.destination,
-            rotation_strategy=self.rotation_strategy,
-            max_file_size_mb=self.max_file_size_mb,
-            max_files=self.max_files,
-            include_timestamp_in_filename=self.include_timestamp_in_filename,
-            propagate_to_root=self.propagate_to_root,
-            log_exceptions=self.log_exceptions,
-            log_initialization=self.log_initialization,
-        )
+        return self._create_modified_config(level=level)
 
     def with_format_template(self, template: LogFormatTemplate) -> "LoggingConfig":
         """
@@ -201,20 +302,15 @@ class LoggingConfig:
 
         Returns:
             LoggingConfig: New configuration instance with updated format
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            detailed_config = config.with_format_template(LogFormatTemplate.DETAILED)
+            print(f"New format: {detailed_config.format}")
+            ```
         """
-        return LoggingConfig(
-            level=self.level,
-            format=template.value,
-            file_path=self.file_path,
-            destination=self.destination,
-            rotation_strategy=self.rotation_strategy,
-            max_file_size_mb=self.max_file_size_mb,
-            max_files=self.max_files,
-            include_timestamp_in_filename=self.include_timestamp_in_filename,
-            propagate_to_root=self.propagate_to_root,
-            log_exceptions=self.log_exceptions,
-            log_initialization=self.log_initialization,
-        )
+        return self._create_modified_config(format=template.value)
 
     def with_destination(self, destination: LogDestination) -> "LoggingConfig":
         """
@@ -225,82 +321,83 @@ class LoggingConfig:
 
         Returns:
             LoggingConfig: New configuration instance with updated destination
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            file_only = config.with_destination(LogDestination.FILE)
+            print(f"Uses console: {file_only.uses_console_logging}")
+            print(f"Uses file: {file_only.uses_file_logging}")
+            ```
         """
-        config = LoggingConfig(
-            level=self.level,
-            format=self.format,
-            file_path=self.file_path,
-            destination=destination,
-            rotation_strategy=self.rotation_strategy,
-            max_file_size_mb=self.max_file_size_mb,
-            max_files=self.max_files,
-            include_timestamp_in_filename=self.include_timestamp_in_filename,
-            propagate_to_root=self.propagate_to_root,
-            log_exceptions=self.log_exceptions,
-            log_initialization=self.log_initialization,
-        )
+        config = self._create_modified_config(destination=destination)
 
         # Handle special case for FILE destination with no file path
         if (
             destination in (LogDestination.FILE, LogDestination.BOTH)
             and not config.file_path
         ):
-            config.file_path = str(LOGS_ROOT / "word_forge.log")
+            config = self._create_modified_config(
+                destination=destination, file_path=str(LOGS_ROOT / "word_forge.log")
+            )
 
         return config
 
-    def get_rotation_config(self) -> Dict[str, Any]:
+    def get_rotation_config(self) -> RotationConfigDict:
         """
         Get rotation-specific configuration parameters.
 
         Returns:
-            Dict[str, Any]: Dictionary with rotation settings
+            RotationConfigDict: Dictionary with rotation settings
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            rotation = config.get_rotation_config()
+
+            if rotation["enabled"]:
+                print(f"Rotation strategy: {rotation['strategy']}")
+                print(f"Max size: {rotation['max_size_mb']} MB")
+            ```
         """
         if not self.uses_file_logging:
-            return {"enabled": False}
+            return RotationConfigDict(
+                enabled=False, strategy=None, max_size_mb=None, max_files=None
+            )
 
-        return {
-            "enabled": self.rotation_strategy != LogRotationStrategy.NONE,
-            "strategy": self.rotation_strategy.value,
-            "max_size_mb": self.max_file_size_mb,
-            "max_files": self.max_files,
-        }
+        return RotationConfigDict(
+            enabled=self.rotation_strategy != LogRotationStrategy.NONE,
+            strategy=self.rotation_strategy.value,
+            max_size_mb=self.max_file_size_mb,
+            max_files=self.max_files,
+        )
 
     def validate(self) -> None:
         """
         Validate the configuration for consistency and correctness.
 
+        Performs comprehensive validation of all settings, including:
+        - Consistency between destination and file path
+        - Positive values for size and count settings
+        - Valid rotation settings
+
         Raises:
-            LoggingConfigError: If any validation fails
+            LoggingConfigError: If any validation fails with detailed error message
+
+        Example:
+            ```python
+            config = LoggingConfig(max_file_size_mb=-1)
+            try:
+                config.validate()
+            except LoggingConfigError as e:
+                print(f"Invalid configuration: {e}")
+            ```
         """
         errors = []
 
-        # Validate destination vs file_path consistency
-        if (
-            self.destination in (LogDestination.FILE, LogDestination.BOTH)
-            and not self.file_path
-        ):
-            errors.append("File logging enabled but no file path specified")
-
-        # Validate max file size
-        if self.max_file_size_mb <= 0:
-            errors.append(
-                f"Maximum file size must be positive, got {self.max_file_size_mb}"
-            )
-
-        # Validate max files
-        if self.max_files <= 0:
-            errors.append(
-                f"Maximum number of files must be positive, got {self.max_files}"
-            )
-
-        # Validate rotation settings
-        if (
-            self.rotation_strategy == LogRotationStrategy.SIZE
-            and self.uses_file_logging
-            and self.max_file_size_mb <= 0
-        ):
-            errors.append("Size-based rotation requires positive max_file_size_mb")
+        self._validate_destination_settings(errors)
+        self._validate_size_settings(errors)
+        self._validate_rotation_settings(errors)
 
         if errors:
             raise LoggingConfigError(
@@ -311,19 +408,26 @@ class LoggingConfig:
         """
         Convert configuration to Python's logging module configuration dict.
 
+        Creates a configuration dictionary compatible with logging.config.dictConfig()
+        based on the current settings.
+
         Returns:
-            Dict[str, Any]: Configuration dictionary compatible with
-                            logging.config.dictConfig()
+            Dict[str, Any]: Configuration dictionary for Python's logging system
+
+        Example:
+            ```python
+            import logging.config
+
+            config = LoggingConfig()
+            logging_dict = config.get_python_logging_config()
+            logging.config.dictConfig(logging_dict)
+            logger = logging.getLogger("word_forge")
+            logger.info("Logging system initialized")
+            ```
         """
-        handlers = []
+        handlers = self._get_active_handlers()
 
-        if self.uses_console_logging:
-            handlers.append("console")
-
-        if self.uses_file_logging:
-            handlers.append("file")
-
-        config = {
+        config: Dict[str, Any] = {
             "version": 1,
             "disable_existing_loggers": False,
             "formatters": {"standard": {"format": self.format}},
@@ -345,33 +449,123 @@ class LoggingConfig:
         }
 
         if self.uses_file_logging and self.file_path:
-            if self.rotation_strategy == LogRotationStrategy.SIZE:
-                config["handlers"]["file"] = {
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "level": self.level,
-                    "formatter": "standard",
-                    "filename": self.file_path,
-                    "maxBytes": self.max_file_size_mb * 1024 * 1024,
-                    "backupCount": self.max_files,
-                }
-            elif self.rotation_strategy == LogRotationStrategy.TIME:
-                config["handlers"]["file"] = {
-                    "class": "logging.handlers.TimedRotatingFileHandler",
-                    "level": self.level,
-                    "formatter": "standard",
-                    "filename": self.file_path,
-                    "when": "midnight",
-                    "backupCount": self.max_files,
-                }
-            else:
-                config["handlers"]["file"] = {
-                    "class": "logging.FileHandler",
-                    "level": self.level,
-                    "formatter": "standard",
-                    "filename": self.file_path,
-                }
+            config["handlers"]["file"] = self._create_file_handler_config()
 
         return config
+
+    # ==========================================
+    # Private Helper Methods
+    # ==========================================
+
+    def _create_modified_config(self, **kwargs: Any) -> "LoggingConfig":
+        """
+        Create a new configuration with modified attributes.
+
+        Args:
+            **kwargs: Attribute name-value pairs to override
+
+        Returns:
+            LoggingConfig: New configuration instance with specified modifications
+        """
+        return replace(self, **kwargs)
+
+    def _get_active_handlers(self) -> List[str]:
+        """
+        Get list of active handler names based on configuration.
+
+        Returns:
+            List[str]: List of active handler names
+        """
+        handlers = []
+
+        if self.uses_console_logging:
+            handlers.append("console")
+
+        if self.uses_file_logging:
+            handlers.append("file")
+
+        return handlers
+
+    def _create_file_handler_config(self) -> Dict[str, Any]:
+        """
+        Create appropriate file handler configuration based on rotation settings.
+
+        Returns:
+            Dict[str, Any]: Handler configuration dictionary
+        """
+        if self.rotation_strategy == LogRotationStrategy.SIZE:
+            return {
+                "class": "logging.handlers.RotatingFileHandler",
+                "level": self.level,
+                "formatter": "standard",
+                "filename": self.file_path,
+                "maxBytes": self.max_file_size_mb * 1024 * 1024,
+                "backupCount": self.max_files,
+            }
+        elif self.rotation_strategy == LogRotationStrategy.TIME:
+            return {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "level": self.level,
+                "formatter": "standard",
+                "filename": self.file_path,
+                "when": "midnight",
+                "backupCount": self.max_files,
+            }
+        else:
+            return {
+                "class": "logging.FileHandler",
+                "level": self.level,
+                "formatter": "standard",
+                "filename": self.file_path,
+            }
+
+    def _validate_destination_settings(self, errors: List[str]) -> None:
+        """
+        Validate settings related to logging destination.
+
+        Args:
+            errors: List to accumulate validation errors
+        """
+        # Validate destination vs file_path consistency
+        if (
+            self.destination in (LogDestination.FILE, LogDestination.BOTH)
+            and not self.file_path
+        ):
+            errors.append("File logging enabled but no file path specified")
+
+    def _validate_size_settings(self, errors: List[str]) -> None:
+        """
+        Validate settings related to size limitations.
+
+        Args:
+            errors: List to accumulate validation errors
+        """
+        # Validate max file size
+        if self.max_file_size_mb <= 0:
+            errors.append(
+                f"Maximum file size must be positive, got {self.max_file_size_mb}"
+            )
+
+        # Validate max files
+        if self.max_files <= 0:
+            errors.append(
+                f"Maximum number of files must be positive, got {self.max_files}"
+            )
+
+    def _validate_rotation_settings(self, errors: List[str]) -> None:
+        """
+        Validate settings related to log rotation.
+
+        Args:
+            errors: List to accumulate validation errors
+        """
+        # Validate rotation settings
+        if (
+            self.rotation_strategy == LogRotationStrategy.SIZE
+            and self.uses_file_logging
+            and self.max_file_size_mb <= 0
+        ):
+            errors.append("Size-based rotation requires positive max_file_size_mb")
 
 
 # ==========================================
@@ -385,4 +579,5 @@ __all__ = [
     "LogRotationStrategy",
     "LogDestination",
     "LoggingConfigError",
+    "RotationConfigDict",
 ]
