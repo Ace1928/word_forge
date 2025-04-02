@@ -1,18 +1,14 @@
 """
-Unified configuration system for Word Forge.
-
-This module centralizes all configuration settings used throughout
-the Word Forge system, ensuring consistency across components.
-
-The configuration architecture follows a modular approach with specialized
-dataclasses for each subsystem, unified through a central Config class
-that manages environment variable overrides and directory creation.
+This module defines all essential types and constants used throughout the
+configuration system, providing a consistent way to handle various
+configuration-related tasks, including serialization, path management,
+and error handling.
 """
 
 from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Final, Sequence, cast
+from typing import Any, Dict, Final, Sequence, TypeVar, cast
 
 from word_forge.configs.config_enums import (
     ConversationExportFormat,
@@ -47,11 +43,16 @@ from word_forge.configs.config_types import (
     ConversationStatusMap,
     ConversationStatusValue,
     EmotionRange,
+    EnvMapping,
     EnvVarType,
     GraphEdgeWeightStrategy,
     GraphExportFormat,
     GraphNodeSizeStrategy,
     InstructionTemplate,
+    JsonDict,
+    JsonList,
+    JsonPrimitive,
+    JsonValue,
     LockType,
     LogLevel,
     PathLike,
@@ -66,6 +67,20 @@ from word_forge.configs.config_types import (
     VectorOptimizationLevel,
     VectorSearchStrategy,
 )
+
+# ==========================================
+# Generic Type Variables
+# ==========================================
+
+# Generic type parameter for configuration value types
+T = TypeVar("T")
+
+# Generic type parameter for function return types
+R = TypeVar("R")
+
+# ==========================================
+# Project Paths
+# ==========================================
 
 # Define project paths with explicit typing for better IDE support
 PROJECT_ROOT: Final[Path] = Path("/home/lloyd/eidosian_forge/word_forge")
@@ -82,13 +97,34 @@ def serialize_dataclass(obj: Any) -> Dict[str, Any]:
     """
     Serialize a dataclass to a dictionary, handling special types like Enums.
 
+    This function takes a dataclass instance and converts it to a dictionary
+    representation suitable for JSON serialization. It handles special cases
+    like Enum values and named tuples.
+
     Args:
         obj: Dataclass instance to serialize
 
     Returns:
-        Dictionary with serialized values
-    """
+        Dictionary with serialized values where Enums are converted to their values
+        and NamedTuples are converted to dictionaries
 
+    Examples:
+        >>> from dataclasses import dataclass
+        >>> from enum import Enum
+        >>>
+        >>> class Color(Enum):
+        ...     RED = "red"
+        ...     BLUE = "blue"
+        ...
+        >>> @dataclass
+        ... class Settings:
+        ...     name: str
+        ...     color: Color
+        ...
+        >>> settings = Settings(name="test", color=Color.RED)
+        >>> serialize_dataclass(settings)
+        {'name': 'test', 'color': 'red'}
+    """
     result: Dict[str, Any] = {}
     for key, value in asdict(obj).items():
         if isinstance(value, Enum):
@@ -114,16 +150,26 @@ def serialize_dataclass(obj: Any) -> Dict[str, Any]:
 
 def serialize_config(obj: Any) -> ConfigValue:
     """
-    Convert configuration objects to dictionaries for display.
+    Convert configuration objects to dictionaries for display or serialization.
 
     Recursively processes configuration objects for JSON serialization,
-    handling special types like Enums.
+    handling special types like Enums, dataclasses, lists, tuples, and dictionaries.
 
     Args:
         obj: Any configuration object or value to serialize
 
     Returns:
         A JSON-serializable representation of the configuration
+
+    Examples:
+        >>> class Config:
+        ...     def __init__(self):
+        ...         self.name = "test"
+        ...         self.values = [1, 2, 3]
+        ...         self._private = "hidden"
+        ...
+        >>> serialize_config(Config())
+        {'name': 'test', 'values': [1, 2, 3]}
     """
     if hasattr(obj, "__dict__"):
         d: Dict[str, ConfigValue] = {}
@@ -150,8 +196,10 @@ def serialize_config(obj: Any) -> ConfigValue:
 # ==========================================
 
 __all__ = [
+    # Generic type variables
     "T",
     "R",
+    # Basic JSON and configuration types
     "JsonPrimitive",
     "JsonDict",
     "JsonList",
@@ -161,20 +209,27 @@ __all__ = [
     "PathLike",
     "EnvVarType",
     "EnvMapping",
+    # Domain-specific types
     "EmotionRange",
     "SampleWord",
     "SampleRelationship",
     "JSONSerializable",
+    # Error types
     "ConfigError",
     "PathError",
     "EnvVarError",
+    # Enum types
     "StorageType",
+    # Template types
     "InstructionTemplate",
+    # Path constants
     "PROJECT_ROOT",
     "DATA_ROOT",
     "LOGS_ROOT",
+    # Utility functions
     "serialize_dataclass",
     "serialize_config",
+    # SQL-related types
     "SQLitePragmas",
     "SQLTemplates",
     # Queue configuration types

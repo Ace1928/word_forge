@@ -18,10 +18,10 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Dict, Union
+from typing import ClassVar, Dict, TypedDict
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -34,6 +34,20 @@ from word_forge.configs.config_essentials import (
     TransactionIsolationLevel,
 )
 from word_forge.configs.config_types import EnvMapping
+
+
+# More precise type definitions
+class PoolSettingsDict(TypedDict):
+    """Type definition for connection pool settings."""
+
+    mode: ConnectionPoolMode
+    size: int
+    timeout: float
+    recycle: int
+
+
+# Type aliases for clearer return signatures
+PragmaDict = Dict[str, str]
 
 
 @dataclass
@@ -60,6 +74,7 @@ class DatabaseConfig:
         cache_size: Memory pages to use for database cache (SQLite only)
 
     Usage:
+        ```python
         from word_forge.config import config
 
         # Get database path
@@ -70,6 +85,7 @@ class DatabaseConfig:
 
         # Create a new configuration with a different path
         test_config = config.database.with_path("path/to/test.db")
+        ```
     """
 
     # Core database settings
@@ -156,6 +172,12 @@ class DatabaseConfig:
 
         Returns:
             Path: Object representing the database location.
+
+        Example:
+            ```python
+            path_obj = config.database.db_path_object
+            parent_dir = path_obj.parent
+            ```
         """
         return Path(self.db_path)
 
@@ -164,11 +186,19 @@ class DatabaseConfig:
         """
         Get database path as a validated Path object.
 
+        Ensures the parent directory exists for SQLite databases.
+
         Returns:
             Path: Database file location.
 
         Raises:
-            DatabaseConfigError: If path is invalid
+            DatabaseConfigError: If path is invalid or parent directory does not exist
+
+        Example:
+            ```python
+            db_path = config.database.get_db_path
+            print(f"Using database at {db_path}")
+            ```
         """
         path = self.db_path_object
 
@@ -183,7 +213,7 @@ class DatabaseConfig:
         return path
 
     @cached_property
-    def effective_pragmas(self) -> Dict[str, str]:
+    def effective_pragmas(self) -> PragmaDict:
         """
         Get the effective pragmas with computed values.
 
@@ -191,7 +221,13 @@ class DatabaseConfig:
         reflected in the pragmas dictionary.
 
         Returns:
-            Dict[str, str]: Effective pragmas dictionary
+            Dict[str, str]: Effective pragmas dictionary with all settings applied
+
+        Example:
+            ```python
+            pragma_dict = config.database.effective_pragmas
+            print(f"Using cache size of {pragma_dict['cache_size']}")
+            ```
         """
         # Start with user-defined pragmas
         result = dict(self.pragmas)
@@ -221,11 +257,19 @@ class DatabaseConfig:
         """
         Build SQLite connection URI with pragmas.
 
+        Creates a URI that includes all effective pragmas as query parameters.
+
         Returns:
             str: SQLite connection string with pragmas as query parameters.
 
         Raises:
             DatabaseConfigError: If dialect is not SQLite
+
+        Example:
+            ```python
+            uri = config.database.get_connection_uri()
+            conn = sqlite3.connect(uri, uri=True)
+            ```
         """
         if self.dialect != DatabaseDialect.SQLITE:
             raise DatabaseConfigError(
@@ -235,12 +279,18 @@ class DatabaseConfig:
         params = "&".join(f"{k}={v}" for k, v in self.effective_pragmas.items())
         return f"file:{self.db_path}?{params}"
 
-    def get_pool_settings(self) -> Dict[str, Union[str, int, float]]:
+    def get_pool_settings(self) -> PoolSettingsDict:
         """
         Get connection pool settings as a dictionary.
 
         Returns:
-            Dict[str, Union[str, int, float]]: Pool configuration for database engines
+            PoolSettingsDict: Pool configuration for database engines
+
+        Example:
+            ```python
+            pool_config = config.database.get_pool_settings()
+            engine = create_engine(url, **pool_config)
+            ```
         """
         return {
             "mode": self.pool_mode,
@@ -258,23 +308,13 @@ class DatabaseConfig:
 
         Returns:
             DatabaseConfig: New instance with updated path
+
+        Example:
+            ```python
+            test_config = config.database.with_path("tests/test_db.sqlite")
+            ```
         """
-        path_str = str(path)
-        return DatabaseConfig(
-            db_path=path_str,
-            dialect=self.dialect,
-            pragmas=self.pragmas,
-            sql_templates=self.sql_templates,
-            pool_mode=self.pool_mode,
-            pool_size=self.pool_size,
-            pool_timeout=self.pool_timeout,
-            pool_recycle=self.pool_recycle,
-            isolation_level=self.isolation_level,
-            enable_foreign_keys=self.enable_foreign_keys,
-            enable_wal_mode=self.enable_wal_mode,
-            page_size=self.page_size,
-            cache_size=self.cache_size,
-        )
+        return self._create_modified_instance(db_path=str(path))
 
     def with_dialect(self, dialect: DatabaseDialect) -> "DatabaseConfig":
         """
@@ -285,29 +325,33 @@ class DatabaseConfig:
 
         Returns:
             DatabaseConfig: New instance with updated dialect
+
+        Example:
+            ```python
+            memory_config = config.database.with_dialect(DatabaseDialect.MEMORY)
+            ```
         """
-        return DatabaseConfig(
-            db_path=self.db_path,
-            dialect=dialect,
-            pragmas=self.pragmas,
-            sql_templates=self.sql_templates,
-            pool_mode=self.pool_mode,
-            pool_size=self.pool_size,
-            pool_timeout=self.pool_timeout,
-            pool_recycle=self.pool_recycle,
-            isolation_level=self.isolation_level,
-            enable_foreign_keys=self.enable_foreign_keys,
-            enable_wal_mode=self.enable_wal_mode,
-            page_size=self.page_size,
-            cache_size=self.cache_size,
-        )
+        return self._create_modified_instance(dialect=dialect)
 
     def optimize_for_reads(self) -> "DatabaseConfig":
         """
         Create a new instance optimized for read operations.
 
+        Configures the database for optimal read performance with:
+        - Larger connection pool
+        - Larger cache size
+        - Memory-based temporary storage
+        - WAL journal mode
+        - Relaxed transaction isolation
+
         Returns:
             DatabaseConfig: New read-optimized configuration
+
+        Example:
+            ```python
+            read_config = config.database.optimize_for_reads()
+            read_conn = create_connection(read_config)
+            ```
         """
         read_pragmas = dict(self.pragmas)
         read_pragmas.update(
@@ -319,19 +363,11 @@ class DatabaseConfig:
             }
         )
 
-        return DatabaseConfig(
-            db_path=self.db_path,
-            dialect=self.dialect,
+        return self._create_modified_instance(
             pragmas=read_pragmas,
-            sql_templates=self.sql_templates,
-            pool_mode=self.pool_mode,
             pool_size=max(self.pool_size, 8),  # Larger pool for more concurrent reads
-            pool_timeout=self.pool_timeout,
-            pool_recycle=self.pool_recycle,
             isolation_level="READ_COMMITTED",  # Lower isolation level for better concurrency
-            enable_foreign_keys=self.enable_foreign_keys,
             enable_wal_mode=True,  # WAL is critical for read performance
-            page_size=self.page_size,
             cache_size=8000,  # Larger cache size
         )
 
@@ -339,8 +375,21 @@ class DatabaseConfig:
         """
         Create a new instance optimized for write operations.
 
+        Configures the database for optimal write performance with:
+        - Moderate connection pool
+        - Memory mapping for large datasets
+        - Adjusted synchronous mode
+        - WAL journal mode
+        - Larger page size
+
         Returns:
             DatabaseConfig: New write-optimized configuration
+
+        Example:
+            ```python
+            write_config = config.database.optimize_for_writes()
+            write_conn = create_connection(write_config)
+            ```
         """
         write_pragmas = dict(self.pragmas)
         write_pragmas.update(
@@ -352,17 +401,10 @@ class DatabaseConfig:
             }
         )
 
-        return DatabaseConfig(
-            db_path=self.db_path,
-            dialect=self.dialect,
+        return self._create_modified_instance(
             pragmas=write_pragmas,
-            sql_templates=self.sql_templates,
-            pool_mode=self.pool_mode,
             pool_size=max(self.pool_size, 4),  # Moderate pool size for writes
-            pool_timeout=self.pool_timeout,
             pool_recycle=1800,  # More frequent recycling for write connections
-            isolation_level=self.isolation_level,
-            enable_foreign_keys=self.enable_foreign_keys,
             enable_wal_mode=True,  # WAL is also good for writes
             page_size=8192,  # Larger page size for bulk writes
             cache_size=4000,  # Moderate cache size
@@ -372,8 +414,20 @@ class DatabaseConfig:
         """
         Validate the entire configuration for consistency and correctness.
 
+        Checks all configuration parameters for valid values and
+        compatibility with the selected database dialect.
+
         Raises:
             DatabaseConfigError: If any validation fails
+
+        Example:
+            ```python
+            try:
+                config.database.validate()
+                print("Configuration is valid")
+            except DatabaseConfigError as e:
+                print(f"Invalid configuration: {e}")
+            ```
         """
         errors = []
 
@@ -398,6 +452,22 @@ class DatabaseConfig:
                 f"Configuration validation failed: {'; '.join(errors)}"
             )
 
+    # ==========================================
+    # Private Helper Methods
+    # ==========================================
+
+    def _create_modified_instance(self, **kwargs) -> "DatabaseConfig":
+        """
+        Create a new configuration instance with modified attributes.
+
+        Args:
+            **kwargs: Attribute name-value pairs to override
+
+        Returns:
+            DatabaseConfig: New instance with specified modifications
+        """
+        return replace(self, **kwargs)
+
 
 # ==========================================
 # Module Exports
@@ -412,6 +482,8 @@ __all__ = [
     "ConnectionPoolMode",
     "SQLitePragmas",
     "SQLTemplates",
+    "PoolSettingsDict",
+    "PragmaDict",
     # Error types
     "DatabaseConfigError",
 ]

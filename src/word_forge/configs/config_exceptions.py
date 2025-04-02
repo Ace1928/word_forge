@@ -1,12 +1,8 @@
 """
 Unified configuration system for Word Forge.
-
-This module centralizes all configuration settings used throughout
-the Word Forge system, ensuring consistency across components.
-
-The configuration architecture follows a modular approach with specialized
-dataclasses for each subsystem, unified through a central Config class
-that manages environment variable overrides and directory creation.
+This module defines all exceptions used throughout the configuration
+system, providing a consistent way to handle errors related to configuration
+loading, parsing, and validation.
 """
 
 from pathlib import Path

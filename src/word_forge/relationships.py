@@ -10,7 +10,7 @@ The relationships are organized into semantic categories with consistent
 property patterns for each relationship type.
 
 Typical usage:
-    from word_forge.relationships import RELATIONSHIP_TYPES
+    from word_forge.relationships import RELATIONSHIP_TYPES, get_relationship_properties
 
     # Get properties for a specific relationship
     synonym_props = RELATIONSHIP_TYPES["synonym"]
@@ -19,8 +19,8 @@ Typical usage:
     # Check if a relationship is bidirectional
     is_bidirectional = RELATIONSHIP_TYPES["hypernym"]["bidirectional"]  # False
 
-    # Fall back to default when a relationship isn't defined
-    props = RELATIONSHIP_TYPES.get("unknown_type", RELATIONSHIP_TYPES["default"])
+    # Use the helper function with fallback to default
+    props = get_relationship_properties("unknown_type")  # Returns default properties
 """
 
 from typing import Dict, Final, Literal, TypedDict, Union
@@ -28,6 +28,9 @@ from typing import Dict, Final, Literal, TypedDict, Union
 
 class RelationshipProperties(TypedDict):
     """Properties defining a lexical or emotional relationship type.
+
+    Each relationship has a set of properties that define its characteristics,
+    visual representation, and behavioral aspects in the lexical network.
 
     Attributes:
         weight: Float between 0.0-1.0 indicating relationship strength/importance.
@@ -44,28 +47,63 @@ class RelationshipProperties(TypedDict):
 
 
 # Type definitions for relationship categories
+# Each category represents a distinct semantic or emotional dimension
+
+#: Core linguistic relationships between words (strongest connections)
 CORE_RELATIONSHIPS = Literal["synonym", "antonym"]
+
+#: Relationships representing taxonomic hierarchies (superordinate/subordinate)
 HIERARCHICAL_RELATIONSHIPS = Literal["hypernym", "hyponym"]
+
+#: Relationships representing compositional hierarchies (whole/part)
 PART_WHOLE_RELATIONSHIPS = Literal["holonym", "meronym"]
+
+#: Cross-language equivalence relationships
 TRANSLATION_RELATIONSHIPS = Literal["translation"]
+
+#: Relationships connecting words to their semantic domains or functions
 SEMANTIC_FIELD_RELATIONSHIPS = Literal["domain", "function"]
+
+#: General semantic association without specific relationship type
 GENERAL_SEMANTIC_RELATIONSHIPS = Literal["related"]
+
+#: Relationships based on word formation and etymology
 DERIVATIONAL_RELATIONSHIPS = Literal["derived_from", "etymological_source"]
+
+#: Relationships defining usage contexts and registers
 USAGE_RELATIONSHIPS = Literal["context", "register"]
+
+#: Relationships connecting concepts to their examples or instances
 EXAMPLE_BASED_RELATIONSHIPS = Literal["example_of", "instance"]
+
+#: Relationships between words with similar or opposite emotional content
 EMOTIONAL_VALENCE_RELATIONSHIPS = Literal["emotional_synonym", "emotional_antonym"]
+
+#: Relationships that modify emotional intensity
 EMOTIONAL_INTENSITY_RELATIONSHIPS = Literal["intensifies", "diminishes"]
+
+#: Relationships describing emotional cause-effect connections
 EMOTIONAL_CAUSALITY_RELATIONSHIPS = Literal["evokes", "responds_to"]
+
+#: Relationships connecting words along specific emotional dimensions
 EMOTIONAL_DIMENSION_RELATIONSHIPS = Literal[
     "valence_related", "arousal_related", "dominance_related"
 ]
+
+#: Relationships describing compositional aspects of complex emotions
 EMOTIONAL_COMPLEXITY_RELATIONSHIPS = Literal[
     "emotional_component", "emotional_composite", "emotional_sequence"
 ]
+
+#: Relationships defining how emotions relate to different contexts
 CONTEXTUAL_EMOTIONAL_RELATIONSHIPS = Literal[
     "cultural_context", "situational_context", "temporal_context"
 ]
+
+#: Relationships describing higher-order emotional processing
 META_EMOTIONAL_RELATIONSHIPS = Literal["meta_emotion", "emotional_regulation"]
+
+#: Default relationship type for fallback behavior
 DEFAULT_RELATIONSHIP = Literal["default"]
 
 # Combined type for all relationship types
@@ -156,6 +194,9 @@ def get_relationship_properties(
 ) -> RelationshipProperties:
     """Get properties for a relationship type with fallback to default.
 
+    This function safely retrieves relationship properties even for undefined
+    relationship types, ensuring robust behavior in all contexts.
+
     Args:
         relationship_type: The relationship type to retrieve properties for.
             Can be any string, but preferably one of the defined relationship types.
@@ -171,11 +212,14 @@ def get_relationship_properties(
         >>> get_relationship_properties("unknown_type")
         {'weight': 0.3, 'color': '#aaaaaa', 'bidirectional': True}
     """
-    return RELATIONSHIP_TYPES.get(relationship_type, RELATIONSHIP_TYPES["default"])
+    return RELATIONSHIP_TYPES.get(str(relationship_type), RELATIONSHIP_TYPES["default"])
 
 
 def is_bidirectional(relationship_type: RelationshipType) -> bool:
     """Check if a relationship type is bidirectional.
+
+    Determines whether a relationship applies equally in both directions
+    by retrieving its properties and checking the bidirectional flag.
 
     Args:
         relationship_type: The relationship type to check.
@@ -191,3 +235,47 @@ def is_bidirectional(relationship_type: RelationshipType) -> bool:
         False
     """
     return get_relationship_properties(relationship_type)["bidirectional"]
+
+
+def get_relationship_weight(relationship_type: RelationshipType) -> float:
+    """Get the weight value for a relationship type.
+
+    Retrieves the importance weight of a relationship type, which indicates
+    its strength or significance in the lexical network.
+
+    Args:
+        relationship_type: The relationship type to get the weight for.
+
+    Returns:
+        Float between 0.0-1.0 representing the relationship's weight.
+
+    Examples:
+        >>> get_relationship_weight("synonym")
+        1.0
+
+        >>> get_relationship_weight("related")
+        0.4
+    """
+    return get_relationship_properties(relationship_type)["weight"]
+
+
+def get_relationship_color(relationship_type: RelationshipType) -> str:
+    """Get the visual color code for a relationship type.
+
+    Retrieves the hex color code used to visually represent this
+    relationship type in UI components.
+
+    Args:
+        relationship_type: The relationship type to get the color for.
+
+    Returns:
+        Hexadecimal color code as a string (e.g., "#4287f5").
+
+    Examples:
+        >>> get_relationship_color("synonym")
+        '#4287f5'
+
+        >>> get_relationship_color("antonym")
+        '#f54242'
+    """
+    return get_relationship_properties(relationship_type)["color"]

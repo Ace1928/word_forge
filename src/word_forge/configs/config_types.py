@@ -1,5 +1,12 @@
 """
-Unified type system for word forge configuration.
+Unified type system for Word Forge configuration.
+
+This module defines all types, aliases, and dataclasses used throughout the
+configuration system. These types provide strict contracts for configuration
+components, ensuring type safety across the entire application.
+
+Type definitions are organized by domain and include comprehensive documentation
+to facilitate correct usage throughout the codebase.
 """
 
 from dataclasses import dataclass, field
@@ -40,16 +47,26 @@ class ConfigComponentInfo:
     """
     Metadata about a configuration component.
 
-    Used to track component relationships and dependencies.
+    Used to track component relationships and dependencies for reflection,
+    dependency resolution, and runtime validation.
 
     Attributes:
-        name: Component name
-        class_type: The class of the component
+        name: Component name used for registry lookup
+        class_type: The class of the component for type checking
         dependencies: Names of other components this one depends on
+
+    Example:
+        ```python
+        info = ConfigComponentInfo(
+            name="database",
+            class_type=DatabaseConfig,
+            dependencies={"logging"}
+        )
+        ```
     """
 
     name: str
-    class_type: Type[Any]
+    class_type: Type[Any]  # Using Any to allow various config component types
     dependencies: Set[str] = field(default_factory=set)
 
 
@@ -57,20 +74,26 @@ class ConfigComponentInfo:
 # Basic Type Definitions
 # ==========================================
 
+# Generic type parameters with descriptive names
 T = TypeVar("T")  # Generic type for configuration values
 R = TypeVar("R")  # Return type for type conversion functions
 
-# Refined type definitions for more precise type checking
+# JSON-related type definitions for configuration serialization
 JsonPrimitive = Union[str, int, float, bool, None]
 JsonDict = Dict[str, Any]  # Using Any here due to recursive nature
 JsonList = List[Any]  # Using Any here due to recursive nature
 JsonValue = Union[JsonDict, JsonList, JsonPrimitive]
+
+# Configuration-specific type aliases
 ConfigValue = JsonValue  # Alias for clarity in configuration context
 SerializedConfig = Dict[str, ConfigValue]
 PathLike = Union[str, Path]
+
+# Environment variable related types
 EnvVarType = Union[Type[str], Type[int], Type[float], Type[bool], Type[Enum]]
 EnvMapping = Dict[str, Tuple[str, EnvVarType]]
 
+# Component registry related types
 ComponentName = str
 ComponentRegistry = Dict[ComponentName, ConfigComponentInfo]
 
@@ -81,23 +104,26 @@ ConfigDict = Dict[str, Any]
 # Domain-Specific Type Definitions
 # ==========================================
 
+# Query and SQL-related types
 QueryType = Literal["search", "definition", "similarity"]
 SQLQueryType = Literal["get_term_by_id", "get_message_text"]
-# Valid range types for emotion configuration
-EmotionRange = Tuple[float, float]
 
-# Type definition for sample words and relationships
+# Emotion configuration types
+EmotionRange = Tuple[float, float]  # (valence, arousal) pairs in range [-1.0, 1.0]
+
+# Sample data types for testing and initialization
 SampleWord = Tuple[str, str, str]  # term, definition, part_of_speech
 SampleRelationship = Tuple[str, str, str]  # word1, word2, relationship_type
+
+# Queue and concurrency types
 LockType = Literal["reentrant", "standard"]
-# Type alias for queue metrics format
 QueueMetricsFormat = Literal["json", "csv", "prometheus"]
 
 # ==========================================
 # Conversation Type Definitions
 # ==========================================
 
-# Type definitions for conversation status values
+# Valid status values for conversations
 ConversationStatusValue = Literal[
     "active", "pending", "completed", "archived", "deleted"
 ]
@@ -149,6 +175,7 @@ TransactionIsolationLevel = Literal[
 # Connection pool modes
 ConnectionPoolMode = Literal["fixed", "dynamic", "none"]
 
+# Generic JSON data structure (used for external API responses)
 JsonData = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
 
 # ==========================================
@@ -160,10 +187,22 @@ class InstructionTemplate(NamedTuple):
     """
     Template structure for model instructions.
 
+    Used to format prompts for embedding models and other generative tasks
+    with consistent structure.
+
     Attributes:
         task: The instruction task description
         query_prefix: Template for prefixing queries
         document_prefix: Optional template for prefixing documents
+
+    Example:
+        ```python
+        template = InstructionTemplate(
+            task="Find documents that answer this question",
+            query_prefix="Question: ",
+            document_prefix="Document: "
+        )
+        ```
     """
 
     task: str
@@ -172,7 +211,19 @@ class InstructionTemplate(NamedTuple):
 
 
 class SQLitePragmas(TypedDict, total=False):
-    """Type definition for SQLite pragma settings."""
+    """
+    Type definition for SQLite pragma settings.
+
+    Defines the type-safe structure for SQLite performance and behavior
+    configuration options.
+
+    Attributes:
+        foreign_keys: Enable/disable foreign key constraints ("ON"/"OFF")
+        journal_mode: Transaction journaling mode (WAL, DELETE, etc.)
+        synchronous: Disk synchronization strategy (NORMAL, FULL, OFF)
+        cache_size: Database cache size in pages or KiB
+        temp_store: Temporary storage location (MEMORY, FILE)
+    """
 
     foreign_keys: str
     journal_mode: str
@@ -182,7 +233,17 @@ class SQLitePragmas(TypedDict, total=False):
 
 
 class SQLTemplates(TypedDict, total=False):
-    """Type definition for SQL query templates."""
+    """
+    Type definition for SQL query templates.
+
+    Provides a centralized repository of database queries with type-safe access.
+
+    Attributes:
+        create_words_table: SQL to create the words table
+        create_relationships_table: SQL to create the relationships table
+        create_word_id_index: SQL to create index on word IDs
+        create_unique_relationship_index: SQL to create unique relationship index
+    """
 
     create_words_table: str
     create_relationships_table: str
@@ -191,7 +252,17 @@ class SQLTemplates(TypedDict, total=False):
 
 
 class TemplateDict(TypedDict):
-    """Structure defining an instruction template configuration."""
+    """
+    Structure defining an instruction template configuration.
+
+    Used for configuring instruction templates through configuration files
+    rather than direct instantiation.
+
+    Attributes:
+        task: The instruction task description
+        query_prefix: Template for prefixing queries
+        document_prefix: Optional template for prefixing documents
+    """
 
     task: Optional[str]
     query_prefix: Optional[str]
@@ -199,7 +270,19 @@ class TemplateDict(TypedDict):
 
 
 class WordnetEntry(TypedDict):
-    """Type definition for a WordNet entry with comprehensive lexical information."""
+    """
+    Type definition for a WordNet entry with comprehensive lexical information.
+
+    Structured representation of WordNet data used in the parser and database.
+
+    Attributes:
+        word: The lexical item itself
+        definition: Word definition
+        examples: Usage examples for this word
+        synonyms: List of synonym words
+        antonyms: List of antonym words
+        part_of_speech: Grammatical category (noun, verb, etc.)
+    """
 
     word: str
     definition: str
@@ -210,21 +293,52 @@ class WordnetEntry(TypedDict):
 
 
 class DictionaryEntry(TypedDict):
-    """Type definition for a standard dictionary entry."""
+    """
+    Type definition for a standard dictionary entry.
+
+    Generic dictionary format used for various data sources.
+
+    Attributes:
+        definition: The word definition
+        examples: Usage examples for this word
+    """
 
     definition: str
     examples: List[str]
 
 
 class DbnaryEntry(TypedDict):
-    """Type definition for a DBnary lexical entry containing definitions and translations."""
+    """
+    Type definition for a DBnary lexical entry containing definitions and translations.
+
+    Specialized structure for multilingual dictionary entries.
+
+    Attributes:
+        definition: Word definition
+        translation: Translation in target language
+    """
 
     definition: str
     translation: str
 
 
 class LexicalDataset(TypedDict):
-    """Type definition for the comprehensive lexical dataset."""
+    """
+    Type definition for the comprehensive lexical dataset.
+
+    Consolidated data structure containing information from multiple sources
+    for a single lexical item.
+
+    Attributes:
+        word: The lexical item itself
+        wordnet_data: Data from WordNet
+        openthesaurus_synonyms: Synonyms from OpenThesaurus
+        odict_data: Definitions from Open Dictionary
+        dbnary_data: Data from DBnary
+        opendict_data: Data from OpenDict
+        thesaurus_synonyms: Additional synonym data
+        example_sentence: Example usage in context
+    """
 
     word: str
     wordnet_data: List[WordnetEntry]

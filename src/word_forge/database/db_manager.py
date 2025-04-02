@@ -1,3 +1,11 @@
+"""
+Database Manager Module
+This module provides a class for managing a SQLite database that stores
+words, definitions, and their relationships, both lexical and emotive/affective. It includes methods for
+inserting, updating, and retrieving word entries, as well as managing
+relationships between words.
+"""
+
 import sqlite3
 import time
 from functools import lru_cache

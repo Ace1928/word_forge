@@ -10,11 +10,11 @@ that manages environment variable overrides and directory creation.
 
 Architecture:
     ┌───────────────┐
-    │     Config    │
+    │     Config    │ ← Central configuration manager
     └───────┬───────┘
-            │
+            │ orchestrates
     ┌───────┴───────┐
-    │  Components   │
+    │  Components   │ ← Individual subsystem configs
     └───────────────┘
     ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
     │ DB  │Vec  │Parse│Emo  │Graph│Queue│Conv │Log  │
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, Final, List, Optional, Set, Tuple, Type
 
 from word_forge.configs.config_essentials import serialize_config, serialize_dataclass
-from word_forge.configs.config_exceptions import (  # Custom error types
+from word_forge.configs.config_exceptions import (
     ConfigError,
     DatabaseConfigError,
     DatabaseConnectionError,
@@ -47,13 +47,10 @@ from word_forge.configs.config_exceptions import (  # Custom error types
     VectorConfigError,
     VectorIndexError,
 )
-from word_forge.configs.config_protocols import (
-    C,
-    ConfigComponent,  # Protocols for JSON serialization
-)
+from word_forge.configs.config_protocols import C, ConfigComponent
 
 # Import all essential configuration types
-from word_forge.configs.config_types import (  # Core types; Storage types; Template types; Queue types; Conversation types; Vector types; Graph types; Logging types; Database types; Other types
+from word_forge.configs.config_types import (
     DATA_ROOT,
     LOGS_ROOT,
     PROJECT_ROOT,
@@ -109,7 +106,8 @@ class Config:
 
     This class centralizes configuration for database, vectorizer, parser,
     emotion analysis, graph management, queue processing, conversation management,
-    and logging systems.
+    and logging systems. It provides environment variable overrides and ensures
+    required directories exist.
 
     Attributes:
         database: Database connection and query configuration
@@ -120,6 +118,7 @@ class Config:
         queue: Task queue processing configuration
         conversation: Conversation management configuration
         logging: Logging levels and output configuration
+        _component_registry: Internal registry of component metadata for reflection
 
     Usage:
         from word_forge.config import config
@@ -135,7 +134,7 @@ class Config:
     """
 
     # Registry of configuration components with metadata
-    # This structure enables reflection and dependency tracking
+    # This enables reflection, dependency tracking, and runtime validation
     _component_registry: Final[ComponentRegistry] = {
         "database": ConfigComponentInfo(name="database", class_type=DatabaseConfig),
         "vectorizer": ConfigComponentInfo(
@@ -152,7 +151,12 @@ class Config:
     }
 
     def __init__(self) -> None:
-        """Initialize configuration with defaults and environment overrides."""
+        """
+        Initialize configuration with defaults and environment overrides.
+
+        Creates configuration components, applies environment variable overrides,
+        and ensures all required directories exist.
+        """
         # Initialize all configuration components
         self.database: DatabaseConfig = DatabaseConfig()
         self.vectorizer: VectorizerConfig = VectorizerConfig()
@@ -174,12 +178,14 @@ class Config:
         Load configuration from environment variables.
 
         Processes environment variables based on ENV_VARS mapping
-        defined in each configuration class.
+        defined in each configuration class. Each variable is converted
+        to the appropriate type and assigned to the corresponding attribute.
 
         Raises:
-            EnvVarError: If an environment variable has an invalid format or type
+            EnvVarError: If an environment variable has an invalid format,
+                cannot be converted to the target type, or the attribute doesn't exist
         """
-        for config_name, config_obj in self._get_config_objects():
+        for _, config_obj in self._get_config_objects():
             env_vars = getattr(config_obj.__class__, "ENV_VARS", None)
             if not env_vars:
                 continue
@@ -187,14 +193,19 @@ class Config:
             for env_var, (attr_name, value_type) in env_vars.items():
                 self._set_from_env(env_var, config_obj, attr_name, value_type)
 
-    def _get_config_objects(self) -> List[Tuple[ComponentName, Any]]:
+    def _get_config_objects(self) -> List[Tuple[ComponentName, ConfigComponent]]:
         """
         Get all configuration objects with their names.
 
         Returns:
-            List of (name, object) tuples for all configuration components
+            List of (name, object) tuples for all registered configuration components
         """
-        return [(name, getattr(self, name)) for name in self._component_registry.keys()]
+        component_items: List[Tuple[ComponentName, ConfigComponent]] = []
+        for name in self._component_registry.keys():
+            component = getattr(self, name)
+            if component:
+                component_items.append((name, component))
+        return component_items
 
     def _set_from_env(
         self,
@@ -214,7 +225,7 @@ class Config:
 
         Raises:
             EnvVarError: If the environment variable has an invalid format,
-                         can't be converted to the target type, or attribute doesn't exist
+                can't be converted to the target type, or attribute doesn't exist
         """
         if env_var not in os.environ:
             return
@@ -225,7 +236,7 @@ class Config:
             if value_type is bool:
                 # Convert string to boolean with explicit true values
                 typed_value: Any = value.lower() in ("true", "yes", "1", "y")
-            elif issubclass(value_type, Enum):
+            elif value_type and issubclass(value_type, Enum):
                 # Convert string to Enum value
                 typed_value = value_type(value)
             else:
@@ -251,7 +262,8 @@ class Config:
         Ensure all required directories exist.
 
         Creates paths for data storage, logs, and any other required
-        directories defined in configuration.
+        directories defined in configuration. This prevents errors when
+        files are later written to these locations.
 
         Raises:
             PathError: If directory creation fails due to permissions or disk issues
@@ -301,7 +313,7 @@ class Config:
         """
         return Path(self.parser.data_dir) / path
 
-    def get_component(self, name: str) -> Optional[Any]:
+    def get_component(self, name: str) -> Optional[ConfigComponent]:
         """
         Get a configuration component by name.
 
@@ -311,7 +323,7 @@ class Config:
         Returns:
             The component if found, None otherwise
         """
-        return getattr(self, name, None)
+        return getattr(self, name, None) if name in self._component_registry else None
 
     def get_typed_component(self, name: str, component_type: Type[C]) -> Optional[C]:
         """
@@ -334,7 +346,7 @@ class Config:
             return component
         return None
 
-    def get_available_components(self) -> Set[str]:
+    def get_available_components(self) -> Set[ComponentName]:
         """
         Get list of all available configuration component names.
 
@@ -343,7 +355,7 @@ class Config:
         """
         return set(self._component_registry.keys())
 
-    def validate_all(self) -> Dict[str, List[str]]:
+    def validate_all(self) -> Dict[ComponentName, List[str]]:
         """
         Validate all configuration components that support validation.
 
@@ -360,15 +372,14 @@ class Config:
                     if errors:
                         print(f"  {component}: {', '.join(errors)}")
         """
-        results: Dict[str, List[str]] = {}
+        results: Dict[ComponentName, List[str]] = {}
 
         for name, component in self._get_config_objects():
             # Only validate components with validate method
-            if hasattr(component, "validate") and callable(
-                getattr(component, "validate")
-            ):
+            validate_method = getattr(component, "validate", None)
+            if validate_method and callable(validate_method):
                 try:
-                    component.validate()
+                    validate_method()
                     results[name] = []
                 except ConfigError as e:
                     results[name] = [str(e)]
@@ -384,10 +395,11 @@ class Config:
         Convert the entire configuration to a dictionary.
 
         Returns:
-            Dictionary representation of all configuration components
+            Dictionary representation of all configuration components with
+            serialized values that can be converted to JSON
         """
         return {
-            "database": asdict(self.database),
+            "database": self.database,
             "vectorizer": serialize_dataclass(self.vectorizer),
             "parser": asdict(self.parser),
             "emotion": serialize_dataclass(self.emotion),
@@ -402,7 +414,7 @@ class Config:
         Export configuration as JSON string.
 
         Args:
-            pretty: Whether to format the JSON with indentation
+            pretty: Whether to format the JSON with indentation for readability
 
         Returns:
             JSON string representation of the configuration
@@ -442,8 +454,13 @@ def main() -> None:
     """
     Display current configuration settings.
 
-    This function demonstrates how to access configuration values and
-    print the current configuration state for diagnostic purposes.
+    Command-line interface function that provides options to validate
+    configuration, export to file, or display configuration components.
+
+    Usage:
+        python -m word_forge.config --validate
+        python -m word_forge.config --export config.json
+        python -m word_forge.config --component database
     """
     import argparse
 
