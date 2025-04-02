@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='utf-8'?>
+<gexf xmlns="http://www.gexf.net/1.2draft" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.gexf.net/1.2draft http://www.gexf.net/1.2draft/gexf.xsd" version="1.2">
+  <meta lastmodifieddate="2025-04-02">
+    <creator>NetworkX 3.4.2</creator>
+  </meta>
+  <graph defaultedgetype="undirected" mode="static" name="">
+    <attributes mode="static" class="node">
+      <attribute id="0" title="term" type="string" />
+      <attribute id="1" title="x" type="double" />
+      <attribute id="2" title="y" type="double" />
+    </attributes>
+    <nodes>
+      <node id="1" label="1">
+        <attvalues>
+          <attvalue for="0" value="happiness" />
+          <attvalue for="1" value="-0.433657597055216" />
+          <attvalue for="2" value="-0.7953884442951678" />
+        </attvalues>
+      </node>
+      <node id="2" label="2">
+        <attvalues>
+          <attvalue for="0" value="sadness" />
+          <attvalue for="1" value="0.18753883425155934" />
+          <attvalue for="2" value="-0.959809583928868" />
+        </attvalues>
+      </node>
+      <node id="3" label="3">
+        <attvalues>
+          <attvalue for="0" value="anger" />
+          <attvalue for="1" value="0.1491266457058785" />
+          <attvalue for="2" value="0.9373777070342209" />
+        </attvalues>
+      </node>
+      <node id="4" label="4">
+        <attvalues>
+          <attvalue for="0" value="fear" />
+          <attvalue for="1" value="-0.4834936988355656" />
+          <attvalue for="2" value="0.9083799767302193" />
+        </attvalues>
+      </node>
+      <node id="5" label="5">
+        <attvalues>
+          <attvalue for="0" value="surprise" />
+          <attvalue for="1" value="1.0" />
+          <attvalue for="2" value="0.03497642334144622" />
+        </attvalues>
+      </node>
+      <node id="11" label="11">
+        <attvalues>
+          <attvalue for="0" value="melancholy" />
+          <attvalue for="1" value="-0.9317432969372141" />
+          <attvalue for="2" value="-0.5160540771938956" />
+        </attvalues>
+      </node>
+      <node id="12" label="12">
+        <attvalues>
+          <attvalue for="0" value="excitement" />
+          <attvalue for="1" value="-0.8913061417313515" />
+          <attvalue for="2" value="0.2836634436665782" />
+        </attvalues>
+      </node>
+      <node id="13" label="13">
+        <attvalues>
+          <attvalue for="0" value="anxiety" />
+          <attvalue for="1" value="0.6846564771819593" />
+          <attvalue for="2" value="-0.5333945235587434" />
+        </attvalues>
+      </node>
+      <node id="14" label="14">
+        <attvalues>
+          <attvalue for="0" value="curiosity" />
+          <attvalue for="1" value="0.7188787774199504" />
+          <attvalue for="2" value="0.6402490782042102" />
+        </attvalues>
+      </node>
+    </nodes>
+    <edges />
+  </graph>
+</gexf>

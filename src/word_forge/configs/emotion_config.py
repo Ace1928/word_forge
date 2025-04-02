@@ -5,8 +5,52 @@ Emotional Configuration module for Word Forge.
 from dataclasses import dataclass, field
 from typing import ClassVar, Dict, List
 
-from word_forge.configs.config_essentials import EmotionRange  # Type variables
+from word_forge.configs.config_essentials import EmotionRange
 from word_forge.configs.config_types import EnvMapping
+
+# SQL template constants exported at module level for backward compatibility
+SQL_CREATE_WORD_EMOTION_TABLE = """
+    CREATE TABLE IF NOT EXISTS word_emotion (
+        word_id INTEGER PRIMARY KEY,
+        valence REAL NOT NULL,
+        arousal REAL NOT NULL,
+        timestamp REAL NOT NULL,
+        FOREIGN KEY(word_id) REFERENCES words(id)
+    );
+"""
+
+SQL_CREATE_MESSAGE_EMOTION_TABLE = """
+    CREATE TABLE IF NOT EXISTS message_emotion (
+        message_id INTEGER PRIMARY KEY,
+        label TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        timestamp REAL NOT NULL
+    );
+"""
+
+SQL_INSERT_WORD_EMOTION = """
+    INSERT OR REPLACE INTO word_emotion
+    (word_id, valence, arousal, timestamp)
+    VALUES (?, ?, ?, ?)
+"""
+
+SQL_GET_WORD_EMOTION = """
+    SELECT word_id, valence, arousal, timestamp
+    FROM word_emotion
+    WHERE word_id = ?
+"""
+
+SQL_INSERT_MESSAGE_EMOTION = """
+    INSERT OR REPLACE INTO message_emotion
+    (message_id, label, confidence, timestamp)
+    VALUES (?, ?, ?, ?)
+"""
+
+SQL_GET_MESSAGE_EMOTION = """
+    SELECT message_id, label, confidence, timestamp
+    FROM message_emotion
+    WHERE message_id = ?
+"""
 
 
 @dataclass
@@ -46,43 +90,12 @@ class EmotionConfig:
     # SQL templates for emotion tables
     sql_templates: Dict[str, str] = field(
         default_factory=lambda: {
-            "create_word_emotion_table": """
-                CREATE TABLE IF NOT EXISTS word_emotion (
-                    word_id INTEGER PRIMARY KEY,
-                    valence REAL NOT NULL,
-                    arousal REAL NOT NULL,
-                    timestamp REAL NOT NULL,
-                    FOREIGN KEY(word_id) REFERENCES words(id)
-                );
-            """,
-            "create_message_emotion_table": """
-                CREATE TABLE IF NOT EXISTS message_emotion (
-                    message_id INTEGER PRIMARY KEY,
-                    label TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    timestamp REAL NOT NULL
-                );
-            """,
-            "insert_word_emotion": """
-                INSERT OR REPLACE INTO word_emotion
-                (word_id, valence, arousal, timestamp)
-                VALUES (?, ?, ?, ?)
-            """,
-            "get_word_emotion": """
-                SELECT word_id, valence, arousal, timestamp
-                FROM word_emotion
-                WHERE word_id = ?
-            """,
-            "insert_message_emotion": """
-                INSERT OR REPLACE INTO message_emotion
-                (message_id, label, confidence, timestamp)
-                VALUES (?, ?, ?, ?)
-            """,
-            "get_message_emotion": """
-                SELECT message_id, label, confidence, timestamp
-                FROM message_emotion
-                WHERE message_id = ?
-            """,
+            "create_word_emotion_table": SQL_CREATE_WORD_EMOTION_TABLE,
+            "create_message_emotion_table": SQL_CREATE_MESSAGE_EMOTION_TABLE,
+            "insert_word_emotion": SQL_INSERT_WORD_EMOTION,
+            "get_word_emotion": SQL_GET_WORD_EMOTION,
+            "insert_message_emotion": SQL_INSERT_MESSAGE_EMOTION,
+            "get_message_emotion": SQL_GET_MESSAGE_EMOTION,
         }
     )
 
@@ -155,3 +168,34 @@ class EmotionConfig:
         """
         min_val, max_val = self.confidence_range
         return min_val <= value <= max_val
+
+    # For backward compatibility, maintain access to SQL templates through class attributes
+    @property
+    def SQL_CREATE_WORD_EMOTION_TABLE(self) -> str:
+        """SQL template for word emotion table creation."""
+        return self.sql_templates["create_word_emotion_table"]
+
+    @property
+    def SQL_CREATE_MESSAGE_EMOTION_TABLE(self) -> str:
+        """SQL template for message emotion table creation."""
+        return self.sql_templates["create_message_emotion_table"]
+
+    @property
+    def SQL_INSERT_WORD_EMOTION(self) -> str:
+        """SQL template for inserting word emotion data."""
+        return self.sql_templates["insert_word_emotion"]
+
+    @property
+    def SQL_GET_WORD_EMOTION(self) -> str:
+        """SQL template for retrieving word emotion data."""
+        return self.sql_templates["get_word_emotion"]
+
+    @property
+    def SQL_INSERT_MESSAGE_EMOTION(self) -> str:
+        """SQL template for inserting message emotion data."""
+        return self.sql_templates["insert_message_emotion"]
+
+    @property
+    def SQL_GET_MESSAGE_EMOTION(self) -> str:
+        """SQL template for retrieving message emotion data."""
+        return self.sql_templates["get_message_emotion"]

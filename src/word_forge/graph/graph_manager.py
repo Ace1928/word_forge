@@ -11,6 +11,7 @@ import numpy as np  # For dimensional calculations
 
 from word_forge.config import config
 from word_forge.database.db_manager import DatabaseError, DBManager
+from word_forge.relationships import RELATIONSHIP_TYPES
 
 
 class GraphError(DatabaseError):
@@ -90,37 +91,6 @@ SQL_INSERT_SAMPLE_RELATIONSHIP = config.graph.sql_templates[
     "insert_sample_relationship"
 ]
 
-# Expanded relationship types to include all relationships from ParserRefiner
-RELATIONSHIP_TYPES = {
-    # Core relationships
-    "synonym": {"weight": 1.0, "color": "#4287f5", "bidirectional": True},
-    "antonym": {"weight": 0.9, "color": "#f54242", "bidirectional": True},
-    # Hierarchical relationships
-    "hypernym": {"weight": 0.7, "color": "#42f584", "bidirectional": False},
-    "hyponym": {"weight": 0.7, "color": "#a142f5", "bidirectional": False},
-    # Part-whole relationships
-    "holonym": {"weight": 0.6, "color": "#f5a142", "bidirectional": False},
-    "meronym": {"weight": 0.6, "color": "#42f5f5", "bidirectional": False},
-    # Translation relationships
-    "translation": {"weight": 0.8, "color": "#42d4f5", "bidirectional": True},
-    # Semantic field relationships
-    "domain": {"weight": 0.5, "color": "#7a42f5", "bidirectional": False},
-    "function": {"weight": 0.5, "color": "#f542a7", "bidirectional": False},
-    # General semantic relationships
-    "related": {"weight": 0.4, "color": "#42f5a1", "bidirectional": True},
-    # Derivational relationships
-    "derived_from": {"weight": 0.5, "color": "#8c42f5", "bidirectional": False},
-    "etymological_source": {"weight": 0.4, "color": "#f5b942", "bidirectional": False},
-    # Usage relationships
-    "context": {"weight": 0.3, "color": "#42d4f5", "bidirectional": False},
-    "register": {"weight": 0.3, "color": "#f542d4", "bidirectional": False},
-    # Example-based relationships
-    "example_of": {"weight": 0.3, "color": "#7adbf5", "bidirectional": False},
-    "instance": {"weight": 0.4, "color": "#e642f5", "bidirectional": False},
-    # Default for any other relationship
-    "default": {"weight": 0.3, "color": "#aaaaaa", "bidirectional": True},
-}
-
 
 class GraphManager:
     """
@@ -148,6 +118,12 @@ class GraphManager:
         self._positions: Dict[WordId, Position] = {}
         self._relationship_counts: Dict[str, int] = {}
 
+        # Ensure the database parent directory exists
+        db_path = Path(self.db_manager.db_path)
+        if not db_path.exists() and not db_path.parent.exists():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            logging.info(f"Created directory for database: {db_path.parent}")
+
     @property
     def dimensions(self) -> int:
         """Get the number of dimensions for the graph."""
@@ -174,13 +150,27 @@ class GraphManager:
 
         Yields:
             sqlite3.Connection: An active database connection
+
+        Raises:
+            GraphError: If database connection fails
         """
-        conn = sqlite3.connect(self.db_manager.db_path)
-        conn.row_factory = sqlite3.Row
         try:
-            yield conn
-        finally:
-            conn.close()
+            # Ensure parent directory exists
+            db_path = Path(self.db_manager.db_path)
+            if not db_path.parent.exists():
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                logging.info(f"Created directory for database: {db_path.parent}")
+
+            conn = sqlite3.connect(self.db_manager.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            error_msg = f"Database connection error in graph manager: {e}"
+            logging.error(error_msg)
+            raise GraphError(error_msg) from e
 
     def build_graph(self) -> None:
         """
@@ -639,6 +629,12 @@ class GraphManager:
 
         try:
             db_path = Path(self.db_manager.db_path)
+
+            # Create parent directory if it doesn't exist
+            if not db_path.parent.exists():
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                logging.info(f"Created database directory: {db_path.parent}")
+
             if not db_path.exists():
                 logging.warning(f"Database file {db_path} does not exist")
                 return words, relationships
