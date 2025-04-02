@@ -23,7 +23,7 @@ Typical usage:
     props = RELATIONSHIP_TYPES.get("unknown_type", RELATIONSHIP_TYPES["default"])
 """
 
-from typing import Dict, Final, TypedDict
+from typing import Dict, Final, Literal, TypedDict, Union
 
 
 class RelationshipProperties(TypedDict):
@@ -41,6 +41,54 @@ class RelationshipProperties(TypedDict):
     weight: float
     color: str
     bidirectional: bool
+
+
+# Type definitions for relationship categories
+CORE_RELATIONSHIPS = Literal["synonym", "antonym"]
+HIERARCHICAL_RELATIONSHIPS = Literal["hypernym", "hyponym"]
+PART_WHOLE_RELATIONSHIPS = Literal["holonym", "meronym"]
+TRANSLATION_RELATIONSHIPS = Literal["translation"]
+SEMANTIC_FIELD_RELATIONSHIPS = Literal["domain", "function"]
+GENERAL_SEMANTIC_RELATIONSHIPS = Literal["related"]
+DERIVATIONAL_RELATIONSHIPS = Literal["derived_from", "etymological_source"]
+USAGE_RELATIONSHIPS = Literal["context", "register"]
+EXAMPLE_BASED_RELATIONSHIPS = Literal["example_of", "instance"]
+EMOTIONAL_VALENCE_RELATIONSHIPS = Literal["emotional_synonym", "emotional_antonym"]
+EMOTIONAL_INTENSITY_RELATIONSHIPS = Literal["intensifies", "diminishes"]
+EMOTIONAL_CAUSALITY_RELATIONSHIPS = Literal["evokes", "responds_to"]
+EMOTIONAL_DIMENSION_RELATIONSHIPS = Literal[
+    "valence_related", "arousal_related", "dominance_related"
+]
+EMOTIONAL_COMPLEXITY_RELATIONSHIPS = Literal[
+    "emotional_component", "emotional_composite", "emotional_sequence"
+]
+CONTEXTUAL_EMOTIONAL_RELATIONSHIPS = Literal[
+    "cultural_context", "situational_context", "temporal_context"
+]
+META_EMOTIONAL_RELATIONSHIPS = Literal["meta_emotion", "emotional_regulation"]
+DEFAULT_RELATIONSHIP = Literal["default"]
+
+# Combined type for all relationship types
+RelationshipType = Union[
+    CORE_RELATIONSHIPS,
+    HIERARCHICAL_RELATIONSHIPS,
+    PART_WHOLE_RELATIONSHIPS,
+    TRANSLATION_RELATIONSHIPS,
+    SEMANTIC_FIELD_RELATIONSHIPS,
+    GENERAL_SEMANTIC_RELATIONSHIPS,
+    DERIVATIONAL_RELATIONSHIPS,
+    USAGE_RELATIONSHIPS,
+    EXAMPLE_BASED_RELATIONSHIPS,
+    EMOTIONAL_VALENCE_RELATIONSHIPS,
+    EMOTIONAL_INTENSITY_RELATIONSHIPS,
+    EMOTIONAL_CAUSALITY_RELATIONSHIPS,
+    EMOTIONAL_DIMENSION_RELATIONSHIPS,
+    EMOTIONAL_COMPLEXITY_RELATIONSHIPS,
+    CONTEXTUAL_EMOTIONAL_RELATIONSHIPS,
+    META_EMOTIONAL_RELATIONSHIPS,
+    DEFAULT_RELATIONSHIP,
+    str,  # Allow string fallback for backward compatibility
+]
 
 
 # Expanded relationship types to include all relationships from ParserRefiner
@@ -101,3 +149,45 @@ RELATIONSHIP_TYPES: Final[Dict[str, RelationshipProperties]] = {
     # Default for any other relationship
     "default": {"weight": 0.3, "color": "#aaaaaa", "bidirectional": True},
 }
+
+
+def get_relationship_properties(
+    relationship_type: RelationshipType,
+) -> RelationshipProperties:
+    """Get properties for a relationship type with fallback to default.
+
+    Args:
+        relationship_type: The relationship type to retrieve properties for.
+            Can be any string, but preferably one of the defined relationship types.
+
+    Returns:
+        RelationshipProperties for the specified relationship, or default properties
+        if the relationship type isn't defined.
+
+    Examples:
+        >>> get_relationship_properties("synonym")
+        {'weight': 1.0, 'color': '#4287f5', 'bidirectional': True}
+
+        >>> get_relationship_properties("unknown_type")
+        {'weight': 0.3, 'color': '#aaaaaa', 'bidirectional': True}
+    """
+    return RELATIONSHIP_TYPES.get(relationship_type, RELATIONSHIP_TYPES["default"])
+
+
+def is_bidirectional(relationship_type: RelationshipType) -> bool:
+    """Check if a relationship type is bidirectional.
+
+    Args:
+        relationship_type: The relationship type to check.
+
+    Returns:
+        True if the relationship is bidirectional, False otherwise.
+
+    Examples:
+        >>> is_bidirectional("synonym")
+        True
+
+        >>> is_bidirectional("hypernym")
+        False
+    """
+    return get_relationship_properties(relationship_type)["bidirectional"]
