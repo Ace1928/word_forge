@@ -5,6 +5,10 @@ This module defines the configuration schema for knowledge graph visualization,
 including layout algorithms, color schemes, export options, and rendering
 parameters used throughout the Word Forge system.
 
+The configuration supports multidimensional relationship visualization,
+incorporating lexical, emotional, and affective dimensions into a unified
+graph representation with configurable styling and layering options.
+
 Architecture:
     ┌───────────────────┐
     │   GraphConfig     │
@@ -21,7 +25,7 @@ Architecture:
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Set
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -34,6 +38,18 @@ from word_forge.configs.config_essentials import (
 )
 from word_forge.configs.config_types import EnvMapping, SQLTemplates
 
+# ==========================================
+# Relationship Dimension Types
+# ==========================================
+
+RelationshipDimension = Literal[
+    "lexical", "emotional", "affective", "connotative", "contextual"
+]
+
+RelationshipStrength = float  # 0.0 to 1.0, representing connection strength
+
+DimensionWeighting = Dict[RelationshipDimension, float]
+
 
 @dataclass
 class GraphConfig:
@@ -42,6 +58,8 @@ class GraphConfig:
 
     Controls layout algorithms, node/edge styling, export formats,
     and performance parameters for visualizing semantic relationships.
+    Supports multidimensional relationships including lexical, emotional,
+    and affective dimensions with configurable visualization parameters.
 
     Attributes:
         default_layout: Default layout algorithm for graph visualization
@@ -64,6 +82,15 @@ class GraphConfig:
         limit_edge_count: Maximum number of edges to render
         vis_width: Width of visualization in pixels
         vis_height: Height of visualization in pixels
+        active_dimensions: Relationship dimensions to include in visualization
+        dimension_weights: Relative importance of different relationship dimensions
+        relationship_colors: Color mapping for different relationship types
+        emotional_relationship_colors: Colors for emotional relationships
+        affective_relationship_colors: Colors for affective relationships
+        enable_dimension_filtering: Allow filtering by relationship dimension
+        enable_cross_dimension_edges: Show relationships across dimensions
+        cross_dimension_edge_style: Visual style for cross-dimensional edges
+        dimension_z_separation: Z-axis separation for 3D visualization of dimensions
 
     Usage:
         from word_forge.config import config
@@ -76,6 +103,9 @@ class GraphConfig:
 
         # Create optimized config for interactive use
         interactive_config = config.graph.optimize_for_interactivity()
+
+        # Create emotionally-enhanced visualization
+        emotional_config = config.graph.with_emotional_relationships()
     """
 
     # Layout and visualization settings
@@ -115,6 +145,15 @@ class GraphConfig:
             "get_all_relationships": """
                 SELECT word_id, related_term, relationship_type
                 FROM relationships
+            """,
+            "get_emotional_relationships": """
+                SELECT word_id, related_term, relationship_type, valence, arousal
+                FROM emotional_relationships
+                WHERE word_id = ?
+            """,
+            "get_all_emotional_relationships": """
+                SELECT word_id, related_term, relationship_type, valence, arousal
+                FROM emotional_relationships
             """,
             "insert_sample_word": """
                 INSERT OR IGNORE INTO words (term, definition, part_of_speech)
@@ -160,7 +199,24 @@ class GraphConfig:
     limit_node_count: Optional[int] = 1000
     limit_edge_count: Optional[int] = 2000
 
-    # Color mappings for semantic relationships
+    # Multidimensional relationship settings
+    active_dimensions: Set[RelationshipDimension] = field(
+        default_factory=lambda: {"lexical"}
+    )
+
+    dimension_weights: DimensionWeighting = field(
+        default_factory=lambda: {
+            "lexical": 1.0,
+            "emotional": 0.8,
+            "affective": 0.6,
+            "connotative": 0.7,
+            "contextual": 0.5,
+        }
+    )
+
+    # Color mappings for different relationship dimensions
+
+    # Traditional lexical relationships
     relationship_colors: Dict[str, str] = field(
         default_factory=lambda: {
             "synonym": "#4287f5",  # Blue
@@ -175,6 +231,41 @@ class GraphConfig:
             "default": "#aaaaaa",  # Gray
         }
     )
+
+    # Emotional dimension relationships
+    emotional_relationship_colors: Dict[str, str] = field(
+        default_factory=lambda: {
+            "joy_associated": "#ffde17",  # Bright yellow
+            "sadness_associated": "#0077be",  # Blue
+            "anger_associated": "#d62728",  # Red
+            "fear_associated": "#9467bd",  # Purple
+            "surprise_associated": "#2ca02c",  # Green
+            "disgust_associated": "#8c564b",  # Brown
+            "trust_associated": "#17becf",  # Light blue
+            "anticipation_associated": "#ff7f0e",  # Orange
+            "emotional_neutral": "#e0e0e0",  # Light gray
+            "emotionally_charged": "#ff1493",  # Deep pink
+        }
+    )
+
+    # Affective dimension relationships
+    affective_relationship_colors: Dict[str, str] = field(
+        default_factory=lambda: {
+            "positive_valence": "#00cc66",  # Green
+            "negative_valence": "#cc3300",  # Red
+            "high_arousal": "#ff9900",  # Orange
+            "low_arousal": "#3366cc",  # Blue
+            "high_dominance": "#cc00cc",  # Purple
+            "low_dominance": "#669999",  # Teal
+            "valence_neutral": "#cccccc",  # Gray
+        }
+    )
+
+    # Advanced dimension visualization options
+    enable_dimension_filtering: bool = True
+    enable_cross_dimension_edges: bool = True
+    cross_dimension_edge_style: str = "dashed"
+    dimension_z_separation: float = 50.0  # For 3D visualizations
 
     # Export format options
     supported_export_formats: List[GraphExportFormat] = field(
@@ -192,6 +283,7 @@ class GraphConfig:
         "WORD_FORGE_GRAPH_NODE_LIMIT": ("limit_node_count", int),
         "WORD_FORGE_GRAPH_VIS_WIDTH": ("vis_width", int),
         "WORD_FORGE_GRAPH_VIS_HEIGHT": ("vis_height", int),
+        "WORD_FORGE_GRAPH_ENABLE_EMOTIONAL": ("enable_emotional_relationships", bool),
     }
 
     # ==========================================
@@ -228,6 +320,25 @@ class GraphConfig:
         """
         return self.default_export_format in self.supported_export_formats
 
+    @cached_property
+    def all_relationship_colors(self) -> Dict[str, str]:
+        """
+        Get combined color mapping for all relationship types across dimensions.
+
+        Returns:
+            Dict[str, str]: Combined mapping of relationship types to colors
+        """
+        combined = {}
+        combined.update(self.relationship_colors)
+
+        if "emotional" in self.active_dimensions:
+            combined.update(self.emotional_relationship_colors)
+
+        if "affective" in self.active_dimensions:
+            combined.update(self.affective_relationship_colors)
+
+        return combined
+
     # ==========================================
     # Public Methods
     # ==========================================
@@ -236,15 +347,37 @@ class GraphConfig:
         """
         Get color for a specific relationship type.
 
+        Searches across all active relationship dimensions to find the appropriate
+        color for the specified relationship type.
+
         Args:
             relationship_type: The type of relationship
 
         Returns:
             str: Hex color code for the relationship
         """
-        return self.relationship_colors.get(
-            relationship_type.lower(), self.relationship_colors["default"]
-        )
+        relationship_type = relationship_type.lower()
+
+        # First check lexical relationships (backward compatibility)
+        if relationship_type in self.relationship_colors:
+            return self.relationship_colors[relationship_type]
+
+        # Then check emotional relationships if active
+        if (
+            "emotional" in self.active_dimensions
+            and relationship_type in self.emotional_relationship_colors
+        ):
+            return self.emotional_relationship_colors[relationship_type]
+
+        # Then check affective relationships if active
+        if (
+            "affective" in self.active_dimensions
+            and relationship_type in self.affective_relationship_colors
+        ):
+            return self.affective_relationship_colors[relationship_type]
+
+        # Fall back to default color
+        return self.relationship_colors["default"]
 
     def with_layout(self, layout: GraphLayoutAlgorithm) -> "GraphConfig":
         """
@@ -256,32 +389,7 @@ class GraphConfig:
         Returns:
             GraphConfig: New configuration instance
         """
-        return GraphConfig(
-            default_layout=layout,
-            default_color_scheme=self.default_color_scheme,
-            visualization_path=self.visualization_path,
-            default_export_path=self.default_export_path,
-            default_export_format=self.default_export_format,
-            node_size_strategy=self.node_size_strategy,
-            edge_weight_strategy=self.edge_weight_strategy,
-            min_node_size=self.min_node_size,
-            max_node_size=self.max_node_size,
-            min_edge_width=self.min_edge_width,
-            max_edge_width=self.max_edge_width,
-            vis_width=self.vis_width,
-            vis_height=self.vis_height,
-            enable_labels=self.enable_labels,
-            enable_edge_labels=self.enable_edge_labels,
-            enable_tooltips=self.enable_tooltips,
-            high_quality_rendering=self.high_quality_rendering,
-            animation_duration_ms=self.animation_duration_ms,
-            limit_node_count=self.limit_node_count,
-            limit_edge_count=self.limit_edge_count,
-            relationship_colors=self.relationship_colors,
-            supported_export_formats=self.supported_export_formats,
-            sql_templates=self.sql_templates,
-            sample_relationships=self.sample_relationships,
-        )
+        return self._create_modified_config(default_layout=layout)
 
     def optimize_for_interactivity(self) -> "GraphConfig":
         """
@@ -290,20 +398,7 @@ class GraphConfig:
         Returns:
             GraphConfig: New configuration with interactive-friendly settings
         """
-        config = GraphConfig(
-            default_layout=self.default_layout,
-            default_color_scheme=self.default_color_scheme,
-            visualization_path=self.visualization_path,
-            default_export_path=self.default_export_path,
-            default_export_format=self.default_export_format,
-            node_size_strategy=self.node_size_strategy,
-            edge_weight_strategy=self.edge_weight_strategy,
-            min_node_size=self.min_node_size,
-            max_node_size=self.max_node_size,
-            min_edge_width=self.min_edge_width,
-            max_edge_width=self.max_edge_width,
-            vis_width=self.vis_width,
-            vis_height=self.vis_height,
+        return self._create_modified_config(
             enable_labels=True,
             enable_edge_labels=False,
             enable_tooltips=True,
@@ -311,13 +406,7 @@ class GraphConfig:
             animation_duration_ms=300,  # Faster animations
             limit_node_count=200,  # Lower node count for responsiveness
             limit_edge_count=400,  # Lower edge count for responsiveness
-            relationship_colors=self.relationship_colors,
-            supported_export_formats=self.supported_export_formats,
-            sql_templates=self.sql_templates,
-            sample_relationships=self.sample_relationships,
         )
-
-        return config
 
     def optimize_for_publication(self) -> "GraphConfig":
         """
@@ -326,34 +415,72 @@ class GraphConfig:
         Returns:
             GraphConfig: New configuration with publication-quality settings
         """
-        config = GraphConfig(
-            default_layout=self.default_layout,
-            default_color_scheme=self.default_color_scheme,
-            visualization_path=self.visualization_path,
-            default_export_path=self.default_export_path,
+        return self._create_modified_config(
             default_export_format="svg",  # Vector format for publication
-            node_size_strategy=self.node_size_strategy,
-            edge_weight_strategy=self.edge_weight_strategy,
             min_node_size=8,  # Larger min size for visibility
             max_node_size=35,  # Larger max size for visibility
             min_edge_width=1.0,  # Thicker edges for clarity
             max_edge_width=6.0,  # Thicker edges for clarity
             vis_width=1600,  # Higher resolution for publication
             vis_height=1200,  # Higher resolution for publication
-            enable_labels=self.enable_labels,
-            enable_edge_labels=self.enable_edge_labels,
             enable_tooltips=False,  # No tooltips needed for static export
             high_quality_rendering=True,  # Maximum quality
             animation_duration_ms=0,  # No animation for static export
-            limit_node_count=self.limit_node_count,
-            limit_edge_count=self.limit_edge_count,
-            relationship_colors=self.relationship_colors,
-            supported_export_formats=self.supported_export_formats,
-            sql_templates=self.sql_templates,
-            sample_relationships=self.sample_relationships,
         )
 
-        return config
+    def with_emotional_relationships(self) -> "GraphConfig":
+        """
+        Create a new config that includes emotional relationship dimensions.
+
+        Returns:
+            GraphConfig: New configuration with emotional relationships enabled
+        """
+        active_dims = self.active_dimensions.copy()
+        active_dims.add("emotional")
+
+        return self._create_modified_config(
+            active_dimensions=active_dims,
+            enable_cross_dimension_edges=True,
+        )
+
+    def with_affective_relationships(self) -> "GraphConfig":
+        """
+        Create a new config that includes affective relationship dimensions.
+
+        Returns:
+            GraphConfig: New configuration with affective relationships enabled
+        """
+        active_dims = self.active_dimensions.copy()
+        active_dims.add("affective")
+
+        return self._create_modified_config(
+            active_dimensions=active_dims,
+            enable_cross_dimension_edges=True,
+        )
+
+    def with_all_relationship_dimensions(self) -> "GraphConfig":
+        """
+        Create a new config that includes all relationship dimensions.
+
+        Enables lexical, emotional, affective, connotative, and contextual
+        relationship dimensions for a comprehensive visualization.
+
+        Returns:
+            GraphConfig: New configuration with all relationship dimensions enabled
+        """
+        all_dimensions = {
+            "lexical",
+            "emotional",
+            "affective",
+            "connotative",
+            "contextual",
+        }
+
+        return self._create_modified_config(
+            active_dimensions=all_dimensions,
+            enable_cross_dimension_edges=True,
+            dimension_z_separation=100.0,  # Increase separation for better visibility
+        )
 
     def get_export_filepath(self, graph_name: str) -> Path:
         """
@@ -396,7 +523,7 @@ class GraphConfig:
         Returns:
             Dict[str, Any]: Display configuration dictionary
         """
-        return {
+        settings = {
             "enable_labels": self.enable_labels,
             "enable_edge_labels": self.enable_edge_labels,
             "enable_tooltips": self.enable_tooltips,
@@ -408,6 +535,35 @@ class GraphConfig:
             "max_edge_width": self.max_edge_width,
             "vis_width": self.vis_width,
             "vis_height": self.vis_height,
+        }
+
+        # Add multidimensional settings if needed
+        if len(self.active_dimensions) > 1:
+            settings.update(
+                {
+                    "active_dimensions": list(self.active_dimensions),
+                    "dimension_weights": self.dimension_weights,
+                    "enable_dimension_filtering": self.enable_dimension_filtering,
+                    "enable_cross_dimension_edges": self.enable_cross_dimension_edges,
+                    "cross_dimension_edge_style": self.cross_dimension_edge_style,
+                    "dimension_z_separation": self.dimension_z_separation,
+                }
+            )
+
+        return settings
+
+    def get_dimension_settings(self) -> Dict[str, Any]:
+        """
+        Get settings related to multidimensional relationships.
+
+        Returns:
+            Dict[str, Any]: Relationship dimension configuration
+        """
+        return {
+            "active_dimensions": list(self.active_dimensions),
+            "dimension_weights": self.dimension_weights,
+            "enable_dimension_filtering": self.enable_dimension_filtering,
+            "enable_cross_dimension_edges": self.enable_cross_dimension_edges,
         }
 
     def validate(self) -> None:
@@ -455,10 +611,76 @@ class GraphConfig:
         if self.limit_edge_count is not None and self.limit_edge_count <= 0:
             errors.append(f"Edge limit must be positive, got {self.limit_edge_count}")
 
+        # Validate dimension weights
+        for dimension, weight in self.dimension_weights.items():
+            if weight < 0.0 or weight > 1.0:
+                errors.append(
+                    f"Dimension weight for '{dimension}' must be between 0.0 and 1.0, got {weight}"
+                )
+
         if errors:
             raise GraphConfigError(
                 f"Configuration validation failed: {'; '.join(errors)}"
             )
+
+    # ==========================================
+    # Private Helper Methods
+    # ==========================================
+
+    def _create_modified_config(self, **kwargs: Any) -> "GraphConfig":
+        """
+        Create a new configuration with modified attributes.
+
+        This is a helper method that creates a new GraphConfig instance with
+        the specified attributes modified from the current instance.
+
+        Args:
+            **kwargs: Attribute name-value pairs to override
+
+        Returns:
+            GraphConfig: New configuration instance with specified modifications
+        """
+        # Start with current config's attributes
+        new_config_args = {
+            "default_layout": self.default_layout,
+            "default_color_scheme": self.default_color_scheme,
+            "visualization_path": self.visualization_path,
+            "default_export_path": self.default_export_path,
+            "default_export_format": self.default_export_format,
+            "node_size_strategy": self.node_size_strategy,
+            "edge_weight_strategy": self.edge_weight_strategy,
+            "sql_templates": self.sql_templates,
+            "sample_relationships": self.sample_relationships,
+            "min_node_size": self.min_node_size,
+            "max_node_size": self.max_node_size,
+            "min_edge_width": self.min_edge_width,
+            "max_edge_width": self.max_edge_width,
+            "vis_width": self.vis_width,
+            "vis_height": self.vis_height,
+            "enable_labels": self.enable_labels,
+            "enable_edge_labels": self.enable_edge_labels,
+            "enable_tooltips": self.enable_tooltips,
+            "high_quality_rendering": self.high_quality_rendering,
+            "animation_duration_ms": self.animation_duration_ms,
+            "limit_node_count": self.limit_node_count,
+            "limit_edge_count": self.limit_edge_count,
+            "active_dimensions": self.active_dimensions,
+            "dimension_weights": self.dimension_weights,
+            "relationship_colors": self.relationship_colors,
+            "emotional_relationship_colors": self.emotional_relationship_colors,
+            "affective_relationship_colors": self.affective_relationship_colors,
+            "enable_dimension_filtering": self.enable_dimension_filtering,
+            "enable_cross_dimension_edges": self.enable_cross_dimension_edges,
+            "cross_dimension_edge_style": self.cross_dimension_edge_style,
+            "dimension_z_separation": self.dimension_z_separation,
+            "supported_export_formats": self.supported_export_formats,
+        }
+
+        # Update with the provided overrides
+        new_config_args.update(kwargs)
+
+        # Create and return new instance
+        return GraphConfig(**new_config_args)
 
 
 # ==========================================
@@ -474,6 +696,7 @@ __all__ = [
     "GraphExportFormat",
     "GraphNodeSizeStrategy",
     "GraphEdgeWeightStrategy",
+    "RelationshipDimension",
     # Error type
     "GraphConfigError",
 ]
