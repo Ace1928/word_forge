@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Set, Tuple, TypedDict, Union, cast
 
 import networkx as nx
 import numpy as np
+from pyvis.network import Network
 
 from word_forge.config import config
 from word_forge.database.db_manager import DatabaseError, DBManager
