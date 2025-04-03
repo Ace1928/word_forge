@@ -1,6 +1,8 @@
+import random
 import sqlite3
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Dict, Optional, Tuple, Union, cast
 
 from textblob import TextBlob
@@ -12,7 +14,6 @@ try:
 except ImportError:
     VADER_AVAILABLE = False
 
-# Updated imports - import the class instead of constants
 from word_forge.configs.emotion_config import EmotionConfig
 from word_forge.database.db_manager import DBManager
 from word_forge.emotion.emotion_types import (
@@ -26,7 +27,12 @@ from word_forge.emotion.emotion_types import (
 
 
 class EmotionError(Exception):
-    """Exception raised for errors in the emotion analysis subsystem."""
+    """Exception raised for errors in the emotion analysis subsystem.
+
+    Used for all emotion-related errors to provide a consistent interface
+    with contextual information about what went wrong during emotional
+    processing operations.
+    """
 
     pass
 
@@ -44,6 +50,18 @@ class EmotionManager:
     (when available) for more accurate sentiment detection in varied texts.
 
     Advanced recursive emotion processing is available for deeper analysis.
+
+    Attributes:
+        db_manager: Database manager providing connection to storage
+        config: Configuration for emotion analysis parameters
+        VALENCE_RANGE: Valid range for valence values (from config)
+        AROUSAL_RANGE: Valid range for arousal values (from config)
+        CONFIDENCE_RANGE: Valid range for confidence values (from config)
+        EMOTION_KEYWORDS: Dictionary mapping emotion categories to keywords
+        vader_weight: Weight given to VADER in hybrid analysis
+        textblob_weight: Weight given to TextBlob in hybrid analysis
+        vader: VADER sentiment analyzer instance (if available)
+        _recursive_processor: Cached instance of recursive emotion processor
     """
 
     def __init__(self, db_manager: DBManager) -> None:
@@ -79,7 +97,12 @@ class EmotionManager:
         self._recursive_processor = None
 
     def _run_schema_migrations(self) -> None:
-        """Run necessary database schema migrations."""
+        """Run necessary database schema migrations.
+
+        Initializes the database schema to ensure compatibility with
+        the current version of the emotion system. Continues even if
+        migrations encounter errors to maintain backward compatibility.
+        """
         try:
             # Import here to avoid circular imports
             from word_forge.database.db_migration import SchemaMigrator
@@ -106,13 +129,26 @@ class EmotionManager:
         return self._recursive_processor
 
     def _init_sentiment_analyzers(self) -> None:
-        """Initialize sentiment analysis tools if available."""
+        """Initialize sentiment analysis tools if available.
+
+        Sets up VADER sentiment analyzer if the library is available and
+        enabled in configuration. This provides enhanced sentiment analysis
+        for social media content, emoticons, and slang expressions.
+        """
         # Only initialize VADER if enabled in config
-        self.vader = SentimentIntensityAnalyzer() if VADER_AVAILABLE else None
+        self.vader = (
+            SentimentIntensityAnalyzer()
+            if VADER_AVAILABLE and self.config.enable_vader
+            else None
+        )
 
     @contextmanager
     def _db_connection(self):
         """Create a database connection using the DBManager's path.
+
+        Creates and manages a database connection with SQLite's Row factory
+        for dictionary-like access to results. Automatically closes the
+        connection when exiting the context.
 
         Yields:
             sqlite3.Connection: An active database connection
@@ -144,7 +180,20 @@ class EmotionManager:
             raise EmotionError(f"Failed to initialize emotion tables: {e}") from e
 
     def set_word_emotion(self, word_id: int, valence: float, arousal: float) -> None:
-        """Store or update emotional values for a word."""
+        """Store or update emotional values for a word.
+
+        Assigns valence (positivity/negativity) and arousal (intensity)
+        values to a word, clamping values to valid ranges defined in
+        configuration.
+
+        Args:
+            word_id: Database ID of the target word
+            valence: Emotional valence (-1.0 to 1.0)
+            arousal: Emotional arousal/intensity (0.0 to 1.0)
+
+        Raises:
+            EmotionError: If the database operation fails
+        """
         valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
         arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
 
@@ -188,6 +237,9 @@ class EmotionManager:
         self, message_id: int, label: str, confidence: float = 1.0
     ) -> None:
         """Tag a message with an emotion label.
+
+        Records the emotional classification of a message with a confidence
+        score, ensuring the confidence value is within valid range.
 
         Args:
             message_id: Database ID of the target message
@@ -264,6 +316,7 @@ class EmotionManager:
 
         return valence, arousal
 
+    @lru_cache(maxsize=128)
     def analyze_text_emotion(self, text: str) -> Tuple[float, float]:
         """Analyze text to determine emotional valence and arousal.
 
@@ -545,13 +598,11 @@ class EmotionManager:
 
 def main() -> None:
     """Demonstrate EmotionManager functionality with comprehensive emotion analysis."""
-
     # Initialize with actual DBManager instead of temporary database
-    db_path = "word_forge.sqlite"
-    db_manager = DBManager(db_path=db_path)
+    db_manager = DBManager()
 
     # Create database tables if they don't exist
-    db_manager._create_tables()
+    db_manager.create_tables()
 
     # Initialize emotion manager
     emotion_mgr = EmotionManager(db_manager)
@@ -599,17 +650,41 @@ def main() -> None:
         except Exception as e:
             print(f"  ✗ Could not add '{term}': {e}")
 
-    # Process and track emotions for words in the database
+    # Process and track emotions for all words in the database
     try:
         # Get all words from the database
         all_words = db_manager.get_all_words()
         word_count = len(all_words)
-        print(f"\nAnalyzing emotions for {word_count} words in the database:")
+        print(f"\nProcessing emotions for all {word_count} words in the database...")
+
+        # Process ALL words (not just a sample)
+        processed_count = 0
+        for word_data in all_words:
+            word_id = word_data["id"]
+            term = word_data["term"]
+            definition = word_data["definition"] or ""
+
+            # Analyze the word itself
+            word_valence, word_arousal = emotion_mgr.analyze_text_emotion(term)
+
+            # Store emotion for the word
+            emotion_mgr.set_word_emotion(word_id, word_valence, word_arousal)
+
+            processed_count += 1
+            if processed_count % 100 == 0:
+                print(f"  Processed {processed_count}/{word_count} words...")
+
+        print(f"Completed processing all {word_count} words.")
+
+        # Display a random sample of entries
+        sample_size = min(100, word_count)
+        sample_indices = random.sample(range(word_count), sample_size)
+        sample_words = [all_words[i] for i in sample_indices]
+
+        print(f"\nDisplaying random sample of {sample_size} word emotions:")
         print("-" * 60)
 
-        # Process a sample of words (max 5) for demonstration
-        sample_size = min(100, word_count)
-        for i, word_data in enumerate(all_words[:sample_size]):
+        for i, word_data in enumerate(sample_words):
             word_id = word_data["id"]
             term = word_data["term"]
             definition = word_data["definition"] or ""
@@ -620,24 +695,20 @@ def main() -> None:
                 usage_str = word_data["usage_examples"]
                 usage_examples = usage_str.split("; ") if usage_str else []
 
-            # Analyze the word itself
-            word_valence, word_arousal = emotion_mgr.analyze_text_emotion(term)
-
-            # Analyze the definition if available
-            if definition:
-                def_valence, def_arousal = emotion_mgr.analyze_text_emotion(definition)
-                def_emotion, def_confidence = emotion_mgr.classify_emotion(definition)
-
-            # Store emotion for the word
-            emotion_mgr.set_word_emotion(word_id, word_valence, word_arousal)
+            # Retrieve stored emotion data
+            stored_emotion = emotion_mgr.get_word_emotion(word_id)
+            if not stored_emotion:
+                continue
 
             # Display results
             print(f"Word {i+1}/{sample_size}: '{term}'")
             print(
-                f"  - Word Emotion: Valence={word_valence:.2f}, Arousal={word_arousal:.2f}"
+                f"  - Word Emotion: Valence={stored_emotion['valence']:.2f}, Arousal={stored_emotion['arousal']:.2f}"
             )
 
             if definition:
+                def_valence, def_arousal = emotion_mgr.analyze_text_emotion(definition)
+                def_emotion, def_confidence = emotion_mgr.classify_emotion(definition)
                 print(f"  - Definition: '{definition}'")
                 print(f"    Valence={def_valence:.2f}, Arousal={def_arousal:.2f}")
                 print(
@@ -655,15 +726,7 @@ def main() -> None:
                     f"    Classified as: {ex_emotion} (confidence: {ex_confidence:.2f})"
                 )
 
-            # Verify storage
-            stored_emotion = emotion_mgr.get_word_emotion(word_id)
-            print(f"  - Stored in DB: {stored_emotion}")
             print("-" * 60)
-
-        if word_count > sample_size:
-            print(
-                f"...and {word_count - sample_size} more words (showing {sample_size} for brevity)"
-            )
 
     except Exception as e:
         print(f"Error processing word emotions: {e}")

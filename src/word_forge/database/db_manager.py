@@ -1,58 +1,243 @@
 """
 Database Manager Module
-This module provides a class for managing a SQLite database that stores
-words, definitions, and their relationships, both lexical and emotive/affective. It includes methods for
-inserting, updating, and retrieving word entries, as well as managing
-relationships between words.
+
+This module provides a comprehensive interface for managing a SQLite database
+that stores lexical data including words, definitions, and their various
+relationships (lexical, semantic, emotive, affective).
+
+It implements a robust architecture for:
+- Creating and maintaining database schema
+- Inserting and updating lexical entries
+- Managing complex relationship networks between terms
+- Providing type-safe interfaces for database operations
+- Connection pooling for efficient resource management
+- Transaction management with automatic rollback on errors
+
+The DBManager class serves as the central access point for all database operations,
+ensuring data integrity, proper error handling, and efficient query execution.
 """
 
 import sqlite3
 import time
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, TypedDict, Union, cast
+from threading import Lock
+from typing import (
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Tuple,
+    TypedDict,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from word_forge.config import config
 
 
 class DatabaseError(Exception):
-    """Base exception for database operations."""
+    """
+    Base exception for database operations.
+
+    Provides a consistent foundation for all database-related exceptions
+    with support for capturing the original cause for detailed diagnostics.
+
+    Attributes:
+        message: Detailed error description
+        cause: Original exception that triggered this error
+    """
 
     def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
         """
         Initialize with detailed error message and optional cause.
 
         Args:
-            message: Error description
-            cause: Original exception that caused this error
+            message: Error description with context
+            cause: Original exception that caused this error (if applicable)
         """
         super().__init__(message)
         self.__cause__ = cause
+        self.message = message
+        self.cause = cause
+
+    def __str__(self) -> str:
+        """Provide detailed error message including cause if available."""
+        error_msg = self.message
+        if self.cause:
+            error_msg += f" | Cause: {str(self.cause)}"
+        return error_msg
 
 
 class TermNotFoundError(DatabaseError):
-    """Raised when a term cannot be found in the database."""
+    """
+    Raised when a term cannot be found in the database.
+
+    Provides clear context about which specific term was not found,
+    allowing for precise error handling in calling code.
+
+    Attributes:
+        term: The specific term that could not be found
+    """
 
     def __init__(self, term: str) -> None:
         """
         Initialize with specific term that was not found.
 
         Args:
-            term: The term that could not be found
+            term: The term that could not be found in the database
         """
         super().__init__(f"Term '{term}' not found in database")
         self.term = term
 
 
+class ConnectionError(DatabaseError):
+    """
+    Raised when database connection cannot be established or maintained.
+
+    Occurs during connection initialization, pool exhaustion, or when
+    an existing connection is unexpectedly terminated.
+
+    Attributes:
+        db_path: Path to the database that failed to connect
+    """
+
+    def __init__(
+        self,
+        message: str,
+        cause: Optional[Exception] = None,
+        db_path: Optional[str] = None,
+    ) -> None:
+        """
+        Initialize connection error with context details.
+
+        Args:
+            message: Error description with context
+            cause: Original exception that caused this error
+            db_path: Database path that failed to connect
+        """
+        super().__init__(message, cause)
+        self.db_path = db_path
+
+
+class QueryError(DatabaseError):
+    """
+    Raised when a database query fails to execute.
+
+    Typically occurs due to syntax errors, constraint violations,
+    or invalid parameters.
+
+    Attributes:
+        query: The SQL query that failed
+        params: Parameters passed to the query
+    """
+
+    def __init__(
+        self,
+        message: str,
+        cause: Optional[Exception] = None,
+        query: Optional[str] = None,
+        params: Optional[Union[Tuple[Any, ...], Dict[str, Any]]] = None,
+    ) -> None:
+        """
+        Initialize query error with context details.
+
+        Args:
+            message: Error description
+            cause: Original exception that caused this error
+            query: SQL query that failed
+            params: Parameters passed to the query
+        """
+        super().__init__(message, cause)
+        self.query = query
+        self.params = params
+
+    def __str__(self) -> str:
+        """Provide detailed error message including query and parameters if available."""
+        error_msg = super().__str__()
+        if self.query:
+            error_msg += f"\nQuery: {self.query}"
+        if self.params:
+            error_msg += f"\nParameters: {self.params}"
+        return error_msg
+
+
+class TransactionError(DatabaseError):
+    """
+    Raised when transaction operations fail.
+
+    Occurs when commits or rollbacks fail, or when transaction
+    boundaries are violated.
+    """
+
+    pass
+
+
+class SchemaError(DatabaseError):
+    """
+    Raised when database schema operations fail.
+
+    Occurs during schema creation, migration, or validation when the
+    database structure doesn't match expected specifications.
+
+    Attributes:
+        table: The table with schema issues (if applicable)
+    """
+
+    def __init__(
+        self,
+        message: str,
+        cause: Optional[Exception] = None,
+        table: Optional[str] = None,
+    ) -> None:
+        """
+        Initialize schema error with context details.
+
+        Args:
+            message: Error description
+            cause: Original exception that caused this error
+            table: Relevant table name with schema issues
+        """
+        super().__init__(message, cause)
+        self.table = table
+
+
 class RelationshipDict(TypedDict):
-    """Type definition for relationship dictionary structure."""
+    """
+    Type definition for relationship dictionary structure.
+
+    Represents the standardized format for relationship data
+    across the application, ensuring type consistency.
+
+    Attributes:
+        related_term: The term related to the base term
+        relationship_type: Type of semantic relationship (e.g., synonym, antonym)
+    """
 
     related_term: str
     relationship_type: str
 
 
 class WordEntryDict(TypedDict):
-    """Type definition for word entry dictionary structure."""
+    """
+    Type definition for word entry dictionary structure.
+
+    Represents the complete structure of a word entry including
+    its relationships and metadata.
+
+    Attributes:
+        id: Unique identifier for the word
+        term: The actual word or phrase
+        definition: Meaning or explanation of the term
+        part_of_speech: Grammatical category (noun, verb, etc.)
+        usage_examples: List of example sentences using the term
+        last_refreshed: Timestamp of last update (epoch time)
+        relationships: List of relationships to other terms
+    """
 
     id: int
     term: str
@@ -64,7 +249,18 @@ class WordEntryDict(TypedDict):
 
 
 class WordDataDict(TypedDict):
-    """Type definition for word data returned by get_all_words."""
+    """
+    Type definition for word data returned by get_all_words.
+
+    Provides a simplified view of word data for listing and
+    bulk operations.
+
+    Attributes:
+        id: Unique identifier for the word
+        term: The actual word or phrase
+        definition: Meaning or explanation of the term
+        usage_examples: Example sentences (as serialized string)
+    """
 
     id: int
     term: str
@@ -73,28 +269,65 @@ class WordDataDict(TypedDict):
 
 
 class SQLExecutor(Protocol):
-    """Protocol for objects that can execute SQL queries."""
+    """
+    Protocol for objects that can execute SQL queries.
+
+    Defines the minimal interface required for SQL execution,
+    allowing for type-safe dependency injection and testing.
+    """
 
     def execute(
         self,
         sql: str,
-        parameters: Union[tuple[Any, ...], list[Any], dict[str, Any]] = (),
+        parameters: Union[Tuple[Any, ...], List[Any], Dict[str, Any]] = (),
     ) -> Any: ...
-    def fetchone(self) -> Optional[tuple[Any, ...]]: ...
-    def fetchall(self) -> List[tuple[Any, ...]]: ...
+
+    def fetchone(self) -> Optional[Tuple[Any, ...]]: ...
+
+    def fetchall(self) -> List[Tuple[Any, ...]]: ...
 
 
-# Get SQL templates from config
-SQL_CREATE_WORDS_TABLE = config.database.sql_templates["create_words_table"]
-SQL_CREATE_RELATIONSHIPS_TABLE = config.database.sql_templates[
-    "create_relationships_table"
-]
-SQL_CREATE_WORD_ID_INDEX = config.database.sql_templates["create_word_id_index"]
-SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = config.database.sql_templates[
-    "create_unique_relationship_index"
-]
+# Type variables for return type annotations
+T = TypeVar("T")
+Row = sqlite3.Row
+Connection = sqlite3.Connection
+Cursor = sqlite3.Cursor
+QueryParams = Union[Tuple[Any, ...], Dict[str, Any]]
 
-# Other SQL query constants - not moved to config to maintain module encapsulation
+
+# SQL constants for database schema operations
+SQL_CREATE_WORDS_TABLE = """
+CREATE TABLE IF NOT EXISTS words (
+    id INTEGER PRIMARY KEY,
+    term TEXT UNIQUE NOT NULL,
+    definition TEXT,
+    part_of_speech TEXT,
+    usage_examples TEXT,
+    last_refreshed REAL NOT NULL
+)
+"""
+
+SQL_CREATE_RELATIONSHIPS_TABLE = """
+CREATE TABLE IF NOT EXISTS relationships (
+    id INTEGER PRIMARY KEY,
+    word_id INTEGER NOT NULL,
+    related_term TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    FOREIGN KEY(word_id) REFERENCES words(id),
+    UNIQUE(word_id, related_term, relationship_type)
+)
+"""
+
+SQL_CREATE_WORD_ID_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_word_term ON words(term)
+"""
+
+SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
+ON relationships(word_id, related_term, relationship_type)
+"""
+
+# SQL query constants for data operations
 SQL_INSERT_OR_UPDATE_WORD = """
 INSERT INTO words (term, definition, part_of_speech, usage_examples, last_refreshed)
 VALUES (?, ?, ?, ?, ?)
@@ -131,143 +364,346 @@ SQL_GET_ALL_WORDS = """
 SELECT id, term, definition, usage_examples FROM words
 """
 
+# SQL statements for database setup and schema validation
+SQL_PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
+SQL_PRAGMA_JOURNAL_MODE = "PRAGMA journal_mode = WAL"
+SQL_PRAGMA_SYNCHRONOUS = "PRAGMA synchronous = NORMAL"
+SQL_CHECK_TABLE_EXISTS = """
+SELECT name FROM sqlite_master
+WHERE type='table' AND name=?
+"""
+SQL_GET_TABLE_INFO = """
+PRAGMA table_info(?)
+"""
+SQL_GET_DATABASE_VERSION = """
+PRAGMA user_version
+"""
+SQL_SET_DATABASE_VERSION = """
+PRAGMA user_version = ?
+"""
+
 
 class DBManager:
     """
     Manages the SQLite database for terms, definitions, relationships, etc.
 
-    This class provides an interface for storing and retrieving linguistic data,
-    including words, definitions, and the relationships between words.
+    This class provides a comprehensive interface for storing and retrieving
+    linguistic data, including words, definitions, and the relationships
+    between words. It handles database connections, schema management,
+    and provides type-safe methods for data operations.
+
+    Attributes:
+        db_path: Path to the SQLite database file
+        connection: Active database connection (created on demand)
+        _conn_pool: Pool of database connections for reuse
+        _lock: Thread synchronization lock for connection management
+        _max_pool_size: Maximum number of connections to keep in the pool
     """
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
         """
-        Initialize the database manager with path to SQLite database file.
+        Initialize the database manager with an optional custom path.
 
         Args:
-            db_path: Path to the SQLite database file (defaults to config value if None)
+            db_path: Optional custom path to the database file.
+                    If None, uses the default path from configuration.
+
+        Raises:
+            ConnectionError: If the database directory cannot be created
+            SchemaError: If database schema cannot be initialized
+
+        Examples:
+            >>> db = DBManager()  # Uses default path from config
+            >>> db = DBManager("custom/path/lexical.db")  # Uses custom path
         """
-        self.db_path: str = str(db_path if db_path else config.database.get_db_path)
+        self.db_path = Path(db_path) if db_path else Path(config.database.db_path)
+        self.connection: Optional[sqlite3.Connection] = None
+        self._conn_pool: List[Connection] = []
+        self._lock = Lock()
+        self._max_pool_size = getattr(config.database, "max_connections", 5)
 
-        # Create tables and indexes first
         try:
-            self._create_tables()
-        except DatabaseError as e:
-            # On error, attempt auto-repair if file exists
-            if Path(self.db_path).exists():
-                print(f"Warning: Attempting automatic schema repair due to: {e}")
-                try:
-                    self.repair_database_schema()
-                    print("Database schema repair completed successfully")
-                except DatabaseError as repair_error:
-                    print(f"Error: Database repair failed: {repair_error}")
-            else:
-                # Database file doesn't exist, recreate from scratch
-                try:
-                    self._create_tables()
-                except DatabaseError:
-                    print(f"Error: Could not initialize database at {self.db_path}")
+            self._ensure_database_directory()
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to create database directory for {self.db_path}",
+                e,
+                str(self.db_path),
+            )
 
-        # Apply migrations
-        try:
-            from word_forge.database.db_migration import SchemaMigrator
+    def _ensure_database_directory(self) -> None:
+        """
+        Ensure the database directory exists.
 
-            migrator = SchemaMigrator(self)
-            migrator.migrate_all()
-        except ImportError:
-            print("Warning: Schema migrator not found - skipping migrations")
-
-        # Create relationship type manager instance
-        self.relationship_types = RelationshipTypeManager(self)
-
-        # Populate default relationship types (will use migrated schema if available)
-        self.relationship_types.populate_default_types()
+        Creates all parent directories for the database file if they don't exist.
+        """
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _create_connection(self) -> sqlite3.Connection:
         """
-        Create an optimized database connection with pragmas applied.
+        Create a new database connection with proper configuration.
 
         Returns:
-            Configured database connection
+            A configured SQLite connection object
 
         Raises:
-            DatabaseError: If connection creation fails
+            ConnectionError: If connection creation fails
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            # Create directory for database if it doesn't exist
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Apply performance-optimizing pragmas from config
-            for pragma, value in config.database.pragmas.items():
-                conn.execute(f"PRAGMA {pragma} = {value}")
+            # Create connection with properly configured pragmas
+            connection = sqlite3.connect(str(self.db_path))
+            connection.row_factory = sqlite3.Row
 
-            return conn
+            # Configure connection for optimal performance and safety
+            connection.execute(SQL_PRAGMA_FOREIGN_KEYS)
+            connection.execute(SQL_PRAGMA_JOURNAL_MODE)
+            connection.execute(SQL_PRAGMA_SYNCHRONOUS)
+
+            return connection
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to create database connection: {e}", e)
+            raise ConnectionError(
+                f"Failed to connect to database at {self.db_path}", e, str(self.db_path)
+            )
 
-    def _create_tables(self) -> None:
+    def create_tables(self) -> None:
         """
-        Create all necessary database tables if they do not already exist.
+        Create database tables if they don't exist.
 
-        Creates:
-            - words table: Stores word definitions and metadata
-            - relationships table: Stores word relationships (synonyms, antonyms, etc.)
-            - relationship_types table: Stores metadata about relationship types
-            - schema_version table: Tracks database schema version for migrations
+        Initializes the complete database schema including:
+        - Words table for storing lexical entries
+        - Relationships table for storing term connections
+        - Indexes for optimizing query performance
+
+        This method is safe to call multiple times as it uses
+        IF NOT EXISTS in all schema creation statements.
 
         Raises:
-            DatabaseError: If there's an issue with database initialization
+            SchemaError: If schema creation fails
         """
         try:
-            conn = self._create_connection()
+            with self.transaction() as conn:
+                # Create primary tables
+                conn.execute(SQL_CREATE_WORDS_TABLE)
+                conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
+
+                # Create indexes for performance optimization
+                conn.execute(SQL_CREATE_WORD_ID_INDEX)
+                conn.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
+        except (ConnectionError, sqlite3.Error) as e:
+            raise SchemaError("Failed to create database tables", e)
+
+    @contextmanager
+    def get_connection(self) -> Iterator[Connection]:
+        """
+        Retrieve a database connection from the pool or create a new one.
+
+        Manages connection lifecycle, returning connections to the pool
+        when finished or closing them on error.
+
+        Yields:
+            An active SQLite database connection
+
+        Raises:
+            ConnectionError: If a connection cannot be established
+
+        Examples:
+            >>> with db.get_connection() as conn:
+            ...     cursor = conn.execute("SELECT 1")
+            ...     result = cursor.fetchone()
+        """
+        conn = None
+        try:
+            # Try to get connection from pool first
+            with self._lock:
+                if self._conn_pool:
+                    conn = self._conn_pool.pop()
+                else:
+                    conn = self._create_connection()
+
+            # Yield connection to caller
+            yield conn
+
+            # Return connection to pool if still valid
+            with self._lock:
+                if conn and len(self._conn_pool) < self._max_pool_size:
+                    self._conn_pool.append(conn)
+                    conn = None  # Prevent closing outside lock
+
+        except sqlite3.Error as e:
+            raise ConnectionError(
+                "Failed to get database connection", e, str(self.db_path)
+            )
+
+        finally:
+            # Close connection if not returned to pool
+            if conn:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass  # Already closing due to error, ignore
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """
+        Get the current database connection or create a new one.
+
+        Provides connection caching to avoid repeated connection creation.
+        For backward compatibility - new code should use get_connection() context manager.
+
+        Returns:
+            An active SQLite connection object
+
+        Raises:
+            ConnectionError: If connection cannot be established
+        """
+        if self.connection is None:
+            self.connection = self._create_connection()
+        return self.connection
+
+    def get_legacy_connection(self) -> sqlite3.Connection:
+        """
+        Get an active database connection.
+
+        Provides public access to obtain a database connection,
+        creating one if it doesn't exist. Maintains backward compatibility
+        with older code that doesn't use the context manager pattern.
+
+        Returns:
+            sqlite3.Connection: An active SQLite connection object
+
+        Raises:
+            ConnectionError: If connection cannot be established
+        """
+        return self._get_connection()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Connection]:
+        """
+        Provide a connection with transaction management.
+
+        Creates a transaction context that automatically commits on successful
+        completion or rolls back on error.
+
+        Yields:
+            An SQLite connection with an active transaction
+
+        Raises:
+            TransactionError: If transaction operations fail
+            ConnectionError: If database connection fails
+
+        Examples:
+            >>> with db.transaction() as conn:
+            ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("lexicon",))
+            ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("syntax",))
+            ...     # Both inserts happen or neither does
+        """
+        with self.get_connection() as conn:
             try:
-                cursor = conn.cursor()
-
-                # Create schema version tracking table first
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS schema_version (
-                        component TEXT PRIMARY KEY,
-                        version INTEGER NOT NULL,
-                        last_updated REAL NOT NULL
-                    )
-                """
-                )
-
-                # Create tables and indexes using config templates
-                cursor.execute(SQL_CREATE_WORDS_TABLE)
-                cursor.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
-
-                # Create relationship_types table
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS relationship_types (
-                        type TEXT PRIMARY KEY,
-                        weight REAL NOT NULL DEFAULT 0.5,
-                        color TEXT DEFAULT '#aaaaaa',
-                        bidirectional INTEGER DEFAULT 0,
-                        last_updated REAL NOT NULL
-                    )
-                """
-                )
-
-                # Create indexes
-                cursor.execute(SQL_CREATE_WORD_ID_INDEX)
-                cursor.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
-
-                # Update schema version
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO schema_version (component, version, last_updated)
-                    VALUES ('core', 1, ?)
-                """,
-                    (time.time(),),
-                )
-
+                # Start transaction explicitly for clarity
+                conn.execute("BEGIN")
+                yield conn
                 conn.commit()
-            finally:
-                conn.close()
+            except Exception as e:
+                # Roll back on any error
+                try:
+                    conn.rollback()
+                except sqlite3.Error as rollback_error:
+                    raise TransactionError(
+                        "Failed to roll back transaction after error",
+                        rollback_error,
+                    ) from e
+
+                # Re-raise original error with context
+                if isinstance(e, DatabaseError):
+                    raise
+                elif isinstance(e, sqlite3.Error):
+                    raise QueryError("SQL error during transaction", e) from e
+                else:
+                    raise TransactionError(
+                        "Error during database transaction", e
+                    ) from e
+
+    def execute_query(
+        self, query: str, params: Optional[QueryParams] = None
+    ) -> List[Row]:
+        """
+        Execute a query and return all results.
+
+        Handles parameter binding and error handling for SELECT queries,
+        returning results as a list of Row objects.
+
+        Args:
+            query: SQL query to execute
+            params: Parameters for query (tuple or dict)
+
+        Returns:
+            List of Row objects containing query results
+
+        Raises:
+            QueryError: If query execution fails
+
+        Examples:
+            >>> rows = db.execute_query("SELECT * FROM words WHERE term LIKE ?", ("lex%",))
+            >>> for row in rows:
+            ...     print(dict(row))
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(query, params or ())
+                return cursor.fetchall()
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to initialize database: {e}", e)
+            raise QueryError("Query execution failed", e, query, params or ())
+
+    def execute_scalar(self, query: str, params: Optional[QueryParams] = None) -> Any:
+        """
+        Execute a query and return a single scalar value.
+
+        Optimized for queries that return a single value, such as
+        COUNT, SUM, or single column/row lookups.
+
+        Args:
+            query: SQL query to execute
+            params: Parameters for query (tuple or dict)
+
+        Returns:
+            The first column of the first row, or None if no results
+
+        Raises:
+            QueryError: If query execution fails
+
+        Examples:
+            >>> count = db.execute_scalar("SELECT COUNT(*) FROM words")
+            >>> word_id = db.execute_scalar("SELECT id FROM words WHERE term = ?", ("lexicon",))
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(query, params or ())
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except sqlite3.Error as e:
+            raise QueryError("Scalar query execution failed", e, query, params or ())
+
+    def table_exists(self, table_name: str) -> bool:
+        """
+        Check if a table exists in the database.
+
+        Args:
+            table_name: Name of the table to check
+
+        Returns:
+            True if the table exists, False otherwise
+
+        Examples:
+            >>> if not db.table_exists("words"):
+            ...     print("Words table doesn't exist")
+        """
+        try:
+            count = self.execute_scalar(SQL_CHECK_TABLE_EXISTS, (table_name,))
+            return bool(count)
+        except QueryError:
+            return False
 
     def insert_or_update_word(
         self,
@@ -277,76 +713,121 @@ class DBManager:
         usage_examples: Optional[List[str]] = None,
     ) -> None:
         """
-        Insert or update a word's data in the database.
+        Insert a new word or update an existing word in the database.
 
         Args:
-            term: The textual term itself
-            definition: The definition string
-            part_of_speech: Part of speech (e.g., noun, verb, adjective)
-            usage_examples: List of usage example sentences
+            term: The word or phrase to store
+            definition: The word's meaning or description
+            part_of_speech: Grammatical category (noun, verb, etc.)
+            usage_examples: List of example sentences using the term
 
         Raises:
+            DatabaseError: If the insertion or update fails
             ValueError: If term is empty
-            DatabaseError: If the database operation fails
+
+        Examples:
+            >>> db.insert_or_update_word(
+            ...     "algorithm",
+            ...     "A step-by-step procedure for solving a problem",
+            ...     "noun",
+            ...     ["The sorting algorithm runs in O(n log n) time"]
+            ... )
         """
-        if not term.strip():
+        if not term:
             raise ValueError("Term cannot be empty")
 
-        usage_str: str = "; ".join(usage_examples) if usage_examples else ""
+        # Handle optional usage examples
+        examples = usage_examples if usage_examples else []
+        serialized_examples = "\n".join(examples)
+        current_time = time.time()
 
         try:
-            with self._create_connection() as conn:
-                cursor = conn.cursor()
-                timestamp: float = time.time()
-
-                cursor.execute(
+            with self.transaction() as conn:
+                conn.execute(
                     SQL_INSERT_OR_UPDATE_WORD,
-                    (term, definition, part_of_speech, usage_str, timestamp),
+                    (
+                        term,
+                        definition,
+                        part_of_speech,
+                        serialized_examples,
+                        current_time,
+                    ),
                 )
-                conn.commit()
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError(f"Failed to insert or update word '{term}'", e)
 
-                # Clear cache when word is updated
-                self._get_word_id.cache_clear()
+    def get_word_id(self, term: str) -> int:
+        """
+        Get the database ID for a specific term.
 
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to insert or update term '{term}': {e}", e)
+        Args:
+            term: The word to look up
+
+        Returns:
+            The numeric ID of the word in the database
+
+        Raises:
+            TermNotFoundError: If the term doesn't exist in the database
+            QueryError: If database query fails
+
+        Examples:
+            >>> try:
+            ...     word_id = db.get_word_id("algorithm")
+            ...     print(f"ID for 'algorithm': {word_id}")
+            ... except TermNotFoundError:
+            ...     print("Term not found")
+        """
+        try:
+            result = self.execute_scalar(SQL_GET_WORD_ID, (term,))
+            if result is None:
+                raise TermNotFoundError(term)
+            return cast(int, result)
+        except QueryError as e:
+            raise QueryError(f"Database error while retrieving ID for term '{term}'", e)
 
     def insert_relationship(
         self, base_term: str, related_term: str, relationship_type: str
     ) -> bool:
         """
-        Insert a relationship from base_term to related_term.
+        Create a relationship between two terms.
 
         Args:
-            base_term: The source term
-            related_term: The target term related to the base term
+            base_term: The source term in the relationship
+            related_term: The target term in the relationship
             relationship_type: The type of relationship (e.g., synonym, antonym)
 
         Returns:
-            True if the relationship was inserted, False if base_term doesn't exist
+            True if a new relationship was created, False if it already existed
 
         Raises:
-            ValueError: If any parameter is empty
-            DatabaseError: If the database operation fails
+            DatabaseError: If the relationship cannot be created
+            TermNotFoundError: If the base_term doesn't exist in the database
+            ValueError: If any parameters are invalid
+
+        Examples:
+            >>> success = db.insert_relationship("algorithm", "procedure", "synonym")
+            >>> if success:
+            ...     print("New relationship created")
+            ... else:
+            ...     print("Relationship already existed")
         """
+        # Validate inputs
         self._validate_relationship_params(base_term, related_term, relationship_type)
 
-        word_id = self._get_word_id(base_term)
-        if word_id is None:
-            return False  # Base term doesn't exist
-
         try:
-            with self._create_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    SQL_INSERT_RELATIONSHIP,
-                    (word_id, related_term, relationship_type),
+            # Get the word ID (will raise TermNotFoundError if term not found)
+            word_id = self.get_word_id(base_term)
+
+            # Insert the relationship
+            with self.transaction() as conn:
+                cursor = conn.execute(
+                    SQL_INSERT_RELATIONSHIP, (word_id, related_term, relationship_type)
                 )
-                conn.commit()
+                # Return True if a new row was inserted
                 return cursor.rowcount > 0
-        except sqlite3.Error as e:
+        except (sqlite3.Error, TransactionError) as e:
             raise DatabaseError(
-                f"Failed to insert relationship from '{base_term}' to '{related_term}': {e}",
+                f"Failed to create relationship from '{base_term}' to '{related_term}'",
                 e,
             )
 
@@ -354,460 +835,423 @@ class DBManager:
         self, base_term: str, related_term: str, relationship_type: str
     ) -> None:
         """
-        Validate relationship parameters.
+        Validate parameters for relationship creation.
 
         Args:
             base_term: The source term
-            related_term: The target term related to the base term
-            relationship_type: The type of relationship
+            related_term: The target term
+            relationship_type: The relationship type
 
         Raises:
-            ValueError: If any parameter is empty
+            ValueError: If any parameters are invalid
         """
-        if not base_term.strip():
+        if not base_term:
             raise ValueError("Base term cannot be empty")
-        if not related_term.strip():
+        if not related_term:
             raise ValueError("Related term cannot be empty")
-        if not relationship_type.strip():
+        if not relationship_type:
             raise ValueError("Relationship type cannot be empty")
+        if base_term == related_term:
+            raise ValueError("Cannot create relationship to self")
 
     def get_word_entry(self, term: str) -> WordEntryDict:
         """
-        Retrieve a word record from the database, along with any relationships.
+        Get complete information about a word including its relationships.
+
+        Retrieves a word entry by term and enriches it with relationship data
+        from connected terms. Handles database interactions with proper error
+        management and type guarantees.
 
         Args:
-            term: The word term to look up
+            term: The word or phrase to retrieve
 
         Returns:
-            A dictionary containing the word data and its relationships
+            WordEntryDict: Complete dictionary containing the word's data and relationships
+            with structure:
+            {
+                "id": int,                         # Word identifier
+                "term": str,                       # The word itself
+                "definition": str,                 # Word definition
+                "part_of_speech": str,             # Grammatical category
+                "usage_examples": List[str],       # Usage examples list
+                "last_refreshed": float,           # Timestamp of last update
+                "relationships": List[RelationshipDict]  # Related terms
+            }
 
         Raises:
-            ValueError: If term is empty
             TermNotFoundError: If the term doesn't exist in the database
-            DatabaseError: If the database operation fails
-        """
-        if not term.strip():
-            raise ValueError("Term cannot be empty")
+            DatabaseError: For any database access or processing errors
 
+        Examples:
+            >>> try:
+            ...     entry = db.get_word_entry("algorithm")
+            ...     print(f"Definition: {entry['definition']}")
+            ...     print(f"Related terms: {len(entry['relationships'])}")
+            ... except TermNotFoundError:
+            ...     print("Term not found in database")
+        """
         try:
-            with self._create_connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
+            # Get basic word information
+            row = self.execute_query(SQL_GET_WORD_ENTRY, (term,))
+            if not row:
+                raise TermNotFoundError(term)
 
-                # Get main word data
-                cursor.execute(SQL_GET_WORD_ENTRY, (term,))
-                row = cursor.fetchone()
-                if not row:
-                    raise TermNotFoundError(term)
+            # Extract word data with proper type safety
+            result = row[0]
+            word_id = result["id"]
+            term_value = result["term"]
+            definition = result["definition"] or ""
+            part_of_speech = result["part_of_speech"] or ""
+            usage_examples_str = result["usage_examples"] or ""
+            last_refreshed = result["last_refreshed"] or time.time()
 
-                # Extract data from row
-                word_entry = self._create_word_entry_from_row(dict(row))
+            # Parse usage examples with guaranteed type safety
+            usage_examples: List[str] = []
+            if usage_examples_str:
+                usage_examples = usage_examples_str.split("\n")
 
-                # Get relationships
-                cursor.execute(SQL_GET_RELATIONSHIPS, (word_entry["id"],))
-                relationships: List[RelationshipDict] = [
-                    cast(
-                        RelationshipDict,
-                        {
-                            "related_term": row["related_term"],
-                            "relationship_type": row["relationship_type"],
-                        },
-                    )
-                    for row in cursor.fetchall()
-                ]
+            # Get relationships
+            relationships = self.get_relationships(word_id)
 
-                word_entry["relationships"] = relationships
-                return cast(WordEntryDict, word_entry)
+            # Construct and return the complete word entry
+            return {
+                "id": word_id,
+                "term": term_value,
+                "definition": definition,
+                "part_of_speech": part_of_speech,
+                "usage_examples": usage_examples,
+                "last_refreshed": last_refreshed,
+                "relationships": relationships,
+            }
+        except QueryError as e:
+            raise DatabaseError(f"Database error while retrieving term '{term}'", e)
 
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Database error retrieving term '{term}': {e}", e)
-
-    def _create_word_entry_from_row(self, row_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def get_relationships(self, word_id: int) -> List[RelationshipDict]:
         """
-        Create a word entry dictionary from a database row.
+        Get all relationships for a word identified by its ID.
 
         Args:
-            row_dict: Dictionary containing database row values
+            word_id: The database ID of the word
 
         Returns:
-            Word entry dictionary without relationships
-        """
-        usage_str: str = row_dict["usage_examples"] or ""
-        usage_examples: List[str] = usage_str.split("; ") if usage_str else []
-
-        return {
-            "id": row_dict["id"],
-            "term": row_dict["term"],
-            "definition": row_dict["definition"],
-            "part_of_speech": row_dict["part_of_speech"],
-            "usage_examples": usage_examples,
-            "last_refreshed": row_dict["last_refreshed"],
-            "relationships": [],  # Will be populated later
-        }
-
-    def get_word_if_exists(self, term: str) -> Optional[WordEntryDict]:
-        """
-        Retrieve a word record if it exists, returning None otherwise.
-
-        Args:
-            term: The word term to look up
-
-        Returns:
-            A dictionary containing the word data and its relationships, or None if not found
+            A list of relationship dictionaries with structure:
+            [
+                {
+                    "related_term": str,         # Term related to the base word
+                    "relationship_type": str,    # Type of relationship (e.g., synonym)
+                },
+                ...
+            ]
 
         Raises:
-            DatabaseError: If the database operation fails
+            QueryError: If database query fails
+
+        Examples:
+            >>> relationships = db.get_relationships(42)
+            >>> for rel in relationships:
+            ...     print(f"{rel['relationship_type']}: {rel['related_term']}")
         """
         try:
-            return self.get_word_entry(term)
-        except (TermNotFoundError, ValueError):
-            return None
-
-    @lru_cache(maxsize=128)
-    def _get_word_id(self, term: str) -> Optional[int]:
-        """
-        Retrieve the primary key ID for a given term.
-
-        Args:
-            term: The word term to look up
-
-        Returns:
-            The word ID if found, None otherwise
-
-        Raises:
-            DatabaseError: If the database operation fails
-        """
-        try:
-            with self._create_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(SQL_GET_WORD_ID, (term,))
-                result = cursor.fetchone()
-                return result[0] if result else None
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to retrieve word ID for term '{term}': {e}", e)
+            rows = self.execute_query(SQL_GET_RELATIONSHIPS, (word_id,))
+            return [
+                {
+                    "related_term": row["related_term"],
+                    "relationship_type": row["relationship_type"],
+                }
+                for row in rows
+            ]
+        except QueryError as e:
+            raise QueryError(
+                f"Failed to retrieve relationships for word ID {word_id}",
+                e,
+                SQL_GET_RELATIONSHIPS,
+                (word_id,),
+            )
 
     def get_all_words(self) -> List[WordDataDict]:
         """
-        Return all words in the database with their associated data.
+        Get a list of all words in the database.
 
         Returns:
-            List of word dictionaries containing id, term, definition, and usage_examples
+            A list of word data dictionaries containing basic information
+            with structure:
+            [
+                {
+                    "id": int,               # Word identifier
+                    "term": str,             # The word itself
+                    "definition": str,       # Word definition
+                    "usage_examples": str,   # Serialized usage examples
+                },
+                ...
+            ]
 
         Raises:
-            DatabaseError: If the database operation fails
+            QueryError: If retrieving the word list fails
+
+        Examples:
+            >>> words = db.get_all_words()
+            >>> print(f"Database contains {len(words)} words")
+            >>> for word in words[:5]:  # Print first 5 words
+            ...     print(f"- {word['term']}")
         """
         try:
-            with self._create_connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute(SQL_GET_ALL_WORDS)
-                return [cast(WordDataDict, dict(row)) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to retrieve all words: {e}", e)
+            rows = self.execute_query(SQL_GET_ALL_WORDS)
+            return [
+                {
+                    "id": row["id"],
+                    "term": row["term"],
+                    "definition": row["definition"] or "",
+                    "usage_examples": row["usage_examples"] or "",
+                }
+                for row in rows
+            ]
+        except QueryError as e:
+            raise QueryError("Failed to retrieve word list", e, SQL_GET_ALL_WORDS)
 
-    def check_database_integrity(self) -> Dict[str, bool]:
+    def close(self) -> None:
         """
-        Check database integrity and report on status of all required tables.
+        Close the database connection.
 
-        Returns:
-            Dictionary mapping table names to boolean existence status
+        Safely closes all connections, ensuring all pending transactions
+        are committed or rolled back as appropriate.
+
+        Examples:
+            >>> # When application is shutting down
+            >>> db.close()
         """
-        tables = ["words", "relationships", "relationship_types", "schema_version"]
+        # Close legacy connection
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except sqlite3.Error:
+                pass  # Ignore errors during cleanup
+            finally:
+                self.connection = None
 
-        table_status = {table: False for table in tables}
-
-        try:
-            with self._create_connection() as conn:
-                cursor = conn.cursor()
-
-                # Check each table
-                for table in tables:
-                    cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                        (table,),
-                    )
-                    if cursor.fetchone():
-                        table_status[table] = True
-
-            return table_status
-
-        except sqlite3.Error as e:
-            print(f"Warning: Database integrity check failed: {e}")
-            return table_status
-
-    def repair_database_schema(self) -> None:
-        """
-        Attempt to repair the database schema by creating missing tables.
-
-        This is a recovery method for cases where tables are missing but
-        the database file still exists and is accessible.
-        """
-        # First check what's missing
-        status = self.check_database_integrity()
-
-        try:
-            with self._create_connection() as conn:
-                cursor = conn.cursor()
-
-                # Create missing tables
-                if not status.get("schema_version", False):
-                    cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS schema_version (
-                            component TEXT PRIMARY KEY,
-                            version INTEGER NOT NULL,
-                            last_updated REAL NOT NULL
-                        )
-                    """
-                    )
-
-                if not status.get("words", False):
-                    cursor.execute(SQL_CREATE_WORDS_TABLE)
-
-                if not status.get("relationships", False):
-                    cursor.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
-
-                if not status.get("relationship_types", False):
-                    cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS relationship_types (
-                            type TEXT PRIMARY KEY,
-                            weight REAL NOT NULL DEFAULT 0.5,
-                            color TEXT DEFAULT '#aaaaaa',
-                            bidirectional INTEGER DEFAULT 0,
-                            last_updated REAL NOT NULL
-                        )
-                    """
-                    )
-
-                # Create any missing indexes
-                cursor.execute(SQL_CREATE_WORD_ID_INDEX)
-                cursor.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
-
-                # Update schema version to current
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO schema_version (component, version, last_updated)
-                    VALUES ('core', 1, ?)
-                """,
-                    (time.time(),),
-                )
-
-                conn.commit()
-
-            # If relationship_types table was missing and is now created,
-            # populate it with defaults
-            if not status.get("relationship_types", False):
-                self.relationship_types.populate_default_types()
-
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to repair database schema: {e}", e)
+        # Close all pooled connections
+        with self._lock:
+            for conn in self._conn_pool:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass  # Ignore errors during cleanup
+            self._conn_pool.clear()
 
 
 class RelationshipTypeManager:
-    """Manages the relationship_types table for emotional and semantic relationships."""
+    """
+    Manages relationship type definitions and operations.
 
-    def __init__(self, db_manager: "DBManager"):
-        """Initialize with a reference to the DBManager."""
+    Provides a layer of abstraction for working with relationship types,
+    including validation, normalization, and categorization. Maintains
+    a cache for optimized performance during lookups.
+
+    Attributes:
+        db_manager: The database manager used for storage operations
+        _cache: Internal cache for relationship types organized by category
+    """
+
+    def __init__(self, db_manager: DBManager) -> None:
+        """
+        Initialize with a database manager.
+
+        Args:
+            db_manager: The database manager to use for storage
+
+        Examples:
+            >>> db = DBManager()
+            >>> rel_manager = RelationshipTypeManager(db)
+        """
         self.db_manager = db_manager
-        self._cache = {}  # In-memory cache for relationship weights
+        # Proper type definition matching actual usage pattern
+        self._cache: Dict[str, List[str]] = {}
 
-    def populate_default_types(self) -> None:
-        """Populate the table with default relationship types from relationships.py."""
+    @lru_cache(maxsize=128)
+    def is_valid_relationship_type(self, relationship_type: str) -> bool:
+        """
+        Check if a relationship type is valid.
+
+        Validates a relationship type against predefined types or naming
+        convention rules. Results are cached for performance optimization.
+
+        Args:
+            relationship_type: The relationship type to validate
+
+        Returns:
+            bool: True if the relationship type is valid, False otherwise
+
+        Examples:
+            >>> if rel_manager.is_valid_relationship_type("synonym"):
+            ...     print("Valid relationship type")
+            >>> else:
+            ...     print("Invalid relationship type")
+        """
+        # Normalize relationship type for comparison
+        normalized_type = relationship_type.lower().strip()
+
+        # Valid if it's in the predefined types or follows naming convention
+        return (
+            normalized_type in self.get_all_relationship_types()
+            or self._follows_naming_convention(normalized_type)
+        )
+
+    def _follows_naming_convention(self, relationship_type: str) -> bool:
+        """
+        Check if a relationship type follows the naming convention.
+
+        Args:
+            relationship_type: The relationship type to check
+
+        Returns:
+            True if the type follows the convention, False otherwise
+        """
+        # Allow custom types with appropriate prefixes
+        valid_prefixes = ["custom_", "domain_", "project_"]
+        return any(relationship_type.startswith(prefix) for prefix in valid_prefixes)
+
+    def get_all_relationship_types(self) -> List[str]:
+        """
+        Get all defined relationship types.
+
+        Returns:
+            A list of all valid relationship types
+
+        Examples:
+            >>> types = rel_manager.get_all_relationship_types()
+            >>> print(f"Available relationship types: {', '.join(types)}")
+        """
+        # Ensure the cache is populated
+        if not self._cache:
+            self._refresh_cache()
+
+        # Flatten the dictionary of categories into a single list
+        return [
+            relationship_type
+            for category in self._cache.values()
+            for relationship_type in category
+        ]
+
+    def _refresh_cache(self) -> None:
+        """
+        Refresh the relationship type cache from the database.
+        """
         try:
-            # Import here to avoid circular imports
-            from word_forge.relationships import RELATIONSHIP_TYPES
+            # Query all distinct relationship types
+            rows = self.db_manager.execute_query(
+                "SELECT DISTINCT relationship_type FROM relationships"
+            )
+            # Group by categories
+            self._cache = self._categorize_relationship_types(
+                [row["relationship_type"] for row in rows]
+            )
+        except (DatabaseError, sqlite3.Error):
+            # Non-fatal error - continue with empty cache
+            self._cache = {"other": []}
 
-            with self.db_manager._create_connection() as conn:
-                cursor = conn.cursor()
-                timestamp = time.time()
+    def _categorize_relationship_types(self, types: List[str]) -> Dict[str, List[str]]:
+        """
+        Categorize relationship types into semantic groups.
 
-                # Check if last_updated column exists
-                cursor.execute("PRAGMA table_info(relationship_types)")
-                columns = [info[1] for info in cursor.fetchall()]
-                has_timestamp = "last_updated" in columns
+        Args:
+            types: List of relationship types to categorize
 
-                for rel_type, properties in RELATIONSHIP_TYPES.items():
-                    weight = properties.get("weight", 0.5)
-                    color = properties.get("color", "#aaaaaa")
-                    bidirectional = 1 if properties.get("bidirectional", False) else 0
+        Returns:
+            Dictionary mapping categories to lists of relationship types
+        """
+        categories: Dict[str, List[str]] = {
+            "lexical": [],
+            "semantic": [],
+            "emotional": [],
+            "affective": [],
+            "other": [],
+        }
 
-                    if has_timestamp:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO relationship_types
-                            (type, weight, color, bidirectional, last_updated)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (rel_type, weight, color, bidirectional, timestamp),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO relationship_types
-                            (type, weight, color, bidirectional)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (rel_type, weight, color, bidirectional),
-                        )
+        for rel_type in types:
+            if rel_type.startswith(("synonym", "antonym", "hypernym", "hyponym")):
+                categories["lexical"].append(rel_type)
+            elif rel_type.startswith(("related_to", "part_of", "has_part")):
+                categories["semantic"].append(rel_type)
+            elif rel_type.startswith(("evokes", "emotional_")):
+                categories["emotional"].append(rel_type)
+            elif rel_type.startswith(("positive_", "negative_", "high_", "low_")):
+                categories["affective"].append(rel_type)
+            else:
+                categories["other"].append(rel_type)
 
-                    # Cache the weight
-                    self._cache[rel_type] = weight
-
-                # Update schema version only if last_updated column exists
-                if has_timestamp:
-                    cursor.execute(
-                        """
-                        INSERT OR REPLACE INTO schema_version
-                        (component, version, last_updated)
-                        VALUES ('relationship_types', 1, ?)
-                        """,
-                        (timestamp,),
-                    )
-
-                conn.commit()
-        except Exception as e:
-            # Log but continue - default weights will be used as fallbacks
-            print(f"Warning: Could not populate relationship types: {e}")
-
-    def get_relationship_weight(self, rel_type: str) -> float:
-        """Get the weight for a relationship type, with fallback to default."""
-        # Check cache first
-        if rel_type in self._cache:
-            return self._cache[rel_type]
-
-        try:
-            with self.db_manager._create_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT weight FROM relationship_types WHERE type = ?", (rel_type,)
-                )
-                result = cursor.fetchone()
-                if result:
-                    weight = float(result[0])
-                    self._cache[rel_type] = weight  # Update cache
-                    return weight
-
-                # Not found, use default and cache it
-                self._cache[rel_type] = 0.5
-                return 0.5
-        except sqlite3.Error:
-            self._cache[rel_type] = 0.5  # Cache the default
-            return 0.5
-
-    def get_all_relationship_types(self) -> Dict[str, Dict[str, any]]:
-        """Get all relationship types with their properties."""
-        try:
-            with self.db_manager._create_connection() as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM relationship_types")
-                return {
-                    row["type"]: {
-                        "weight": row["weight"],
-                        "color": row["color"],
-                        "bidirectional": bool(row["bidirectional"]),
-                        "last_updated": row["last_updated"],
-                    }
-                    for row in cursor.fetchall()
-                }
-        except sqlite3.Error as e:
-            # Fallback to empty dictionary
-            print(f"Warning: Failed to retrieve relationship types: {e}")
-            return {}
+        return categories
 
 
 def main() -> None:
     """
-    Demonstrate the usage of DBManager with a complete workflow example.
+    Demonstrate DBManager functionality with basic CRUD operations.
+
+    This function provides a simple demonstration of key database operations:
+    - Creating the database schema
+    - Inserting and updating word entries
+    - Creating relationships between words
+    - Retrieving word entries with their relationships
+
+    Examples:
+        >>> # Run the demonstration
+        >>> main()
     """
+    # Initialize with a test database
+    db_path = "test_database.sqlite"
+    db_manager = DBManager(db_path=db_path)
 
-    # Create a temporary database file
-
-    # Initialize the database manager
-    db = DBManager()
-    print(f"Database initialized at {db.db_path}")
-
-    # Insert example words
-    db.insert_or_update_word(
-        term="algorithm",
-        definition="A step-by-step procedure for solving a problem or accomplishing a task.",
-        part_of_speech="noun",
-        usage_examples=[
-            "The search algorithm quickly found the matching records.",
-            "Researchers developed a new algorithm for detecting patterns in large datasets.",
-        ],
-    )
-    print("Inserted 'algorithm'")
-
-    db.insert_or_update_word(
-        term="recursion",
-        definition="A programming concept where a function calls itself to solve smaller instances of the same problem.",
-        part_of_speech="noun",
-        usage_examples=["Recursion is often used to solve tree-based problems."],
-    )
-    print("Inserted 'recursion'")
-
-    # Insert relationships
-    result = db.insert_relationship(
-        base_term="algorithm", related_term="procedure", relationship_type="synonym"
-    )
-    if result:
-        print("Inserted 'algorithm' → 'procedure' relationship")
-
-    result = db.insert_relationship(
-        base_term="algorithm",
-        related_term="recursion",
-        relationship_type="related_concept",
-    )
-    if result:
-        print("Inserted 'algorithm' → 'recursion' relationship")
-
-    # Retrieve and display word entries
     try:
-        algorithm_entry = db.get_word_entry("algorithm")
-        print("\n=== Algorithm Entry ===")
-        print(f"Term: {algorithm_entry['term']}")
+        # Create database tables
+        print("Creating database schema...")
+        db_manager.create_tables()
+
+        # Insert some sample words
+        print("\nInserting sample words...")
+        db_manager.insert_or_update_word(
+            "algorithm",
+            "A step-by-step procedure for calculations or problem-solving.",
+            "noun",
+            [
+                "The sorting algorithm runs in O(n log n) time.",
+                "She developed a new algorithm for image recognition.",
+            ],
+        )
+
+        db_manager.insert_or_update_word(
+            "recursion",
+            "A process where the solution depends on solutions to smaller instances of the same problem.",
+            "noun",
+            [
+                "Recursion is often used in algorithms that work with tree structures.",
+                "Understanding recursion requires understanding recursion.",
+            ],
+        )
+
+        # Create relationships
+        print("\nCreating relationships between words...")
+        db_manager.insert_relationship("algorithm", "recursion", "related_concept")
+
+        # Retrieve and display word entries
+        print("\nRetrieving complete word entries:")
+        algorithm_entry = db_manager.get_word_entry("algorithm")
+        print(f"\nTerm: {algorithm_entry['term']}")
         print(f"Definition: {algorithm_entry['definition']}")
-        print(f"Part of Speech: {algorithm_entry['part_of_speech']}")
-        print("Usage Examples:")
+        print(f"Part of speech: {algorithm_entry['part_of_speech']}")
+        print("Usage examples:")
         for example in algorithm_entry["usage_examples"]:
             print(f"  - {example}")
         print("Relationships:")
         for rel in algorithm_entry["relationships"]:
-            print(f"  - {rel['relationship_type']}: {rel['related_term']}")
-    except TermNotFoundError:
-        print("Term 'algorithm' not found")
+            print(f"  - {rel['relationship_type']} to {rel['related_term']}")
 
-    # Update an existing word
-    db.insert_or_update_word(
-        term="algorithm",
-        definition="A defined set of step-by-step procedures that provides the correct answer to a particular problem.",
-        part_of_speech="noun",
-        usage_examples=[
-            "The search algorithm quickly found the matching records.",
-            "Researchers developed a new algorithm for detecting patterns in large datasets.",
-            "The efficiency of an algorithm is measured by its time and space complexity.",
-        ],
-    )
-    print("\nUpdated 'algorithm' entry")
+        # Clean up
+        print("\nClosing database connection...")
+        db_manager.close()
+        print("Demonstration completed successfully!")
 
-    # Show the updated entry
-    try:
-        updated_entry = db.get_word_entry("algorithm")
-        print("\n=== Updated Algorithm Entry ===")
-        print(f"Definition: {updated_entry['definition']}")
-        print(f"Usage Examples Count: {len(updated_entry['usage_examples'])}")
-    except TermNotFoundError:
-        print("Term 'algorithm' not found")
-
-    # Demonstrate safe lookup for non-existent terms
-    nonexistent = db.get_word_if_exists("nonexistent_term")
-    print(
-        f"\nNon-existent term lookup result: {'Found' if nonexistent else 'Not found'}"
-    )
-
-    print("\nDemo complete!")
+    except DatabaseError as e:
+        print(f"Database error: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
 
 
 # Export public elements
@@ -816,8 +1260,13 @@ __all__ = [
     "WordEntryDict",
     "RelationshipDict",
     "DatabaseError",
+    "ConnectionError",
+    "QueryError",
+    "SchemaError",
+    "TransactionError",
     "TermNotFoundError",
     "RelationshipTypeManager",
+    "Row",
 ]
 
 

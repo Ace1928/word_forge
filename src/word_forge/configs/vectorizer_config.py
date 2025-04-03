@@ -21,7 +21,7 @@ Architecture:
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Optional, Set, Union
+from typing import Any, ClassVar, Dict, Optional, Set, TypeVar, Union, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -40,6 +40,9 @@ from word_forge.configs.config_types import (
     SQLQueryType,
     TemplateDict,
 )
+
+# Type variable for the clone method
+T = TypeVar("T", bound="VectorizerConfig")
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,8 @@ class VectorizerConfig:
         enable_compression: Whether to compress vectors for storage efficiency
         compression_ratio: Compression ratio when compression is enabled
         reserved_memory_mb: Memory reserved for vector operations in MB
+        enable_multi_dim: Whether to enable multi-dimensional vector spaces
+        dim_separation: Z-axis separation for multi-dimensional visualization
 
     Usage:
         from word_forge.config import config
@@ -106,6 +111,10 @@ class VectorizerConfig:
     reserved_memory_mb: int = 512
     max_retries: int = 3
     failure_cooldown_seconds: float = 60.0
+
+    # Multi-dimensional vector space settings
+    enable_multi_dim: bool = False
+    dim_separation: float = 50.0  # For multi-dimensional vector spaces
 
     # SQL query templates for content retrieval
     sql_templates: Dict[SQLQueryType, str] = field(
@@ -152,6 +161,7 @@ class VectorizerConfig:
         "WORD_FORGE_VECTOR_STRATEGY": ("search_strategy", str),
         "WORD_FORGE_VECTOR_METRIC": ("distance_metric", str),
         "WORD_FORGE_VECTOR_COMPRESSION": ("enable_compression", bool),
+        "WORD_FORGE_VECTOR_MULTI_DIM": ("enable_multi_dim", bool),
     }
 
     # ==========================================
@@ -167,7 +177,7 @@ class VectorizerConfig:
             Path: Object representing the vector index location
 
         Raises:
-            VectorIndexError: If path is invalid
+            VectorIndexError: If parent directory does not exist
         """
         path = Path(self.index_path)
         parent_dir = path.parent
@@ -202,7 +212,7 @@ class VectorizerConfig:
             Optional[int]: Dimension to use for vectors, or None to use model default
 
         Raises:
-            VectorConfigError: If dimension is invalid
+            VectorConfigError: If dimension is invalid (not positive)
         """
         if self.dimension is not None and self.dimension <= 0:
             raise VectorConfigError(
@@ -216,7 +226,7 @@ class VectorizerConfig:
         Get set of supported template types.
 
         Returns:
-            Set[str]: Set of template type names
+            Set[str]: Set of template type names available in configuration
         """
         return set(self.instruction_templates.keys())
 
@@ -235,7 +245,7 @@ class VectorizerConfig:
             InstructionTemplate: Structured template with proper typing
 
         Raises:
-            VectorConfigError: If template type doesn't exist
+            VectorConfigError: If template type doesn't exist in configuration
         """
         if template_type not in self.instruction_templates:
             raise VectorConfigError(
@@ -261,7 +271,7 @@ class VectorizerConfig:
             str: SQL template string
 
         Raises:
-            VectorConfigError: If template name doesn't exist
+            VectorConfigError: If template name doesn't exist in configuration
         """
         if template_name not in self.sql_templates:
             raise VectorConfigError(
@@ -269,6 +279,39 @@ class VectorizerConfig:
                 f"Available templates: {', '.join(self.sql_templates.keys())}"
             )
         return self.sql_templates[template_name]
+
+    def clone(self: T, **kwargs: Any) -> T:
+        """
+        Create a new configuration with specified overrides.
+
+        This is a more elegant alternative to having multiple with_* methods.
+
+        Args:
+            **kwargs: Configuration parameters to override
+
+        Returns:
+            VectorizerConfig: New configuration instance with specified parameters
+
+        Example:
+            # Create configuration optimized for speed
+            speed_config = config.vectorizer.clone(
+                optimization_level="speed",
+                search_strategy="approximate",
+                batch_size=64
+            )
+        """
+        # Get all current field values
+        current_values = {
+            field_name: getattr(self, field_name)
+            for field_name in self.__dataclass_fields__
+            if not field_name.startswith("_") and field_name != "ENV_VARS"
+        }
+
+        # Update with provided overrides
+        current_values.update(kwargs)
+
+        # Create new instance
+        return cast(T, self.__class__(**current_values))
 
     def with_model(
         self, model_name: str, dimension: Optional[int] = None
@@ -282,26 +325,12 @@ class VectorizerConfig:
 
         Returns:
             VectorizerConfig: New configuration instance
+
+        Note:
+            This method is maintained for backward compatibility.
+            Consider using `clone()` for new code.
         """
-        return VectorizerConfig(
-            model_name=model_name,
-            model_type=self.model_type,
-            dimension=dimension,
-            index_path=self.index_path,
-            storage_type=self.storage_type,
-            collection_name=self.collection_name,
-            sql_templates=self.sql_templates,
-            instruction_templates=self.instruction_templates,
-            optimization_level=self.optimization_level,
-            search_strategy=self.search_strategy,
-            distance_metric=self.distance_metric,
-            batch_size=self.batch_size,
-            max_retries=self.max_retries,
-            failure_cooldown_seconds=self.failure_cooldown_seconds,
-            enable_compression=self.enable_compression,
-            compression_ratio=self.compression_ratio,
-            reserved_memory_mb=self.reserved_memory_mb,
-        )
+        return self.clone(model_name=model_name, dimension=dimension)
 
     def with_storage_type(self, storage_type: StorageType) -> "VectorizerConfig":
         """
@@ -312,26 +341,12 @@ class VectorizerConfig:
 
         Returns:
             VectorizerConfig: New configuration instance
+
+        Note:
+            This method is maintained for backward compatibility.
+            Consider using `clone()` for new code.
         """
-        return VectorizerConfig(
-            model_name=self.model_name,
-            model_type=self.model_type,
-            dimension=self.dimension,
-            index_path=self.index_path,
-            storage_type=storage_type,
-            collection_name=self.collection_name,
-            sql_templates=self.sql_templates,
-            instruction_templates=self.instruction_templates,
-            optimization_level=self.optimization_level,
-            search_strategy=self.search_strategy,
-            distance_metric=self.distance_metric,
-            batch_size=self.batch_size,
-            max_retries=self.max_retries,
-            failure_cooldown_seconds=self.failure_cooldown_seconds,
-            enable_compression=self.enable_compression,
-            compression_ratio=self.compression_ratio,
-            reserved_memory_mb=self.reserved_memory_mb,
-        )
+        return self.clone(storage_type=storage_type)
 
     def optimize_for_performance(self, is_speed_critical: bool) -> "VectorizerConfig":
         """
@@ -343,27 +358,16 @@ class VectorizerConfig:
         Returns:
             VectorizerConfig: New configuration instance with optimized settings
         """
-        config = VectorizerConfig(
-            model_name=self.model_name,
-            model_type=self.model_type,
-            dimension=self.dimension,
-            index_path=self.index_path,
-            storage_type=self.storage_type,
-            collection_name=self.collection_name,
-            sql_templates=self.sql_templates,
-            instruction_templates=self.instruction_templates,
-            optimization_level="speed" if is_speed_critical else "accuracy",
-            search_strategy="approximate" if is_speed_critical else "hybrid",
-            distance_metric=self.distance_metric,
-            batch_size=self.batch_size * 2 if is_speed_critical else self.batch_size,
-            max_retries=self.max_retries,
-            failure_cooldown_seconds=self.failure_cooldown_seconds,
-            enable_compression=self.enable_compression,
-            compression_ratio=self.compression_ratio,
-            reserved_memory_mb=self.reserved_memory_mb,
-        )
+        settings = {
+            "optimization_level": "speed" if is_speed_critical else "accuracy",
+            "search_strategy": "approximate" if is_speed_critical else "hybrid",
+        }
 
-        return config
+        # Only increase batch size if optimizing for speed
+        if is_speed_critical:
+            settings["batch_size"] = self.batch_size * 2
+
+        return self.clone(**settings)
 
     def get_performance_settings(self) -> Dict[str, Any]:
         """
@@ -382,14 +386,19 @@ class VectorizerConfig:
                 self.compression_ratio if self.enable_compression else None
             ),
             "reserved_memory_mb": self.reserved_memory_mb,
+            "enable_multi_dim": self.enable_multi_dim,
+            "dim_separation": self.dim_separation if self.enable_multi_dim else None,
         }
 
     def validate(self) -> None:
         """
         Validate the entire configuration for consistency and correctness.
 
+        Performs comprehensive validation of all configuration parameters
+        to ensure they meet constraints and logical requirements.
+
         Raises:
-            VectorConfigError: If any validation fails
+            VectorConfigError: If any validation fails with detailed error message
         """
         errors = []
 
@@ -412,6 +421,12 @@ class VectorizerConfig:
         # Validate batch size
         if self.batch_size <= 0:
             errors.append(f"Batch size must be positive: {self.batch_size}")
+
+        # Validate multi-dimensional settings
+        if self.enable_multi_dim and self.dim_separation <= 0:
+            errors.append(
+                f"Dimension separation must be positive: {self.dim_separation}"
+            )
 
         # Validate templates
         for template_type, template in self.instruction_templates.items():

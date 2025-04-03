@@ -350,6 +350,64 @@ class LexicalDataset(TypedDict):
     example_sentence: str
 
 
+class WordTupleDict(TypedDict):
+    """Dictionary representation of a word node in the graph.
+
+    Args:
+        id: Unique identifier for the word
+        term: The actual word or lexical item
+        pos: Part of speech tag (optional)
+        frequency: Word usage frequency (optional)
+    """
+
+    id: int
+    term: str
+    pos: Optional[str] = None
+    frequency: Optional[float] = None
+
+
+class RelationshipTupleDict(TypedDict):
+    """Dictionary representation of a relationship between words.
+
+    Args:
+        source_id: ID of the source word
+        target_id: ID of the target word
+        rel_type: Type of relationship (e.g., "synonym", "antonym")
+        weight: Strength of the relationship (0.0 to 1.0)
+        dimension: Semantic dimension of the relationship
+        bidirectional: Whether relationship applies in both directions
+    """
+
+    source_id: int
+    target_id: int
+    rel_type: str
+    weight: float
+    dimension: str
+    bidirectional: bool
+
+
+class GraphInfoDict(TypedDict):
+    """Dictionary containing graph metadata and statistics.
+
+    Args:
+        node_count: Total number of nodes in the graph
+        edge_count: Total number of edges in the graph
+        density: Graph density measurement
+        dimensions: Set of relationship dimensions present
+        rel_types: Dictionary mapping relationship types to counts
+        connected_components: Number of connected components
+        largest_component_size: Size of the largest connected component
+    """
+
+    node_count: int
+    edge_count: int
+    density: float
+    dimensions: Set[str]
+    rel_types: Dict[str, int]
+    connected_components: int
+    largest_component_size: int
+
+
 # ==========================================
 # Module Exports
 # ==========================================
@@ -405,4 +463,11 @@ __all__ = [
     "SQLitePragmas",
     "SQLTemplates",
     "TemplateDict",
+    "WordnetEntry",
+    "DictionaryEntry",
+    "DbnaryEntry",
+    "LexicalDataset",
+    "WordTupleDict",
+    "RelationshipTupleDict",
+    "GraphInfoDict",
 ]

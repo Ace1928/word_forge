@@ -335,7 +335,7 @@ def main() -> None:
         graph_manager = GraphManager(db_manager)
 
         # Ensure DB has tables and sample data
-        db_manager._create_tables()  # Note: using protected method for compatibility
+        db_manager.create_tables()  # Note: using protected method for compatibility
         if graph_manager.ensure_sample_data():
             logger.info("Added sample data to database")
 

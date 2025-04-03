@@ -1840,6 +1840,9 @@ def main() -> None:
     - Generates visualizations in both 2D and 3D
     - Exports and analyzes subgraphs
 
+    Raises:
+        GraphError: If demonstration operations fail
+
     Example:
         ```python
         # Run the demonstration
@@ -1854,7 +1857,7 @@ def main() -> None:
 
     try:
         # Create database tables if they don't exist
-        db_manager._create_tables()
+        db_manager.create_tables()
 
         # Check if DB has data, add sample data if empty
         if graph_manager.ensure_sample_data():
@@ -1926,8 +1929,37 @@ def main() -> None:
                 f"Warning: Could not extract subgraph for '{example_term}' (term not found)"
             )
 
+        # Analyze multidimensional relationships
+        print("\nAnalyzing multidimensional relationship patterns...")
+        relationship_analysis = graph_manager.analyze_multidimensional_relationships()
+
+        # Display dimension statistics
+        print("Relationship dimensions:")
+        for dimension, count in relationship_analysis.get("dimensions", {}).items():
+            print(f"  - {dimension}: {count} relationships")
+
+        # Display multi-dimensional nodes
+        multi_dim_nodes = relationship_analysis.get("multi_dimensional_nodes", {})
+        if multi_dim_nodes:
+            print("\nTerms with multiple relationship dimensions:")
+            for term, dimensions in list(multi_dim_nodes.items())[:5]:  # Show first 5
+                print(f"  - {term}: {', '.join(dimensions)}")
+
+        # Display most common relationship types
+        most_common = relationship_analysis.get("most_common", {})
+        if most_common:
+            print("\nMost common relationship types by dimension:")
+            for dimension, types in most_common.items():
+                if types:
+                    print(f"  - {dimension}: {types[0][0]} ({types[0][1]} occurrences)")
+
+    except GraphError as e:
+        print(f"Graph error: {e}")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Unexpected error: {e}")
+    finally:
+        # Ensure connections are properly closed
+        db_manager.close()
 
 
 if __name__ == "__main__":
