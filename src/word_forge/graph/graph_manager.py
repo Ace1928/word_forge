@@ -28,10 +28,22 @@ Key Components:
 from __future__ import annotations
 
 import logging
+import random
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, TypedDict, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+)
 
 import networkx as nx
 import numpy as np
@@ -1616,50 +1628,211 @@ class GraphManager:
             raise GraphError(f"Failed to export subgraph: {e}") from e
 
     def analyze_semantic_clusters(
-        self, min_community_size: int = 3
-    ) -> Dict[int, List[str]]:
+        self,
+        min_community_size: int = 3,
+        weight_emotional: float = 1.0,
+        emotion_only: bool = False,
+    ) -> Dict[int, List[Dict[str, Union[str, float, List[str], bool]]]]:
         """
-        Identify semantic clusters (communities) in the graph.
+        Identify semantic and emotional clusters (communities) in the graph.
 
-        Uses community detection algorithms to find clusters of related terms.
-        Helps identify semantic groupings within the knowledge graph.
+        Uses community detection algorithms to find clusters of related terms based on their
+        semantic and emotional relationships. Enhances clustering by incorporating emotional
+        dimensions (valence, arousal) and meta-emotional relationships into the analysis.
 
         Args:
             min_community_size: Minimum number of terms to be considered a community
+            weight_emotional: Weight multiplier for emotional relationships (1.0 = equal weight)
+            emotion_only: If True, only considers emotional dimension relationships
 
         Returns:
-            Dictionary mapping community IDs to lists of terms
+            Dictionary mapping community IDs to lists of term data including:
+            - term: The term text
+            - valence: Emotional valence if available (-1.0 to 1.0)
+            - arousal: Emotional arousal if available (0.0 to 1.0)
+            - central: Whether this is a central term in the cluster
+            - related_dimensions: List of relationship dimensions for this term
+            - meta_emotions: Any meta-emotional relationships detected
 
         Raises:
             GraphError: If community detection fails
+            ImportError: If required community detection library is not installed
 
         Example:
             ```python
             # Find semantic clusters with at least 3 terms
             clusters = graph_manager.analyze_semantic_clusters(min_community_size=3)
 
-            # Print each cluster
+            # Print each cluster with emotional data
             for cluster_id, terms in clusters.items():
-                print(f"Cluster {cluster_id}: {', '.join(terms)}")
+                print(f"Cluster {cluster_id}:")
+                for term_data in terms:
+                    print(f"  - {term_data['term']} "
+                          f"(valence: {term_data.get('valence', 'N/A')}, "
+                          f"arousal: {term_data.get('arousal', 'N/A')})")
+
+            # Find emotion-weighted clusters
+            emotional_clusters = graph_manager.analyze_semantic_clusters(
+                min_community_size=3,
+                weight_emotional=2.0  # Double weight for emotional connections
+            )
+
+            # Find pure emotional clusters
+            pure_emotional = graph_manager.analyze_semantic_clusters(
+                min_community_size=2,
+                emotion_only=True
+            )
             ```
         """
-        if self.g.number_of_nodes() < 3:
+        # Early return if graph is too small
+        if self.g is None or self.g.number_of_nodes() < 3:
             return {}
 
         try:
-            # Use networkx's community detection
-            import community as community_louvain
+            # Type definition for the partition function
+            PartitionFunction = Callable[[nx.Graph], Dict[Any, int]]
+            best_partition_func: PartitionFunction
 
-            # Generate communities
-            partition = community_louvain.best_partition(self.g)
+            # Use networkx's community detection with robust import handling
+            try:
+                # Try older versions first (with type ignore for missing stubs)
+                import community as community_louvain  # type: ignore
+
+                best_partition_func = community_louvain.best_partition  # type: ignore
+            except (ImportError, AttributeError):
+                try:
+                    # Try newer versions (with type ignore for missing stubs)
+                    from community import community_louvain  # type: ignore
+
+                    best_partition_func = community_louvain.best_partition  # type: ignore
+                except (ImportError, AttributeError):
+                    # Fall back to NetworkX's implementation if available
+                    try:
+                        # NetworkX should already be imported at module level
+                        if hasattr(nx.algorithms.community, "louvain_communities"):
+                            # Create a type-safe wrapper for NetworkX's function
+                            def best_partition_func(graph: nx.Graph) -> Dict[Any, int]:
+                                communities = list(
+                                    nx.algorithms.community.louvain_communities(graph)
+                                )
+                                return {
+                                    node: i
+                                    for i, community in enumerate(communities)
+                                    for node in community
+                                }
+
+                        else:
+                            raise AttributeError(
+                                "NetworkX lacks louvain_communities function"
+                            )
+                    except (ImportError, AttributeError):
+                        raise ImportError(
+                            "Community detection requires either python-louvain package or NetworkX 2.7+. "
+                            "Install with: pip install python-louvain or upgrade networkx."
+                        )
+
+            # Create a weighted copy of the graph for analysis
+            weighted_graph = cast(nx.Graph, self.g.copy())
+
+            # Apply emotional weighting or filtering
+            if emotion_only or weight_emotional != 1.0:
+                for u, v, data in list(weighted_graph.edges(data=True)):
+                    dimension = data.get("dimension", "lexical")
+                    if emotion_only and dimension != "emotional":
+                        weighted_graph.remove_edge(u, v)
+                    elif dimension == "emotional" and weight_emotional != 1.0:
+                        # Adjust weight for emotional relationships
+                        weighted_graph[u][v]["weight"] = (
+                            float(data.get("weight", 1.0)) * weight_emotional
+                        )
+
+            # Skip if we filtered out all edges in emotion_only mode
+            if weighted_graph.number_of_edges() == 0:
+                return {}
+
+            # Generate communities using the function we found
+            partition = best_partition_func(weighted_graph)
 
             # Group terms by community
-            communities: Dict[int, List[str]] = {}
+            communities: Dict[
+                int, List[Dict[str, Union[str, float, List[str], bool]]]
+            ] = {}
+
+            # Calculate node centrality for identifying central terms
+            centrality = nx.betweenness_centrality(weighted_graph, weight="weight")
+
+            # First pass: collect all terms and their emotional data
             for node_id, community_id in partition.items():
-                term = self.g.nodes[node_id].get("term", f"Unknown {node_id}")
+                if node_id not in weighted_graph:
+                    continue
+
+                # Get the term text for this node
+                term_value = self.g.nodes[node_id].get("term", f"Unknown {node_id}")
+                term = (
+                    str(term_value) if term_value is not None else f"Unknown {node_id}"
+                )
+
+                # Initialize community if needed
                 if community_id not in communities:
                     communities[community_id] = []
-                communities[community_id].append(term)
+
+                # Get related dimensions for this term
+                dimensions: Set[str] = set()
+                meta_emotions: List[str] = []
+
+                for _, _, data in self.g.edges(node_id, data=True):
+                    # Get dimension and add to set
+                    dim_value = data.get("dimension", "lexical")
+                    dim = str(dim_value) if dim_value is not None else "lexical"
+                    dimensions.add(dim)
+
+                    # Check for meta-emotional relationships
+                    rel_type_value = data.get("relationship", "")
+                    rel_type = str(rel_type_value) if rel_type_value is not None else ""
+
+                    if rel_type.startswith("meta_emotion") or rel_type == "evokes":
+                        neighbor_id = None
+                        # Find neighbors with emotional dimension
+                        for n in self.g.neighbors(node_id):
+                            edge_data = self.g[node_id][n]
+                            if "emotional" in str(edge_data.get("dimension", "")):
+                                neighbor_id = n
+                                break
+
+                        if neighbor_id is not None:
+                            neighbor_term_value = self.g.nodes[neighbor_id].get(
+                                "term", ""
+                            )
+                            neighbor_term = (
+                                str(neighbor_term_value)
+                                if neighbor_term_value is not None
+                                else ""
+                            )
+                            meta_emotions.append(neighbor_term)
+
+                # Try to get valence/arousal from node attributes
+                valence_value = self.g.nodes[node_id].get("valence", None)
+                valence = float(valence_value) if valence_value is not None else None
+
+                arousal_value = self.g.nodes[node_id].get("arousal", None)
+                arousal = float(arousal_value) if arousal_value is not None else None
+
+                # Calculate whether this is a central term in the cluster
+                centrality_value = centrality.get(node_id, 0)
+                median_value = np.median([float(v) for v in centrality.values()])
+                is_central = bool(centrality_value > median_value)
+
+                # Add term data to the community
+                communities[community_id].append(
+                    {
+                        "term": term,
+                        "valence": valence,
+                        "arousal": arousal,
+                        "central": is_central,
+                        "related_dimensions": list(dimensions),
+                        "meta_emotions": meta_emotions,
+                    }
+                )
 
             # Filter small communities
             return {
@@ -1669,54 +1842,145 @@ class GraphManager:
             raise GraphError(f"Failed to analyze semantic clusters: {e}") from e
 
     def get_relationships_by_dimension(
-        self, dimension: str = "lexical"
-    ) -> List[Tuple[str, str, str]]:
+        self,
+        dimension: str = "lexical",
+        rel_type: Optional[str] = None,
+        include_meta: bool = False,
+        valence_range: Optional[Tuple[float, float]] = None,
+    ) -> List[Tuple[str, str, str, Dict[str, Any]]]:
         """
-        Get all relationships of a specific dimension.
+        Get all relationships of a specific dimension with detailed filtering.
 
-        Retrieves all relationships in the graph belonging to the specified dimension
-        (lexical, emotional, affective, etc.)
+        Retrieves relationships in the graph belonging to the specified dimension
+        (lexical, emotional, affective) with optional filtering by relationship type,
+        meta-emotional connections, and valence range for emotional terms.
 
         Args:
             dimension: Relationship dimension to filter by
                       Options: "lexical", "emotional", "affective"
+            rel_type: Optional specific relationship type to filter by
+                     (e.g., "synonym", "emotional_synonym", "intensifies")
+            include_meta: Whether to include meta-emotional relationships
+            valence_range: Optional tuple of (min_valence, max_valence) to filter by
+                          emotional valence (for emotional dimension only)
 
         Returns:
-            List of tuples containing (source_term, target_term, relationship_type)
+            List of tuples containing (source_term, target_term, relationship_type, attributes)
+            where attributes is a dictionary with additional data about the relationship
 
         Example:
             ```python
             # Get all emotional relationships
             emotional_relationships = graph_manager.get_relationships_by_dimension("emotional")
-            for source, target, rel_type in emotional_relationships:
-                print(f"{source} {rel_type} {target}")
+            for source, target, rel_type, attrs in emotional_relationships:
+                print(f"{source} {rel_type} {target} (weight: {attrs.get('weight')})")
+
+            # Get only intensifying emotional relationships
+            intensifiers = graph_manager.get_relationships_by_dimension(
+                "emotional", rel_type="intensifies"
+            )
+
+            # Get high-valence emotional relationships (0.5 to 1.0)
+            positive_emotions = graph_manager.get_relationships_by_dimension(
+                "emotional", valence_range=(0.5, 1.0)
+            )
+
+            # Include meta-emotional relationships
+            with_meta = graph_manager.get_relationships_by_dimension(
+                "emotional", include_meta=True
+            )
             ```
         """
         result = []
 
         for source, target, data in self.g.edges(data=True):
-            edge_dimension = data.get("dimension", "lexical")  # Default to lexical
-            if edge_dimension == dimension:
-                source_term = self.g.nodes[source].get("term", "")
-                target_term = self.g.nodes[target].get("term", "")
-                rel_type = data.get("relationship", "related")
-                result.append((source_term, target_term, rel_type))
+            edge_dimension = data.get("dimension", "lexical")
+
+            # Check dimension filter
+            if edge_dimension != dimension:
+                # Check for meta-emotional relationships if requested
+                if (
+                    include_meta
+                    and edge_dimension == "emotional"
+                    and dimension == "lexical"
+                ):
+                    pass  # Include this edge as it's a meta-relationship
+                else:
+                    continue
+
+            # Check relationship type filter
+            if rel_type and data.get("relationship", "") != rel_type:
+                continue
+
+            # Get source and target terms
+            source_term = self.g.nodes[source].get("term", "")
+            target_term = self.g.nodes[target].get("term", "")
+            rel_type = data.get("relationship", "related")
+
+            # Check valence range if specified and available (for emotional dimension)
+            if valence_range and edge_dimension == "emotional":
+                # Try to get source valence first from edge, then from node
+                source_valence = data.get(
+                    "source_valence", self.g.nodes[source].get("valence", None)
+                )
+
+                if source_valence is not None:
+                    min_val, max_val = valence_range
+                    if not (min_val <= source_valence <= max_val):
+                        continue
+
+            # Collect additional attributes for analysis
+            attrs = {
+                "weight": data.get("weight", 1.0),
+                "bidirectional": data.get("bidirectional", True),
+                "color": data.get("color", "#aaaaaa"),
+            }
+
+            # Add any emotional attributes if available
+            if edge_dimension == "emotional":
+                for attr in [
+                    "valence",
+                    "arousal",
+                    "source_valence",
+                    "target_valence",
+                    "confidence",
+                    "intensity",
+                ]:
+                    if attr in data:
+                        attrs[attr] = data[attr]
+
+            result.append((source_term, target_term, rel_type, attrs))
 
         return result
 
-    def get_emotional_subgraph(self, term: str, depth: int = 1) -> nx.Graph:
+    def get_emotional_subgraph(
+        self,
+        term: str,
+        depth: int = 1,
+        context: Optional[Union[str, Dict[str, float]]] = None,
+        emotional_types: Optional[List[str]] = None,
+        min_intensity: float = 0.0,
+    ) -> nx.Graph:
         """
         Extract a subgraph of emotional relationships for a specific term.
 
         Creates a subgraph centered on the given term, including only
         emotional dimension relationships up to the specified depth.
+        Supports filtering by emotional context, relationship types,
+        and minimum emotional intensity.
 
         Args:
             term: The central term to build the subgraph around
             depth: The number of relationship steps to include (default: 1)
+            context: Optional emotional context as string name or dictionary of
+                   emotional factors with weights (e.g., {"clinical": 0.8})
+            emotional_types: Optional list of specific emotional relationship types
+                           to include (e.g., ["intensifies", "evokes"])
+            min_intensity: Minimum intensity/weight for relationships to include
 
         Returns:
-            A NetworkX graph containing the emotional subgraph
+            A NetworkX graph containing the emotional subgraph with enhanced
+            node and edge attributes for emotional analysis
 
         Raises:
             NodeNotFoundError: If the term is not found in the graph
@@ -1726,6 +1990,21 @@ class GraphManager:
             # Get emotional relationships around "happiness"
             emotional_graph = graph_manager.get_emotional_subgraph("happiness", depth=2)
             print(f"Found {emotional_graph.number_of_nodes()} emotionally connected terms")
+
+            # Get only intense emotional relationships
+            intense_graph = graph_manager.get_emotional_subgraph(
+                "fear", min_intensity=0.7
+            )
+
+            # Get specific emotional relationship types
+            specific_graph = graph_manager.get_emotional_subgraph(
+                "anxiety", emotional_types=["intensifies", "evokes"]
+            )
+
+            # Apply emotional context to focus analysis
+            clinical_graph = graph_manager.get_emotional_subgraph(
+                "pain", context={"clinical": 0.9, "emergency": 0.1}
+            )
             ```
         """
         term_lower = term.lower()
@@ -1738,13 +2017,41 @@ class GraphManager:
         nodes_to_include = {node_id}
         current_nodes = {node_id}
 
+        # Apply context weights if provided
+        context_weights = {}
+        if isinstance(context, dict):
+            context_weights = context
+        elif isinstance(context, str):
+            # Try to find named context in relationships
+            # This is a placeholder - in a full implementation, you would retrieve
+            # the actual context weights from a context registry
+            context_weights = {"context": context}  # Simplified version
+
         # Breadth-first search up to specified depth
         for _ in range(depth):
             next_nodes = set()
             for node in current_nodes:
-                for neighbor, _, data in self.g.edges(node, data=True):
-                    # Only include emotional dimension edges
-                    if data.get("dimension") == "emotional":
+                for neighbor in self.g.neighbors(node):
+                    # Get edge data
+                    edge_data = self.g.get_edge_data(node, neighbor)
+
+                    # Skip if not an emotional dimension
+                    if edge_data.get("dimension") != "emotional":
+                        continue
+
+                    # Check emotional relationship type if filter is active
+                    rel_type = edge_data.get("relationship", "")
+                    if emotional_types and rel_type not in emotional_types:
+                        continue
+
+                    # Check minimum intensity/weight
+                    weight = edge_data.get("weight", 0.0)
+                    intensity = edge_data.get("intensity", weight)
+                    if intensity < min_intensity:
+                        continue
+
+                    # Add to next frontier
+                    if neighbor not in nodes_to_include:
                         next_nodes.add(neighbor)
 
             nodes_to_include.update(next_nodes)
@@ -1756,34 +2063,114 @@ class GraphManager:
         # Filter out non-emotional edges
         edges_to_remove = []
         for source, target, data in emotional_subgraph.edges(data=True):
+            # Check if it's an emotional edge
             if data.get("dimension") != "emotional":
                 edges_to_remove.append((source, target))
+                continue
 
+            # Apply additional filters
+            if emotional_types and data.get("relationship", "") not in emotional_types:
+                edges_to_remove.append((source, target))
+                continue
+
+            # Check minimum intensity
+            weight = data.get("weight", 0.0)
+            intensity = data.get("intensity", weight)
+            if intensity < min_intensity:
+                edges_to_remove.append((source, target))
+                continue
+
+            # Apply context weighting to edge attributes
+            if context_weights:
+                # Store original weight for reference
+                data["original_weight"] = weight
+
+                # Apply context weighting - this is a simplified version
+                # A full implementation would use more sophisticated context application
+                if (
+                    "context" in context_weights
+                    and data.get("context") == context_weights["context"]
+                ):
+                    data["weight"] = weight * 1.5  # Emphasize matching context
+
+                # Here you would apply more detailed contextual adjustments based on the
+                # specific emotional factors in the context_weights dictionary
+
+        # Remove filtered edges
         for edge in edges_to_remove:
             emotional_subgraph.remove_edge(*edge)
 
+        # Add emotional metadata to nodes
+        for node in emotional_subgraph.nodes():
+            # Get the term text
+            term = emotional_subgraph.nodes[node].get("term", "")
+
+            # Add emotional metadata if available (from emotion_manager data)
+            # In a real implementation, you might query an emotion_manager here
+            emotional_subgraph.nodes[node]["valence"] = emotional_subgraph.nodes[
+                node
+            ].get("valence", 0.0)
+            emotional_subgraph.nodes[node]["arousal"] = emotional_subgraph.nodes[
+                node
+            ].get("arousal", 0.0)
+
+            # Add degree centrality as a measure of emotional connectivity
+            emotional_subgraph.nodes[node]["emotional_centrality"] = (
+                emotional_subgraph.degree(node)
+            )
+
         return emotional_subgraph
 
-    def analyze_multidimensional_relationships(self) -> Dict[str, Dict[str, int]]:
+    def analyze_multidimensional_relationships(self) -> Dict[str, Any]:
         """
-        Analyze relationships across different dimensions.
+        Analyze relationships across different dimensions with emotional intelligence.
 
-        Provides statistics about relationship types across lexical, emotional,
-        and affective dimensions, identifying patterns and correlations.
+        Provides comprehensive statistics about relationship types across lexical,
+        emotional, and affective dimensions, identifying patterns, correlations,
+        emotional clusters, meta-emotional relationships, and emotional transitions.
 
         Returns:
-            Dictionary with dimension statistics and co-occurrence patterns
+            Dictionary with detailed analysis including:
+            - dimensions: Counts of relationships by dimension
+            - co_occurrences: Co-occurrence patterns between dimensions
+            - most_common: Most common relationship types by dimension
+            - multi_dimensional_nodes: Terms with connections in multiple dimensions
+            - emotional_valence_distribution: Statistical distribution of emotional valence
+            - meta_emotional_patterns: Patterns of emotions about emotions
+            - emotional_clusters: Clusters of emotionally related terms
+            - affective_transitions: Common pathways between emotional states
 
         Example:
             ```python
-            # Analyze multidimensional patterns
+            # Get comprehensive multidimensional analysis
             analysis = graph_manager.analyze_multidimensional_relationships()
-            for dimension, stats in analysis.items():
-                print(f"{dimension}: {stats}")
+
+            # Examine emotional dimensions
+            emotional_stats = analysis.get("dimensions", {}).get("emotional", 0)
+            print(f"Emotional relationships: {emotional_stats}")
+
+            # Examine meta-emotional patterns
+            meta_patterns = analysis.get("meta_emotional_patterns", {})
+            for source, targets in meta_patterns.items():
+                print(f"Meta-emotion: {source} → {', '.join(targets)}")
+
+            # Examine emotional transitions
+            transitions = analysis.get("affective_transitions", [])
+            for source, target, strength in transitions[:5]:  # Show top 5
+                print(f"Emotional transition: {source} → {target} (strength: {strength:.2f})")
             ```
         """
-        # Initialize results structure
-        results = {"dimensions": {}, "co_occurrences": {}, "most_common": {}}
+        # Initialize results structure with extended emotional analysis
+        results = {
+            "dimensions": {},  # Relationship counts by dimension
+            "co_occurrences": {},  # Cross-dimensional patterns
+            "most_common": {},  # Most common relationship types
+            "multi_dimensional_nodes": {},  # Terms with connections across dimensions
+            "emotional_valence_distribution": {},  # Statistical distribution of emotional valence
+            "meta_emotional_patterns": {},  # Patterns of emotions about emotions
+            "emotional_clusters": [],  # Clusters of emotionally related terms
+            "affective_transitions": [],  # Common pathways between emotional states
+        }
 
         # Count relationships by dimension
         dimension_counts = {}
@@ -1793,20 +2180,71 @@ class GraphManager:
 
         results["dimensions"] = dimension_counts
 
-        # Find nodes with multiple dimension connections
+        # Find nodes with multiple dimension connections and track emotional valences
         nodes_with_multi_dimensions = {}
-        for node in self.g.nodes():
-            dimensions = set()
-            for _, _, data in self.g.edges(node, data=True):
-                dimensions.add(data.get("dimension", "lexical"))
+        valence_values = []
+        meta_emotional_sources = {}
 
+        for node in self.g.nodes():
+            term = self.g.nodes[node].get("term", "")
+            if not term:
+                continue
+
+            # Track dimensions for this node
+            dimensions = set()
+            emotional_neighbors = []
+
+            # Valence for emotional terms
+            valence = self.g.nodes[node].get("valence")
+            if valence is not None:
+                valence_values.append(valence)
+
+            # Examine node's edges
+            for neighbor in self.g.neighbors(node):
+                edge_data = self.g.get_edge_data(node, neighbor)
+                dimension = edge_data.get("dimension", "lexical")
+                dimensions.add(dimension)
+
+                # Track emotional connections
+                if dimension == "emotional":
+                    neighbor_term = self.g.nodes[neighbor].get("term", "")
+                    rel_type = edge_data.get("relationship", "")
+                    emotional_neighbors.append((neighbor_term, rel_type))
+
+                    # Check for meta-emotional relationships
+                    if rel_type in ["meta_emotion", "evokes", "emotional_component"]:
+                        if term not in meta_emotional_sources:
+                            meta_emotional_sources[term] = []
+                        meta_emotional_sources[term].append(neighbor_term)
+
+            # Record nodes with multiple dimensions
             if len(dimensions) > 1:
-                term = self.g.nodes[node].get("term", "")
-                nodes_with_multi_dimensions[term] = list(dimensions)
+                nodes_with_multi_dimensions[term] = {
+                    "dimensions": list(dimensions),
+                    "emotional_connections": emotional_neighbors,
+                }
 
         results["multi_dimensional_nodes"] = nodes_with_multi_dimensions
+        results["meta_emotional_patterns"] = meta_emotional_sources
 
-        # Most common relationship types by dimension
+        # Analyze valence distribution for emotional terms
+        if valence_values:
+            results["emotional_valence_distribution"] = {
+                "count": len(valence_values),
+                "mean": np.mean(valence_values),
+                "median": np.median(valence_values),
+                "std": np.std(valence_values),
+                "min": min(valence_values),
+                "max": max(valence_values),
+                "positive_ratio": sum(1 for v in valence_values if v > 0)
+                / len(valence_values),
+                "negative_ratio": sum(1 for v in valence_values if v < 0)
+                / len(valence_values),
+                "neutral_ratio": sum(1 for v in valence_values if v == 0)
+                / len(valence_values),
+            }
+
+        # Find most common relationship types by dimension
         relationship_by_dimension = {}
         for _, _, data in self.g.edges(data=True):
             dimension = data.get("dimension", "lexical")
@@ -1824,32 +2262,637 @@ class GraphManager:
             sorted_rels = sorted(counts.items(), key=lambda x: x[1], reverse=True)
             results["most_common"][dimension] = sorted_rels[:5]  # Top 5
 
+        # Analyze co-occurrences between dimensions
+        dimension_pairs = {}
+        for node in self.g.nodes():
+            # Count dimensions for this node's edges
+            node_dimensions = {}
+            for _, _, data in self.g.edges(node, data=True):
+                dimension = data.get("dimension", "lexical")
+                node_dimensions[dimension] = node_dimensions.get(dimension, 0) + 1
+
+            # Record co-occurrences for each dimension pair
+            dimensions = list(node_dimensions.keys())
+            for i in range(len(dimensions)):
+                for j in range(i + 1, len(dimensions)):
+                    dim1, dim2 = dimensions[i], dimensions[j]
+                    key = f"{dim1}_{dim2}"
+                    dimension_pairs[key] = dimension_pairs.get(key, 0) + 1
+
+        results["co_occurrences"] = dimension_pairs
+
+        # Identify emotional clusters using basic community detection on emotional subgraph
+        try:
+            # Extract emotional edges
+            emotional_edges = [
+                (u, v)
+                for u, v, d in self.g.edges(data=True)
+                if d.get("dimension") == "emotional"
+            ]
+
+            if emotional_edges:
+                emotional_graph = self.g.edge_subgraph(emotional_edges).copy()
+
+                # Simple clustering - in a full implementation, use more sophisticated methods
+                from networkx.algorithms import community
+
+                communities = community.greedy_modularity_communities(emotional_graph)
+
+                # Convert to list of emotional clusters
+                for i, comm in enumerate(communities):
+                    cluster = []
+                    for node in comm:
+                        term = self.g.nodes[node].get("term", "")
+                        valence = self.g.nodes[node].get("valence")
+                        arousal = self.g.nodes[node].get("arousal")
+                        cluster.append(
+                            {"term": term, "valence": valence, "arousal": arousal}
+                        )
+
+                    if len(cluster) >= 2:  # Only include non-trivial clusters
+                        results["emotional_clusters"].append(
+                            {"id": i, "terms": cluster, "size": len(cluster)}
+                        )
+        except Exception:
+            # Silently fail, leaving emotional_clusters empty
+            pass
+
+        # Identify common affective transitions
+        # This represents pathways between emotional states
+        transitions = []
+
+        emotional_nodes = [
+            n
+            for n, d in self.g.nodes(data=True)
+            if d.get("valence") is not None or d.get("arousal") is not None
+        ]
+
+        for source in emotional_nodes:
+            source_term = self.g.nodes[source].get("term", "")
+            source_valence = self.g.nodes[source].get("valence", 0)
+
+            for target in self.g.neighbors(source):
+                if target in emotional_nodes:
+                    edge_data = self.g.get_edge_data(source, target)
+                    if edge_data.get("dimension") == "emotional":
+                        target_term = self.g.nodes[target].get("term", "")
+                        target_valence = self.g.nodes[target].get("valence", 0)
+
+                        # Skip if same valence (no transition)
+                        if source_valence == target_valence:
+                            continue
+
+                        # Calculate transition strength
+                        weight = edge_data.get("weight", 1.0)
+                        transition_strength = weight * abs(
+                            source_valence - target_valence
+                        )
+
+                        transitions.append(
+                            (source_term, target_term, transition_strength)
+                        )
+
+        # Sort transitions by strength
+        if transitions:
+            results["affective_transitions"] = sorted(
+                transitions, key=lambda x: x[2], reverse=True
+            )[
+                :10
+            ]  # Top 10 transitions
+
         return results
+
+    def extract_meta_emotional_patterns(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Extract patterns of meta-emotions (emotions about emotions) from the graph.
+
+        Identifies and analyzes meta-emotional relationships, where one emotional term
+        relates to another emotional term through relationships like "evokes", "meta_emotion",
+        or "emotional_component". These patterns reveal how emotions relate to each other
+        in complex hierarchies and networks.
+
+        Returns:
+            Dictionary mapping source emotions to lists of target emotion dictionaries,
+            each containing the target term, relationship type, and relationship strength
+
+        Example:
+            ```python
+            # Extract meta-emotional patterns
+            patterns = graph_manager.extract_meta_emotional_patterns()
+
+            # Examine patterns
+            for source_emotion, targets in patterns.items():
+                print(f"Emotion: {source_emotion}")
+                for target in targets:
+                    print(f"  → {target['term']} ({target['relationship']})"
+                          f" strength: {target['strength']:.2f}")
+            ```
+        """
+        patterns = {}
+
+        # Find all emotional terms (nodes with "emotion" in their description or tagged as emotional)
+        emotional_nodes = []
+        for node, attrs in self.g.nodes(data=True):
+            term = attrs.get("term", "")
+            if not term:
+                continue
+
+            # Check if node has valence/arousal or is marked as emotional
+            has_emotional_attrs = (
+                attrs.get("valence") is not None or attrs.get("arousal") is not None
+            )
+
+            # Also check node's edges for emotional connections
+            has_emotional_edges = any(
+                self.g.get_edge_data(node, neighbor).get("dimension") == "emotional"
+                for neighbor in self.g.neighbors(node)
+            )
+
+            if has_emotional_attrs or has_emotional_edges:
+                emotional_nodes.append(node)
+
+        # Analyze connections between emotional nodes
+        meta_relationships = [
+            "meta_emotion",
+            "evokes",
+            "emotional_component",
+            "intensifies",
+            "diminishes",
+        ]
+
+        for source in emotional_nodes:
+            source_term = self.g.nodes[source].get("term", "")
+
+            # Find meta-emotional connections
+            meta_targets = []
+
+            for target in self.g.neighbors(source):
+                if target in emotional_nodes:
+                    edge_data = self.g.get_edge_data(source, target)
+                    rel_type = edge_data.get("relationship", "")
+
+                    # Check if this is a meta-emotional relationship
+                    if rel_type in meta_relationships:
+                        target_term = self.g.nodes[target].get("term", "")
+                        weight = edge_data.get("weight", 1.0)
+
+                        meta_targets.append(
+                            {
+                                "term": target_term,
+                                "relationship": rel_type,
+                                "strength": weight,
+                                "bidirectional": edge_data.get("bidirectional", False),
+                                "source_valence": self.g.nodes[source].get("valence"),
+                                "target_valence": self.g.nodes[target].get("valence"),
+                            }
+                        )
+
+            # Only include emotions with meta-connections
+            if meta_targets:
+                patterns[source_term] = meta_targets
+
+        return patterns
+
+    def analyze_emotional_valence_distribution(
+        self, dimension: str = "emotional"
+    ) -> Dict[str, Union[float, Dict[str, int]]]:
+        """
+        Analyze the distribution of emotional valence across the graph.
+
+        Computes statistical metrics about the emotional valence (positivity/negativity)
+        of terms in the graph, provides distribution histograms, and identifies terms at
+        the extremes of the valence spectrum.
+
+        Args:
+            dimension: Dimension to analyze, typically "emotional" (default) or "affective"
+
+        Returns:
+            Dictionary with statistical analysis including:
+            - count: Number of terms with valence values
+            - mean/median/std: Statistical measures of central tendency and spread
+            - range: Minimum and maximum valence values
+            - distribution: Histogram of valence value frequencies
+            - top_positive/top_negative: Terms with highest/lowest valence scores
+            - clusters: Valence-based term clusters
+
+        Example:
+            ```python
+            # Analyze emotional valence distribution
+            valence_stats = graph_manager.analyze_emotional_valence_distribution()
+
+            # Print key statistics
+            print(f"Emotional terms: {valence_stats['count']}")
+            print(f"Mean valence: {valence_stats['mean']:.2f}")
+            print(f"Valence range: {valence_stats['range'][0]:.2f} to {valence_stats['range'][1]:.2f}")
+
+            # Print most positive and negative terms
+            print("Most positive terms:")
+            for term, val in valence_stats['top_positive']:
+                print(f"  - {term}: {val:.2f}")
+
+            print("Most negative terms:")
+            for term, val in valence_stats['top_negative']:
+                print(f"  - {term}: {val:.2f}")
+            ```
+        """
+        # Collection stage
+        valence_data = []
+        term_to_valence = {}
+
+        for node, attrs in self.g.nodes(data=True):
+            term = attrs.get("term", "")
+            if not term:
+                continue
+
+            # Try to get valence from node attributes
+            valence = attrs.get("valence")
+
+            # If not found directly, check if this node has emotional edges
+            if valence is None:
+                # Find average valence from emotional edges
+                emotional_edges = [
+                    self.g.get_edge_data(node, neighbor)
+                    for neighbor in self.g.neighbors(node)
+                    if self.g.get_edge_data(node, neighbor).get("dimension")
+                    == dimension
+                ]
+
+                if emotional_edges:
+                    # Extract valence values, default to 0 if not specified
+                    edge_valences = [
+                        edge.get("valence", 0)
+                        for edge in emotional_edges
+                        if "valence" in edge
+                    ]
+
+                    if edge_valences:
+                        valence = sum(edge_valences) / len(edge_valences)
+
+            # If we found a valence value, record it
+            if valence is not None:
+                valence_data.append(valence)
+                term_to_valence[term] = valence
+
+        # Statistical analysis
+        if not valence_data:
+            return {
+                "count": 0,
+                "mean": 0,
+                "median": 0,
+                "std": 0,
+                "range": [0, 0],
+                "distribution": {},
+                "top_positive": [],
+                "top_negative": [],
+                "clusters": {},
+            }
+
+        # Calculate basic statistics
+        count = len(valence_data)
+        mean_valence = np.mean(valence_data)
+        median_valence = np.median(valence_data)
+        std_valence = np.std(valence_data)
+        min_valence = min(valence_data)
+        max_valence = max(valence_data)
+
+        # Generate histogram (distribution)
+        hist_bins = 7  # -1.0 to 1.0 in increments of ~0.3
+        hist, bin_edges = np.histogram(valence_data, bins=hist_bins, range=(-1.0, 1.0))
+
+        # Convert histogram to dictionary
+        distribution = {}
+        for i, count in enumerate(hist):
+            bin_name = f"{bin_edges[i]:.1f} to {bin_edges[i+1]:.1f}"
+            distribution[bin_name] = int(count)
+
+        # Find top positive and negative terms
+        sorted_terms = sorted(term_to_valence.items(), key=lambda x: x[1])
+        top_negative = sorted_terms[
+            : min(5, len(sorted_terms) // 5)
+        ]  # Bottom 20% up to 5 terms
+        top_positive = sorted_terms[
+            -min(5, len(sorted_terms) // 5) :
+        ]  # Top 20% up to 5 terms
+
+        # Group terms into clusters by valence range
+        clusters = {
+            "very_negative": [],  # -1.0 to -0.6
+            "negative": [],  # -0.6 to -0.2
+            "slightly_negative": [],  # -0.2 to -0.0
+            "neutral": [],  # 0.0
+            "slightly_positive": [],  # 0.0 to 0.2
+            "positive": [],  # 0.2 to 0.6
+            "very_positive": [],  # 0.6 to 1.0
+        }
+
+        for term, val in term_to_valence.items():
+            if val < -0.6:
+                clusters["very_negative"].append(term)
+            elif val < -0.2:
+                clusters["negative"].append(term)
+            elif val < 0:
+                clusters["slightly_negative"].append(term)
+            elif val == 0:
+                clusters["neutral"].append(term)
+            elif val <= 0.2:
+                clusters["slightly_positive"].append(term)
+            elif val <= 0.6:
+                clusters["positive"].append(term)
+            else:
+                clusters["very_positive"].append(term)
+
+        # Final result structure
+        return {
+            "count": count,
+            "mean": mean_valence,
+            "median": median_valence,
+            "std": std_valence,
+            "range": [min_valence, max_valence],
+            "distribution": distribution,
+            "top_positive": top_positive,
+            "top_negative": top_negative,
+            "clusters": {
+                k: v for k, v in clusters.items() if v
+            },  # Only include non-empty clusters
+        }
+
+    def integrate_emotional_context(
+        self, context_name: str, context_weights: Dict[str, float]
+    ) -> None:
+        """
+        Integrate an emotional context into the graph for contextual analysis.
+
+        Registers an emotional context definition that can be used to filter
+        and weight relationships during emotional analysis. This allows for
+        domain-specific or situation-specific emotional interpretations.
+
+        Args:
+            context_name: Name to assign to this emotional context
+            context_weights: Dictionary of emotional factors and their weights
+                           in this context (e.g., {'clinical': 0.8, 'urgency': 0.6})
+
+        Example:
+            ```python
+            # Define a clinical medical context
+            graph_manager.integrate_emotional_context(
+                "clinical",
+                {
+                    "professional": 0.9,
+                    "detached": 0.7,
+                    "analytical": 0.8,
+                    "urgency": 0.6,
+                    "empathy": 0.4
+                }
+            )
+
+            # Define a literary context
+            graph_manager.integrate_emotional_context(
+                "literary",
+                {
+                    "expressive": 0.9,
+                    "narrative": 0.8,
+                    "descriptive": 0.7,
+                    "dramatic": 0.6
+                }
+            )
+
+            # Later use the context in analysis
+            subgraph = graph_manager.get_emotional_subgraph(
+                "anxiety", context="clinical"
+            )
+            ```
+        """
+        # Store the context in graph metadata
+        if not hasattr(self, "_emotional_contexts"):
+            self._emotional_contexts = {}
+
+        # Validate weights (should be between 0 and 1)
+        for factor, weight in context_weights.items():
+            if not 0 <= weight <= 1:
+                raise ValueError(
+                    f"Context weight for '{factor}' must be between 0 and 1"
+                )
+
+        # Store the context
+        self._emotional_contexts[context_name] = context_weights
+
+        # Add context as a graph attribute for persistence
+        self.g.graph[f"emotional_context_{context_name}"] = context_weights
+
+        # Apply context tags to relevant emotional edges
+        # This is a simplified implementation - in a real system, you would use
+        # more sophisticated matching to determine which edges relate to this context
+        updated_count = 0
+
+        for source, target, data in self.g.edges(data=True):
+            if data.get("dimension") == "emotional":
+                # Check if any context factors match this relationship
+                for factor in context_weights.keys():
+                    # Very simple matching - check if factor appears in relationship type
+                    rel_type = data.get("relationship", "")
+                    source_term = self.g.nodes[source].get("term", "").lower()
+                    target_term = self.g.nodes[target].get("term", "").lower()
+
+                    # Simple heuristic - if factor is in the relationship or terms
+                    if (
+                        factor.lower() in rel_type.lower()
+                        or factor.lower() in source_term
+                        or factor.lower() in target_term
+                    ):
+
+                        # Tag edge with context
+                        data["context"] = context_name
+                        # Adjust weight based on context importance
+                        data["context_weight"] = context_weights[factor]
+                        updated_count += 1
+                        break
+
+        return updated_count
+
+    def analyze_emotional_transitions(
+        self, path_length: int = 2, min_transition_strength: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """
+        Analyze emotional transition pathways in the emotion graph.
+
+        Identifies common paths of emotional change/transition, showing how
+        emotions flow from one state to another. These transitions reveal
+        emotional narratives, progression patterns, and psychological pathways.
+
+        Args:
+            path_length: Maximum path length to consider (default: 2)
+            min_transition_strength: Minimum strength threshold for transitions
+
+        Returns:
+            List of dictionaries representing transition paths, each containing:
+            - path: List of terms in the transition path
+            - strength: Overall transition strength
+            - valence_shift: Net change in valence
+            - arousal_shift: Net change in arousal
+            - relationship_types: Types of relationships in the path
+
+        Example:
+            ```python
+            # Analyze emotional transitions
+            transitions = graph_manager.analyze_emotional_transitions()
+
+            # Print top transitions
+            for t in transitions[:5]:  # Top 5
+                path_str = " → ".join(t["path"])
+                print(f"Transition: {path_str}")
+                print(f"  Strength: {t['strength']:.2f}")
+                print(f"  Valence shift: {t['valence_shift']:.2f}")
+                print(f"  Relationship types: {', '.join(t['relationship_types'])}")
+            ```
+        """
+        # Find emotional nodes
+        emotional_nodes = []
+        for node, attrs in self.g.nodes(data=True):
+            valence = attrs.get("valence")
+            arousal = attrs.get("arousal")
+
+            # Include node if it has emotional attributes
+            if valence is not None or arousal is not None:
+                emotional_nodes.append(node)
+
+        # If too few emotional nodes, return empty result
+        if len(emotional_nodes) < 2:
+            return []
+
+        transitions = []
+
+        # Analyze paths between emotional nodes
+        for source in emotional_nodes:
+            source_term = self.g.nodes[source].get("term", "")
+            source_valence = self.g.nodes[source].get("valence", 0)
+            source_arousal = self.g.nodes[source].get("arousal", 0)
+
+            # Use simple BFS to find paths up to path_length
+            paths = self._find_emotional_paths(source, path_length, emotional_nodes)
+
+            for path in paths:
+                # Skip too short paths
+                if len(path) < 2:
+                    continue
+
+                # Calculate transition properties
+                path_terms = [self.g.nodes[n].get("term", "") for n in path]
+                relationship_types = []
+
+                # Calculate cumulative strength and changes
+                strength = 1.0  # Start with full strength
+
+                # Get initial and final emotional states
+                final_node = path[-1]
+                final_valence = self.g.nodes[final_node].get("valence", 0)
+                final_arousal = self.g.nodes[final_node].get("arousal", 0)
+
+                # Calculate shifts
+                valence_shift = final_valence - source_valence
+                arousal_shift = final_arousal - source_arousal
+
+                # Extract relationship types along the path
+                for i in range(len(path) - 1):
+                    u, v = path[i], path[i + 1]
+                    edge_data = self.g.get_edge_data(u, v)
+                    rel_type = edge_data.get("relationship", "related")
+                    relationship_types.append(rel_type)
+
+                    # Multiply by edge weight to get path strength
+                    edge_weight = edge_data.get("weight", 1.0)
+                    strength *= edge_weight
+
+                # Only include paths above threshold
+                if strength >= min_transition_strength:
+                    transitions.append(
+                        {
+                            "path": path_terms,
+                            "strength": strength,
+                            "valence_shift": valence_shift,
+                            "arousal_shift": arousal_shift,
+                            "relationship_types": relationship_types,
+                        }
+                    )
+
+        # Sort transitions by strength
+        transitions.sort(key=lambda x: x["strength"], reverse=True)
+
+        return transitions
+
+    def _find_emotional_paths(
+        self, start_node: WordId, max_length: int, valid_nodes: List[WordId]
+    ) -> List[List[WordId]]:
+        """
+        Find paths from start_node to other emotional nodes up to max_length.
+
+        Helper method for analyze_emotional_transitions().
+
+        Args:
+            start_node: Starting node ID
+            max_length: Maximum path length
+            valid_nodes: List of valid destination nodes (emotional nodes)
+
+        Returns:
+            List of node ID paths
+        """
+        # Simple BFS path finding
+        paths = []
+        queue = [(start_node, [start_node])]
+
+        while queue:
+            node, path = queue.pop(0)
+
+            # If path is already at max length, don't expand further
+            if len(path) >= max_length:
+                continue
+
+            for neighbor in self.g.neighbors(node):
+                # Skip already visited nodes in this path
+                if neighbor in path:
+                    continue
+
+                # Create new path with this neighbor
+                new_path = path + [neighbor]
+
+                # If neighbor is a valid destination, add the path
+                if neighbor in valid_nodes and neighbor != start_node:
+                    paths.append(new_path)
+
+                # Continue BFS with this new path
+                queue.append((neighbor, new_path))
+
+        return paths
 
 
 def main() -> None:
     """
     Demonstrate key functionality of the GraphManager class.
 
-    This function serves as both a demonstration and basic test suite,
-    showing how to use the core features of the GraphManager.
+    This function showcases the full capabilities of the GraphManager including:
+    - Basic graph operations (building, querying, visualization)
+    - Emotional and affective relationship analysis
+    - Meta-emotional patterns and transitions
+    - Semantic clustering and multidimensional analysis
+    - Context-based emotional analysis
+    - Advanced visualization techniques
 
-    - Initializes the database and graph manager
-    - Builds the graph from database or sample data
-    - Displays graph statistics and relationships
-    - Generates visualizations in both 2D and 3D
-    - Exports and analyzes subgraphs
+    This serves as both a demonstration and comprehensive test suite.
 
     Raises:
         GraphError: If demonstration operations fail
 
     Example:
         ```python
-        # Run the demonstration
+        # Run the comprehensive demonstration
         main()
         ```
     """
+    import time
+
     from word_forge.database.db_manager import DBManager
+
+    start_time = time.time()
+    print("Starting GraphManager demonstration...\n")
 
     # Initialize database and graph managers
     db_manager = DBManager()
@@ -1879,6 +2922,9 @@ def main() -> None:
         # Display detailed graph summary
         graph_manager.display_graph_summary()
 
+        # Phase 1: Basic Relationship Analysis
+        print("\n=== PHASE 1: BASIC RELATIONSHIP ANALYSIS ===")
+
         # Get related terms example
         example_term = "algorithm"  # Changed to a sample term likely to exist
         try:
@@ -1888,8 +2934,298 @@ def main() -> None:
             # Filter by relationship type
             synonyms = graph_manager.get_related_terms(example_term, rel_type="synonym")
             print(f"Synonyms of '{example_term}': {synonyms}")
+
+            # Get other relationship types if available
+            for rel_type in ["antonym", "hypernym", "hyponym"]:
+                try:
+                    terms = graph_manager.get_related_terms(
+                        example_term, rel_type=rel_type
+                    )
+                    if terms:
+                        print(f"{rel_type.capitalize()}s of '{example_term}': {terms}")
+                except Exception:
+                    pass
+
         except NodeNotFoundError as e:
             print(f"Warning: {e}")
+            # Try an alternative term from the sample data
+            alternative_terms = ["data", "computer", "software", "function"]
+            for alt_term in alternative_terms:
+                try:
+                    related_terms = graph_manager.get_related_terms(alt_term)
+                    print(f"\nTerms related to '{alt_term}': {related_terms}")
+                    example_term = alt_term  # Update for later use
+                    break
+                except NodeNotFoundError:
+                    continue
+
+        # Phase 2: Multidimensional Relationship Analysis
+        print("\n=== PHASE 2: MULTIDIMENSIONAL RELATIONSHIP ANALYSIS ===")
+
+        # Analyze multidimensional relationships
+        print("Analyzing multidimensional relationship patterns...")
+        relationship_analysis = graph_manager.analyze_multidimensional_relationships()
+
+        # Display dimension statistics
+        print("Relationship dimensions:")
+        for dimension, count in relationship_analysis.get("dimensions", {}).items():
+            print(f"  - {dimension}: {count} relationships")
+
+        # Display multi-dimensional nodes
+        multi_dim_nodes = relationship_analysis.get("multi_dimensional_nodes", {})
+        if multi_dim_nodes:
+            print("\nTerms with multiple relationship dimensions:")
+            for term, data in list(multi_dim_nodes.items())[:5]:  # Show first 5
+                dimensions = data.get("dimensions", [])
+                print(f"  - {term}: {', '.join(dimensions)}")
+
+        # Display most common relationship types
+        most_common = relationship_analysis.get("most_common", {})
+        if most_common:
+            print("\nMost common relationship types by dimension:")
+            for dimension, types in most_common.items():
+                if types:
+                    print(f"  - {dimension}: {types[0][0]} ({types[0][1]} occurrences)")
+
+        # Phase 3: Emotional Relationship Analysis
+        print("\n=== PHASE 3: EMOTIONAL RELATIONSHIP ANALYSIS ===")
+
+        # Analyze emotional valence distribution
+        print("Analyzing emotional valence distribution...")
+        valence_analysis = graph_manager.analyze_emotional_valence_distribution()
+
+        if valence_analysis["count"] > 0:
+            print(f"Found {valence_analysis['count']} terms with emotional valence")
+            print(
+                f"Average valence: {valence_analysis['mean']:.2f} (range: {valence_analysis['range'][0]:.2f} to {valence_analysis['range'][1]:.2f})"
+            )
+
+            # Show positive and negative examples
+            if valence_analysis.get("top_positive"):
+                print("\nMost positive terms:")
+                for term, val in valence_analysis["top_positive"]:
+                    print(f"  - {term}: {val:.2f}")
+
+            if valence_analysis.get("top_negative"):
+                print("\nMost negative terms:")
+                for term, val in valence_analysis["top_negative"]:
+                    print(f"  - {term}: {val:.2f}")
+        else:
+            print("No emotional valence data found in the graph")
+
+            # Add some sample emotional relationships for demonstration
+            print("\nAdding sample emotional relationships for demonstration...")
+            sample_emotional_relations = [
+                ("joy", "happiness", "emotional_synonym", 0.9),
+                ("sadness", "grief", "emotional_synonym", 0.8),
+                ("anger", "rage", "intensifies", 0.7),
+                ("fear", "anxiety", "related_emotion", 0.6),
+                ("surprise", "shock", "emotional_spectrum", 0.5),
+            ]
+
+            # Add these to the graph (simplified for demonstration)
+            for source, target, rel_type, weight in sample_emotional_relations:
+                # First ensure the nodes exist (simplified)
+                if source.lower() not in graph_manager._term_to_id:
+                    source_id = len(graph_manager._term_to_id) + 1
+                    graph_manager.g.add_node(
+                        source_id,
+                        term=source,
+                        valence=(0.7 if source in ["joy", "happiness"] else -0.7),
+                    )
+                    graph_manager._term_to_id[source.lower()] = source_id
+                else:
+                    source_id = graph_manager._term_to_id[source.lower()]
+
+                if target.lower() not in graph_manager._term_to_id:
+                    target_id = len(graph_manager._term_to_id) + 1
+                    graph_manager.g.add_node(
+                        target_id,
+                        term=target,
+                        valence=(0.8 if target in ["happiness"] else -0.8),
+                    )
+                    graph_manager._term_to_id[target.lower()] = target_id
+                else:
+                    target_id = graph_manager._term_to_id[target.lower()]
+
+                # Add the emotional edge
+                graph_manager.g.add_edge(
+                    source_id,
+                    target_id,
+                    relationship=rel_type,
+                    dimension="emotional",
+                    weight=weight,
+                    color="#ff0000",  # Red for emotional relationships
+                )
+
+            print("Sample emotional relationships added")
+
+        # Phase 4: Meta-Emotional Patterns
+        print("\n=== PHASE 4: META-EMOTIONAL PATTERNS ===")
+
+        # Extract meta-emotional patterns
+        meta_patterns = graph_manager.extract_meta_emotional_patterns()
+
+        if meta_patterns:
+            print(f"Found {len(meta_patterns)} meta-emotional patterns")
+            print("\nSample meta-emotional patterns:")
+            for source, targets in list(meta_patterns.items())[:3]:  # Show first 3
+                target_str = ", ".join(
+                    [f"{t['term']} ({t['relationship']})" for t in targets[:2]]
+                )
+                print(f"  - {source} → {target_str}")
+        else:
+            print("No meta-emotional patterns found")
+
+            # Add sample meta-emotional patterns for demonstration
+            print("\nAdding sample meta-emotional patterns for demonstration...")
+            sample_meta_relations = [
+                ("anxiety", "fear", "meta_emotion", 0.8),
+                ("regret", "sadness", "evokes", 0.7),
+                ("awe", "surprise", "emotional_component", 0.9),
+            ]
+
+            # Add these to the graph (simplified)
+            for source, target, rel_type, weight in sample_meta_relations:
+                # First ensure the nodes exist (simplified)
+                if source.lower() not in graph_manager._term_to_id:
+                    source_id = len(graph_manager._term_to_id) + 1
+                    graph_manager.g.add_node(source_id, term=source, valence=-0.3)
+                    graph_manager._term_to_id[source.lower()] = source_id
+                else:
+                    source_id = graph_manager._term_to_id[source.lower()]
+
+                if target.lower() not in graph_manager._term_to_id:
+                    target_id = len(graph_manager._term_to_id) + 1
+                    graph_manager.g.add_node(target_id, term=target, valence=-0.5)
+                    graph_manager._term_to_id[target.lower()] = target_id
+                else:
+                    target_id = graph_manager._term_to_id[target.lower()]
+
+                # Add the meta-emotional edge
+                graph_manager.g.add_edge(
+                    source_id,
+                    target_id,
+                    relationship=rel_type,
+                    dimension="emotional",
+                    weight=weight,
+                    color="#800080",  # Purple for meta-emotional
+                )
+
+            print("Sample meta-emotional patterns added")
+
+        # Phase 5: Emotional Transitions
+        print("\n=== PHASE 5: EMOTIONAL TRANSITIONS ===")
+
+        # Analyze emotional transitions
+        transitions = graph_manager.analyze_emotional_transitions()
+
+        if transitions:
+            print(f"Found {len(transitions)} emotional transition pathways")
+            print("\nTop emotional transitions:")
+            for t in transitions[:3]:  # Show top 3
+                path_str = " → ".join(t["path"])
+                print(f"  - {path_str}")
+                print(
+                    f"    Strength: {t['strength']:.2f}, Valence shift: {t['valence_shift']:.2f}"
+                )
+        else:
+            print("No emotional transitions found in the graph")
+
+        # Phase 6: Semantic Clusters
+        print("\n=== PHASE 6: SEMANTIC CLUSTERS ===")
+
+        # Analyze semantic clusters
+        try:
+            print("Identifying semantic and emotional clusters...")
+            clusters = graph_manager.analyze_semantic_clusters(min_community_size=2)
+
+            if clusters:
+                print(f"Found {len(clusters)} semantic clusters")
+                print("\nSample clusters:")
+                for cluster_id, terms in list(clusters.items())[:3]:  # Show first 3
+                    print(f"  Cluster {cluster_id}:")
+                    for term_data in terms[:3]:  # Show first 3 terms per cluster
+                        term = term_data["term"]
+                        valence = term_data.get("valence")
+                        valence_str = (
+                            f", valence: {valence:.2f}" if valence is not None else ""
+                        )
+                        print(f"    - {term}{valence_str}")
+            else:
+                print("No significant semantic clusters found")
+        except ImportError:
+            print("Note: Semantic clustering requires python-louvain package")
+            print("Install with: pip install python-louvain")
+
+        # Phase 7: Context Integration
+        print("\n=== PHASE 7: CONTEXT INTEGRATION ===")
+
+        # Define and integrate emotional contexts
+        print("Integrating emotional contexts...")
+
+        # Define a clinical/medical context
+        clinical_context = {
+            "professional": 0.9,
+            "analytical": 0.8,
+            "detached": 0.6,
+            "compassionate": 0.5,
+        }
+
+        # Define a literary/narrative context
+        literary_context = {
+            "expressive": 0.9,
+            "narrative": 0.8,
+            "dramatic": 0.7,
+            "metaphorical": 0.6,
+        }
+
+        # Integrate contexts
+        try:
+            updated_clinical = graph_manager.integrate_emotional_context(
+                "clinical", clinical_context
+            )
+            updated_literary = graph_manager.integrate_emotional_context(
+                "literary", literary_context
+            )
+
+            print(
+                f"Integrated clinical context (affected {updated_clinical} relationships)"
+            )
+            print(
+                f"Integrated literary context (affected {updated_literary} relationships)"
+            )
+
+            # Apply context to emotional subgraph
+            # Try with an emotional term if present
+            emotional_terms = [
+                t["term"]
+                for t in valence_analysis.get("top_positive", [])
+                + valence_analysis.get("top_negative", [])
+            ]
+
+            if emotional_terms:
+                context_term = emotional_terms[0]
+            else:
+                # Fallback to one we might have added
+                context_term = "anxiety"
+
+            print(
+                f"\nExtracting emotional subgraph for '{context_term}' with clinical context..."
+            )
+            emotional_subgraph = graph_manager.get_emotional_subgraph(
+                context_term, depth=2, context="clinical"
+            )
+
+            print(
+                f"Extracted emotional subgraph with {emotional_subgraph.number_of_nodes()} nodes "
+                f"and {emotional_subgraph.number_of_edges()} emotional relationships"
+            )
+        except Exception as e:
+            print(f"Note: Context integration skipped: {e}")
+
+        # Phase 8: Visualization
+        print("\n=== PHASE 8: VISUALIZATION ===")
 
         # Generate and save both 2D and 3D visualizations
         try:
@@ -1903,9 +3239,19 @@ def main() -> None:
             print("\nGenerating 3D interactive visualization...")
             graph_manager.visualize_3d(output_path=vis_path_3d)
 
+            # Create dimension-specific visualizations
+            if "emotional" in relationship_analysis.get("dimensions", {}):
+                vis_path_emotional = "data/emotional_graph.html"
+                print("\nGenerating emotional relationships visualization...")
+                graph_manager.visualize(
+                    output_path=vis_path_emotional, dimensions=["emotional"]
+                )
+
             print("\nVisualizations saved:")
             print(f"  - 2D: {vis_path_2d}")
             print(f"  - 3D: {vis_path_3d}")
+            if "emotional" in relationship_analysis.get("dimensions", {}):
+                print(f"  - Emotional: {vis_path_emotional}")
             print("Open these files in a web browser to explore the graph")
 
         except ImportError as e:
@@ -1913,13 +3259,13 @@ def main() -> None:
         except Exception as e:
             print(f"Warning: Could not generate visualization: {e}")
 
-        # Save the graph to a file
+        # Save the complete graph to a file
         output_path = "data/lexical_graph.gexf"
-        print(f"\nSaving graph to {output_path}")
+        print(f"\nSaving complete graph to {output_path}")
         graph_manager.save_to_gexf(output_path)
         print(f"Graph saved successfully to {output_path}")
 
-        # Try to extract a subgraph for a term (e.g., "algorithm")
+        # Export subgraphs
         try:
             print(f"\nExtracting subgraph for '{example_term}'...")
             subgraph_path = graph_manager.export_subgraph(example_term, depth=2)
@@ -1929,34 +3275,17 @@ def main() -> None:
                 f"Warning: Could not extract subgraph for '{example_term}' (term not found)"
             )
 
-        # Analyze multidimensional relationships
-        print("\nAnalyzing multidimensional relationship patterns...")
-        relationship_analysis = graph_manager.analyze_multidimensional_relationships()
-
-        # Display dimension statistics
-        print("Relationship dimensions:")
-        for dimension, count in relationship_analysis.get("dimensions", {}).items():
-            print(f"  - {dimension}: {count} relationships")
-
-        # Display multi-dimensional nodes
-        multi_dim_nodes = relationship_analysis.get("multi_dimensional_nodes", {})
-        if multi_dim_nodes:
-            print("\nTerms with multiple relationship dimensions:")
-            for term, dimensions in list(multi_dim_nodes.items())[:5]:  # Show first 5
-                print(f"  - {term}: {', '.join(dimensions)}")
-
-        # Display most common relationship types
-        most_common = relationship_analysis.get("most_common", {})
-        if most_common:
-            print("\nMost common relationship types by dimension:")
-            for dimension, types in most_common.items():
-                if types:
-                    print(f"  - {dimension}: {types[0][0]} ({types[0][1]} occurrences)")
+        # Display execution time
+        elapsed_time = time.time() - start_time
+        print(f"\nDemonstration completed in {elapsed_time:.2f} seconds")
 
     except GraphError as e:
         print(f"Graph error: {e}")
     except Exception as e:
+        import traceback
+
         print(f"Unexpected error: {e}")
+        traceback.print_exc()
     finally:
         # Ensure connections are properly closed
         db_manager.close()

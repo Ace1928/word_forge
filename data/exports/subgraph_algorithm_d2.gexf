@@ -1,159 +1,150 @@
 <?xml version='1.0' encoding='utf-8'?>
 <gexf xmlns="http://www.gexf.net/1.2draft" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.gexf.net/1.2draft http://www.gexf.net/1.2draft/gexf.xsd" version="1.2">
-  <meta lastmodifieddate="2025-04-03">
+  <meta lastmodifieddate="2025-04-04">
     <creator>NetworkX 3.4.2</creator>
   </meta>
   <graph defaultedgetype="undirected" mode="static" name="">
     <attributes mode="static" class="edge">
-      <attribute id="4" title="relationship" type="string" />
-      <attribute id="5" title="color" type="string" />
-      <attribute id="6" title="bidirectional" type="boolean" />
-      <attribute id="7" title="dimension" type="string" />
-      <attribute id="8" title="title" type="string" />
+      <attribute id="3" title="relationship" type="string" />
+      <attribute id="4" title="color" type="string" />
+      <attribute id="5" title="bidirectional" type="boolean" />
+      <attribute id="6" title="dimension" type="string" />
+      <attribute id="7" title="title" type="string" />
     </attributes>
     <attributes mode="static" class="node">
       <attribute id="0" title="term" type="string" />
       <attribute id="1" title="x" type="double" />
       <attribute id="2" title="y" type="double" />
-      <attribute id="3" title="z" type="double" />
     </attributes>
     <nodes>
       <node id="1" label="algorithm">
         <attvalues>
           <attvalue for="0" value="algorithm" />
-          <attvalue for="1" value="-0.24583400785923004" />
-          <attvalue for="2" value="-0.07379644364118576" />
-          <attvalue for="3" value="-0.09449002146720886" />
+          <attvalue for="1" value="0.09376630187034607" />
+          <attvalue for="2" value="-0.1442970335483551" />
         </attvalues>
       </node>
       <node id="521" label="process">
         <attvalues>
           <attvalue for="0" value="process" />
-          <attvalue for="1" value="-0.11636906862258911" />
-          <attvalue for="2" value="-0.017908750101923943" />
-          <attvalue for="3" value="-0.0016737311379984021" />
+          <attvalue for="1" value="0.059141505509614944" />
+          <attvalue for="2" value="-0.06616073846817017" />
         </attvalues>
       </node>
       <node id="11" label="algorithmic rule">
         <attvalues>
           <attvalue for="0" value="algorithmic rule" />
-          <attvalue for="1" value="-0.29149124026298523" />
-          <attvalue for="2" value="-0.09182576835155487" />
-          <attvalue for="3" value="-0.12282776832580566" />
+          <attvalue for="1" value="0.10689899325370789" />
+          <attvalue for="2" value="-0.1679336577653885" />
         </attvalues>
       </node>
       <node id="12" label="algorithmic program">
         <attvalues>
           <attvalue for="0" value="algorithmic program" />
-          <attvalue for="1" value="-0.28808215260505676" />
-          <attvalue for="2" value="-0.09405094385147095" />
-          <attvalue for="3" value="-0.1261269748210907" />
+          <attvalue for="1" value="0.10677865892648697" />
+          <attvalue for="2" value="-0.1674681007862091" />
         </attvalues>
       </node>
       <node id="853" label="recursion">
         <attvalues>
           <attvalue for="0" value="recursion" />
-          <attvalue for="1" value="-0.32578563690185547" />
-          <attvalue for="2" value="-0.10741280764341354" />
-          <attvalue for="3" value="-0.14668525755405426" />
+          <attvalue for="1" value="0.119595468044281" />
+          <attvalue for="2" value="-0.18554159998893738" />
         </attvalues>
       </node>
       <node id="730" label="procedure">
         <attvalues>
           <attvalue for="0" value="procedure" />
-          <attvalue for="1" value="-0.1656222939491272" />
-          <attvalue for="2" value="-0.0365871824324131" />
-          <attvalue for="3" value="-0.034068480134010315" />
+          <attvalue for="1" value="0.06928642094135284" />
+          <attvalue for="2" value="-0.09879837185144424" />
         </attvalues>
       </node>
       <node id="859" label="function">
         <attvalues>
           <attvalue for="0" value="function" />
-          <attvalue for="1" value="-0.08210598677396774" />
-          <attvalue for="2" value="-0.003392768558114767" />
-          <attvalue for="3" value="0.024267325177788734" />
+          <attvalue for="1" value="0.037410929799079895" />
+          <attvalue for="2" value="-0.055561475455760956" />
         </attvalues>
       </node>
       <node id="509" label="operation">
         <attvalues>
           <attvalue for="0" value="operation" />
-          <attvalue for="1" value="-0.17742398381233215" />
-          <attvalue for="2" value="-0.026327626779675484" />
-          <attvalue for="3" value="-0.018978022038936615" />
+          <attvalue for="1" value="0.0742763951420784" />
+          <attvalue for="2" value="-0.09328430891036987" />
         </attvalues>
       </node>
     </nodes>
     <edges>
       <edge source="1" target="11" id="0" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: algorithm → algorithmic rule" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: algorithm → algorithmic rule" />
         </attvalues>
       </edge>
       <edge source="1" target="12" id="1" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: algorithm → algorithmic program" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: algorithm → algorithmic program" />
         </attvalues>
       </edge>
       <edge source="1" target="730" id="2" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: algorithm → procedure" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: algorithm → procedure" />
         </attvalues>
       </edge>
       <edge source="1" target="853" id="3" weight="0.3">
         <attvalues>
-          <attvalue for="4" value="related_concept" />
-          <attvalue for="5" value="#aaaaaa" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="related_concept: algorithm → recursion" />
+          <attvalue for="3" value="related_concept" />
+          <attvalue for="4" value="#aaaaaa" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="related_concept: algorithm → recursion" />
         </attvalues>
       </edge>
       <edge source="521" target="509" id="4" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: process → operation" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: process → operation" />
         </attvalues>
       </edge>
       <edge source="521" target="730" id="5" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: procedure → process" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: procedure → process" />
         </attvalues>
       </edge>
       <edge source="730" target="509" id="6" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: procedure → operation" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: procedure → operation" />
         </attvalues>
       </edge>
       <edge source="730" target="859" id="7" weight="1.0">
         <attvalues>
-          <attvalue for="4" value="synonym" />
-          <attvalue for="5" value="#4287f5" />
-          <attvalue for="6" value="true" />
-          <attvalue for="7" value="lexical" />
-          <attvalue for="8" value="synonym: function → procedure" />
+          <attvalue for="3" value="synonym" />
+          <attvalue for="4" value="#4287f5" />
+          <attvalue for="5" value="true" />
+          <attvalue for="6" value="lexical" />
+          <attvalue for="7" value="synonym: function → procedure" />
         </attvalues>
       </edge>
     </edges>

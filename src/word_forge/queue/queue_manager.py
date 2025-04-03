@@ -37,6 +37,36 @@ class EmptyQueueError(QueueError):
     pass
 
 
+# Export QueueEmpty as alias of EmptyQueueError for easier imports
+Empty = EmptyQueueError
+
+
+class QueueItem(Generic[T]):
+    """
+    Queue item structure for enhanced processing.
+
+    Attributes:
+        item: The actual data item to process
+        priority: Processing priority (lower numbers = higher priority)
+        retry_count: Number of previous processing attempts
+        timestamp: Time when item was added to queue
+    """
+
+    def __init__(self, item: T, priority: int = 100, retry_count: int = 0):
+        """
+        Initialize a queue item with associated metadata.
+
+        Args:
+            item: The data item for processing
+            priority: Processing priority (lower numbers = higher priority)
+            retry_count: Number of previous processing attempts
+        """
+        self.item = item
+        self.priority = priority
+        self.retry_count = retry_count
+        self.timestamp = time.time()
+
+
 class QueueManager(Generic[T]):
     """
     Manages a FIFO queue of items to process with duplicate prevention.
@@ -316,6 +346,69 @@ class QueueManager(Generic[T]):
         """
         return self._metrics.copy() if self._metrics is not None else None
 
+    def get(self, timeout: Optional[float] = None) -> T:
+        """
+        Get an item from the queue, waiting up to timeout seconds if necessary.
+
+        This method provides compatibility with the standard Queue interface.
+
+        Args:
+            timeout: Maximum time to wait in seconds, or None to wait indefinitely
+
+        Returns:
+            The next item from the queue
+
+        Raises:
+            EmptyQueueError: If timeout expires before an item is available
+        """
+        start_time = time.time()
+        while timeout is None or time.time() - start_time < timeout:
+            try:
+                return self.dequeue()
+            except EmptyQueueError:
+                time.sleep(0.01)  # Small sleep to avoid busy waiting
+                continue
+        raise EmptyQueueError("Queue empty and timeout expired")
+
+    def put(self, item: T) -> None:
+        """
+        Put an item into the queue.
+
+        This method provides compatibility with the standard Queue interface.
+
+        Args:
+            item: The item to add to the queue
+        """
+        self.enqueue(item)
+
+    def task_done(self) -> None:
+        """
+        Indicate that a task is complete.
+
+        This method provides compatibility with the standard Queue interface
+        but doesn't do anything in this implementation as we don't track
+        in-progress tasks separately.
+        """
+        pass
+
+    def prioritize_items(self, items: List[T]) -> None:
+        """
+        Increase the priority of specified items in the queue.
+
+        This method is useful when certain items should be processed
+        before others based on dynamic conditions or relationships.
+
+        Args:
+            items: List of items to prioritize
+
+        Note:
+            Currently not implemented - would require an underlying
+            priority queue implementation. This is a placeholder for
+            future enhancement.
+        """
+        # Future implementation would adjust priorities in the internal queue
+        pass
+
 
 # Backward compatibility aliases - type signature enhanced but functionality preserved
 def enqueue_word(self: QueueManager[str], term: str) -> bool:
@@ -397,7 +490,9 @@ __all__ = [
     "QueueManager",
     "QueueError",
     "EmptyQueueError",
+    "Empty",
     "Normalizable",
+    "QueueItem",
 ]
 
 

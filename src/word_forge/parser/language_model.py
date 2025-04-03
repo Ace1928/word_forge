@@ -158,6 +158,27 @@ class ModelState:
             print(f"Text generation failed: {str(e)}")
             return None
 
+    def query(
+        self,
+        prompt: str,
+        max_new_tokens: int = 512,
+        temperature: float = 0.7,
+        num_beams: int = 3,
+    ) -> Optional[str]:
+        """
+        Query the model with a prompt.
+
+        Args:
+            prompt: Input text to query
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            num_beams: Number of beams for beam search
+
+        Returns:
+            Generated text or None if generation failed
+        """
+        return self.generate_text(prompt, max_new_tokens, temperature, num_beams)
+
 
 def main():
     # Example usage
