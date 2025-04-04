@@ -1,498 +1,971 @@
+"""
+Queue Manager Module
+
+This module provides a thread-safe, generic queue implementation for managing
+tasks in the Word Forge system. It features:
+- Type-safe generic queue with configurable item types
+- Thread-safe operations for concurrent access
+- Seen item tracking to prevent duplicate processing
+- Priority-based scheduling for important tasks
+- Performance metrics and telemetry
+- Error handling using Result pattern
+
+The QueueManager class serves as a central component for managing processing
+tasks with proper concurrency control and instrumentation.
+"""
+
 import queue
 import threading
+import time
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import (
-    Callable,
     Dict,
     Generic,
-    Iterator,
     List,
     Optional,
     Protocol,
     Set,
     TypeVar,
+    Union,
     cast,
+    final,
 )
 
-from word_forge.config import config
-
-T = TypeVar("T")  # Item type
-NormalizerFunc = Callable[[T], T]  # Type alias for normalization functions
-
-
-class Normalizable(Protocol):
-    """Protocol defining objects that can be normalized to a canonical form."""
-
-    def __str__(self) -> str: ...
+# Type variable for queue items - allows for generic queue
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 class QueueError(Exception):
-    """Base exception for queue operations."""
+    """
+    Base exception for queue operations.
 
-    pass
+    Provides a consistent foundation for all queue-related exceptions
+    with support for capturing the original cause.
+
+    Attributes:
+        message: Detailed error description
+        cause: Original exception that triggered this error
+    """
+
+    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+        """
+        Initialize with detailed error message and optional cause.
+
+        Args:
+            message: Error description with context
+            cause: Original exception that caused this error (if applicable)
+        """
+        super().__init__(message)
+        self.__cause__ = cause
+        self.message = message
+        self.cause = cause
+
+    def __str__(self) -> str:
+        """Provide detailed error message including cause if available."""
+        error_msg = self.message
+        if self.cause:
+            error_msg += f" | Cause: {str(self.cause)}"
+        return error_msg
 
 
 class EmptyQueueError(QueueError):
-    """Raised when attempting to dequeue from an empty queue."""
-
-    pass
-
-
-# Export QueueEmpty as alias of EmptyQueueError for easier imports
-Empty = EmptyQueueError
-
-
-class QueueItem(Generic[T]):
     """
-    Queue item structure for enhanced processing.
+    Raised when attempting to dequeue from an empty queue.
+
+    This exception is raised when trying to retrieve an item from an empty queue
+    in a non-blocking manner, providing clear feedback about the queue state.
+    """
+
+    def __init__(self) -> None:
+        """Initialize with standard empty queue message."""
+        super().__init__("Queue is empty, no items to dequeue")
+
+
+class QueueFullError(QueueError):
+    """
+    Raised when attempting to enqueue to a full queue with a size limit.
+
+    This exception provides information about queue capacity limits when
+    an enqueue operation cannot be completed due to reaching maximum size.
 
     Attributes:
-        item: The actual data item to process
-        priority: Processing priority (lower numbers = higher priority)
-        retry_count: Number of previous processing attempts
-        timestamp: Time when item was added to queue
+        max_size: Maximum size of the queue
     """
 
-    def __init__(self, item: T, priority: int = 100, retry_count: int = 0):
+    def __init__(self, max_size: int) -> None:
         """
-        Initialize a queue item with associated metadata.
+        Initialize with queue full details.
 
         Args:
-            item: The data item for processing
-            priority: Processing priority (lower numbers = higher priority)
-            retry_count: Number of previous processing attempts
+            max_size: Maximum capacity of the queue
         """
-        self.item = item
-        self.priority = priority
-        self.retry_count = retry_count
-        self.timestamp = time.time()
+        super().__init__(f"Queue is full (max size: {max_size})")
+        self.max_size = max_size
 
 
+class TaskPriority(Enum):
+    """
+    Priority levels for queue items.
+
+    Defines the relative importance of tasks in the queue,
+    affecting processing order.
+    """
+
+    HIGH = auto()
+    NORMAL = auto()
+    LOW = auto()
+
+
+@dataclass(order=True)
+class PrioritizedItem(Generic[T]):
+    """
+    Wraps a queue item with priority information.
+
+    This class enables priority-based ordering in the queue
+    while preserving the original item data.
+
+    Attributes:
+        priority: The item's processing priority
+        timestamp: When the item was added (for FIFO within priority)
+        item: The actual task data
+    """
+
+    priority: TaskPriority = field(compare=True)
+    timestamp: float = field(compare=True)
+    item: T = field(compare=False)
+
+
+@dataclass
+class QueueMetrics:
+    """
+    Metrics tracking queue performance and state.
+
+    Collects comprehensive statistics about queue operations
+    for monitoring and optimization.
+
+    Attributes:
+        enqueued_count: Total items successfully added
+        dequeued_count: Total items successfully retrieved
+        rejected_count: Items rejected as duplicates
+        error_count: Number of errors during operations
+        last_enqueued: Last successfully added item
+        last_dequeued: Last successfully retrieved item
+        avg_wait_time_ms: Average time items spend in queue
+        high_priority_count: Number of high-priority items processed
+        normal_priority_count: Number of normal-priority items processed
+        low_priority_count: Number of low-priority items processed
+    """
+
+    enqueued_count: int = 0
+    dequeued_count: int = 0
+    rejected_count: int = 0
+    error_count: int = 0
+    last_enqueued: Optional[str] = None
+    last_dequeued: Optional[str] = None
+    avg_wait_time_ms: float = 0.0
+    high_priority_count: int = 0
+    normal_priority_count: int = 0
+    low_priority_count: int = 0
+    wait_times: List[float] = field(default_factory=list)
+
+    def update_wait_time(self, wait_time_ms: float) -> None:
+        """
+        Update the average wait time with a new data point.
+
+        Args:
+            wait_time_ms: The wait time in milliseconds to incorporate
+        """
+        self.wait_times.append(wait_time_ms)
+        if len(self.wait_times) > 100:  # Keep a rolling window
+            self.wait_times.pop(0)
+        self.avg_wait_time_ms = (
+            sum(self.wait_times) / len(self.wait_times) if self.wait_times else 0.0
+        )
+
+    def increment_by_priority(self, priority: TaskPriority) -> None:
+        """
+        Increment the counter for a specific priority level.
+
+        Args:
+            priority: The priority level to increment
+        """
+        if priority == TaskPriority.HIGH:
+            self.high_priority_count += 1
+        elif priority == TaskPriority.NORMAL:
+            self.normal_priority_count += 1
+        elif priority == TaskPriority.LOW:
+            self.low_priority_count += 1
+
+
+class QueueState(Enum):
+    """
+    Represents the current operational state of the queue.
+
+    Used to control the queue's behavior and lifecycle.
+    """
+
+    INITIALIZED = auto()  # Initial state after creation
+    RUNNING = auto()  # Normal operation, accepting and processing items
+    PAUSED = auto()  # Temporarily suspended, not processing new items
+    STOPPING = auto()  # In the process of stopping, finishing current work
+    STOPPED = auto()  # Completely stopped, no new items processed
+
+
+@dataclass
+class ErrorContext:
+    """
+    Context information for error handling.
+
+    Provides standardized error information for debugging and monitoring.
+
+    Attributes:
+        error_code: Machine-readable error code
+        message: Human-readable error message
+        timestamp: When the error occurred
+        context: Additional contextual information
+    """
+
+    error_code: str
+    message: str
+    timestamp: float = field(default_factory=time.time)
+    context: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Result(Generic[T]):
+    """
+    Represents the outcome of an operation that may fail.
+
+    Implements the Result pattern for safe error handling without exceptions.
+
+    Attributes:
+        value: The successful result value (if operation succeeded)
+        error: Error context (if operation failed)
+    """
+
+    value: Optional[T] = None
+    error: Optional[ErrorContext] = None
+
+    @property
+    def is_success(self) -> bool:
+        """Check if the operation was successful."""
+        return self.error is None
+
+    @property
+    def is_failure(self) -> bool:
+        """Check if the operation failed."""
+        return self.error is not None
+
+    def unwrap(self) -> T:
+        """
+        Safely extract the success value, raising an exception if failed.
+
+        Returns:
+            The successful operation result
+
+        Raises:
+            ValueError: If trying to unwrap a failed result
+        """
+        if self.is_failure:
+            raise ValueError(f"Cannot unwrap failed result: {self.error}")
+        return cast(T, self.value)
+
+    @classmethod
+    def success(cls, value: T) -> "Result[T]":
+        """Create a successful result with the given value."""
+        return cls(value=value)
+
+    @classmethod
+    def failure(
+        cls, error_code: str, message: str, context: Optional[Dict[str, str]] = None
+    ) -> "Result[T]":
+        """Create a failed result with error information."""
+        return cls(
+            error=ErrorContext(
+                error_code=error_code, message=message, context=context or {}
+            )
+        )
+
+
+class QueueProcessor(Protocol, Generic[T]):
+    """
+    Protocol defining the interface for queue item processors.
+
+    Ensures type safety when working with queue processors.
+    """
+
+    def process(self, item: T) -> Result[bool]:
+        """
+        Process a queue item.
+
+        Args:
+            item: The item to process
+
+        Returns:
+            Result indicating success or failure with error context
+        """
+        ...
+
+
+@final
 class QueueManager(Generic[T]):
     """
-    Manages a FIFO queue of items to process with duplicate prevention.
+    Thread-safe queue manager for processing tasks.
 
-    This generic implementation maintains queue order while ensuring each
-    item is processed exactly once through efficient tracking. The class
-    is thread-safe, using reentrant locks to protect shared state access.
+    Manages a queue of items with priority support, duplicate detection,
+    and comprehensive metrics. Designed for concurrent access with proper
+    synchronization.
 
-    Typical usage:
-        queue = QueueManager[str]()
-        queue.enqueue("item1")
-        item = queue.dequeue()  # Returns "item1"
+    Attributes:
+        size_limit: Maximum number of items allowed in queue
+        state: Current operational state
+        metrics: Performance and operational metrics
     """
 
-    def __init__(self, normalize_func: Optional[NormalizerFunc[T]] = None):
+    def __init__(self, size_limit: int = 0) -> None:
         """
-        Initialize an empty queue with tracking for seen items.
+        Initialize the queue manager.
 
         Args:
-            normalize_func: Optional function to normalize items before processing.
-                Defaults to lowercase string normalization if None.
+            size_limit: Maximum number of items allowed in queue (0 for unlimited)
+
+        Examples:
+            >>> # Unlimited queue
+            >>> queue_manager = QueueManager()
+            >>> # Limited queue with max 1000 items
+            >>> limited_queue = QueueManager(size_limit=1000)
         """
-        self._queue: queue.Queue[T] = queue.Queue(
-            maxsize=config.queue.max_queue_size or 0
+        self._queue: queue.PriorityQueue[PrioritizedItem[T]] = queue.PriorityQueue(
+            maxsize=size_limit
         )
-        self._seen_items: Set[T] = set()
+        self._seen_items: Set[str] = set()
+        self._lock = threading.RLock()
+        self._state = QueueState.INITIALIZED
+        self._size_limit = size_limit
+        self._entry_times: Dict[str, float] = {}
 
-        # Use normalize_func if provided, otherwise use default if configured
-        if normalize_func:
-            self._normalize = normalize_func
-        elif config.queue.apply_default_normalization:
-            self._normalize = self._default_normalize
-        else:
-            # Identity function if normalization disabled
-            self._normalize = lambda x: x
+        # Public attributes
+        self.metrics = QueueMetrics()
 
-        # Initialize thread locking based on config
-        if config.queue.use_threading:
-            if config.queue.lock_type == "reentrant":
-                self._lock = threading.RLock()
-            else:
-                self._lock = threading.Lock()
-        else:
-            # Null context manager for single-threaded mode
-            class NullLock:
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            self._lock = NullLock()
-
-        # Initialize metrics if enabled
-        self._metrics = (
-            {"enqueued": 0, "dequeued": 0, "duplicates": 0}
-            if config.queue.track_metrics
-            else None
-        )
-
-    def _default_normalize(self, item: T) -> T:
-        """
-        Default normalization for string items.
-
-        Args:
-            item: The item to normalize
-
-        Returns:
-            Normalized version of the item (lowercase string with whitespace stripped)
-        """
-        if isinstance(item, str):
-            return cast(T, str.strip(str.lower(item)))
-        return item
-
-    def enqueue(self, item: T) -> bool:
-        """
-        Add an item to the queue if it hasn't already been seen.
-
-        Args:
-            item: The item to enqueue
-
-        Returns:
-            bool: True if the item was enqueued, False if it was already seen
-
-        Raises:
-            ValueError: If the item is empty or None
-        """
-        self._validate_item(item)
-
-        with self._lock:
-            normalized_item = self._normalize(item)
-
-            if normalized_item not in self._seen_items:
-                self._queue.put(normalized_item)
-                self._seen_items.add(normalized_item)
-                if self._metrics is not None:
-                    self._metrics["enqueued"] += 1
-                return True
-
-            if self._metrics is not None:
-                self._metrics["duplicates"] += 1
-            return False
-
-    def _validate_item(self, item: T) -> None:
-        """
-        Validate an item before enqueuing.
-
-        Args:
-            item: The item to validate
-
-        Raises:
-            ValueError: If the item is empty or None
-        """
-        if item is None:
-            raise ValueError("Cannot enqueue None items")
-        if isinstance(item, str) and not item.strip():
-            raise ValueError("Cannot enqueue empty string items")
-
-    def dequeue(self) -> T:
-        """
-        Remove and return the next item from the queue.
-
-        Returns:
-            The next item from the queue
-
-        Raises:
-            EmptyQueueError: If the queue is empty
-        """
-        if self.is_empty():
-            raise EmptyQueueError("Cannot dequeue from an empty queue")
-        item = self._queue.get()
-        if self._metrics is not None:
-            self._metrics["dequeued"] += 1
-        return item
-
-    def peek(self) -> Optional[T]:
-        """
-        View the next item without removing it from the queue.
-
-        Returns:
-            The next item or None if queue is empty
-        """
-        if self.is_empty():
-            return None
-
-        # Thread-safe peek operation to avoid race conditions
-        with self._lock:
-            try:
-                # Get item but don't mark as processed
-                item = self._queue.get(block=False)
-                # Put it back at the front
-                self._queue.put(item)
-                return item
-            except queue.Empty:
-                # Queue became empty between our check and get
-                return None
-
+    @property
     def size(self) -> int:
         """
-        Get the current number of items waiting in the queue.
+        Get the current number of items in the queue.
 
         Returns:
-            Current queue size (excluding already processed items)
+            The number of items currently in the queue
         """
         return self._queue.qsize()
 
+    @property
     def is_empty(self) -> bool:
         """
-        Check if the queue is empty.
+        Check if the queue is currently empty.
 
         Returns:
-            True if no items remain in the queue, False otherwise
+            True if queue contains no items, False otherwise
         """
         return self._queue.empty()
 
-    def has_seen(self, item: T) -> bool:
+    @property
+    def state(self) -> QueueState:
         """
-        Check if an item has been previously enqueued.
+        Get the current queue state.
+
+        Returns:
+            Current operational state of the queue
+        """
+        with self._lock:
+            return self._state
+
+    @state.setter
+    def state(self, new_state: QueueState) -> None:
+        """
+        Set the queue to a new state.
+
+        Args:
+            new_state: The state to transition to
+        """
+        with self._lock:
+            self._state = new_state
+
+    def _item_to_key(self, item: T) -> str:
+        """
+        Convert an item to a unique string key for deduplication.
+
+        Args:
+            item: The item to convert
+
+        Returns:
+            A string key representing the item
+        """
+        # Handle strings directly
+        if isinstance(item, str):
+            return item.strip().lower()
+
+        # Handle objects with a proper string representation
+        return str(item).strip().lower()
+
+    def enqueue(
+        self, item: T, priority: TaskPriority = TaskPriority.NORMAL
+    ) -> Result[bool]:
+        """
+        Add an item to the queue if not already present.
+
+        Thread-safe method to add an item to the priority queue
+        with duplicate detection.
+
+        Args:
+            item: The item to add to the queue
+            priority: Priority level affecting processing order
+
+        Returns:
+            Result indicating success (True if added, False if duplicate) or failure
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> result = queue_manager.enqueue("process_me", TaskPriority.HIGH)
+            >>> if result.is_success:
+            ...     print("Item added" if result.unwrap() else "Item was duplicate")
+        """
+        if self.state in (QueueState.STOPPING, QueueState.STOPPED):
+            return Result.failure(
+                "QUEUE_STOPPED",
+                "Queue is not accepting new items",
+                {"state": self.state.name},
+            )
+
+        try:
+            item_key = self._item_to_key(item)
+
+            with self._lock:
+                # Check if it's already been seen
+                if item_key in self._seen_items:
+                    self.metrics.rejected_count += 1
+                    return Result.success(False)
+
+                # Add to the queue with priority
+                prioritized = PrioritizedItem(
+                    priority=priority, timestamp=time.time(), item=item
+                )
+
+                # Try to add to the queue
+                try:
+                    self._queue.put_nowait(prioritized)
+                except queue.Full:
+                    return Result.failure(
+                        "QUEUE_FULL",
+                        f"Queue is full (max size: {self._size_limit})",
+                        {"size_limit": str(self._size_limit)},
+                    )
+
+                # Track the item
+                self._seen_items.add(item_key)
+                self._entry_times[item_key] = time.time()
+
+                # Update metrics
+                self.metrics.enqueued_count += 1
+                self.metrics.last_enqueued = str(item)
+
+                return Result.success(True)
+
+        except Exception as e:
+            self.metrics.error_count += 1
+            return Result.failure(
+                "ENQUEUE_ERROR",
+                f"Error enqueueing item: {str(e)}",
+                {"error_type": type(e).__name__},
+            )
+
+    def dequeue(
+        self, block: bool = False, timeout: Optional[float] = None
+    ) -> Result[T]:
+        """
+        Get the next item from the queue based on priority.
+
+        Thread-safe method to get the highest priority item from the queue.
+
+        Args:
+            block: If True, block until an item is available
+            timeout: Maximum time to wait if blocking (None for no timeout)
+
+        Returns:
+            Result containing the next item or error information
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.enqueue("item1")
+            >>> result = queue_manager.dequeue()
+            >>> if result.is_success:
+            ...     item = result.unwrap()
+            ...     print(f"Processing: {item}")
+        """
+        if self.state in (QueueState.PAUSED, QueueState.STOPPING, QueueState.STOPPED):
+            return Result.failure(
+                "QUEUE_NOT_ACTIVE",
+                f"Queue is not actively processing items (state: {self.state.name})",
+                {"state": self.state.name},
+            )
+
+        try:
+            try:
+                # Get the next item
+                prioritized = self._queue.get(block=block, timeout=timeout)
+                item = prioritized.item
+
+                # Update metrics
+                with self._lock:
+                    item_key = self._item_to_key(item)
+                    entry_time = self._entry_times.pop(item_key, None)
+
+                    self.metrics.dequeued_count += 1
+                    self.metrics.last_dequeued = str(item)
+                    self.metrics.increment_by_priority(prioritized.priority)
+
+                    # Calculate wait time if we have entry time
+                    if entry_time is not None:
+                        wait_time_ms = (time.time() - entry_time) * 1000
+                        self.metrics.update_wait_time(wait_time_ms)
+
+                return Result.success(item)
+
+            except queue.Empty:
+                return Result.failure(
+                    "QUEUE_EMPTY", "Queue is empty, no items to dequeue", {}
+                )
+
+        except Exception as e:
+            self.metrics.error_count += 1
+            return Result.failure(
+                "DEQUEUE_ERROR",
+                f"Error dequeuing item: {str(e)}",
+                {"error_type": type(e).__name__},
+            )
+
+    def clear(self) -> Result[int]:
+        """
+        Clear all items from the queue.
+
+        Thread-safe method to empty the queue and reset tracking.
+
+        Returns:
+            Result containing the number of items cleared
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> # Add 10 items
+            >>> for i in range(10):
+            ...     queue_manager.enqueue(f"item{i}")
+            >>> result = queue_manager.clear()
+            >>> if result.is_success:
+            ...     print(f"Cleared {result.unwrap()} items")
+        """
+        try:
+            with self._lock:
+                # Count items before clearing
+                count = self.size
+
+                # Clear the underlying queue
+                while not self._queue.empty():
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+                # Reset tracking sets and metrics
+                self._seen_items.clear()
+                self._entry_times.clear()
+
+                return Result.success(count)
+
+        except Exception as e:
+            self.metrics.error_count += 1
+            return Result.failure(
+                "CLEAR_ERROR",
+                f"Error clearing queue: {str(e)}",
+                {"error_type": type(e).__name__},
+            )
+
+    def mark_seen(self, item: T) -> None:
+        """
+        Mark an item as seen without adding it to the queue.
+
+        Thread-safe method to prevent an item from being added
+        to the queue in the future.
+
+        Args:
+            item: The item to mark as seen
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.mark_seen("already_processed")
+            >>> result = queue_manager.enqueue("already_processed")
+            >>> # result.unwrap() will be False since item was marked seen
+        """
+        with self._lock:
+            item_key = self._item_to_key(item)
+            self._seen_items.add(item_key)
+
+    def is_seen(self, item: T) -> bool:
+        """
+        Check if an item has been seen before.
+
+        Thread-safe method to check if an item has already been
+        processed or is currently in the queue.
 
         Args:
             item: The item to check
 
         Returns:
-            True if the normalized item has been seen before, False otherwise
-        """
-        normalized_item = self._normalize(item)
-        return normalized_item in self._seen_items
+            True if the item has been seen, False otherwise
 
-    def iter_seen(self) -> Iterator[T]:
-        """
-        Get an iterator over all seen items.
-
-        Returns:
-            Iterator of all items that have been enqueued
-        """
-        return iter(self._seen_items)
-
-    def seen_count(self) -> int:
-        """
-        Get the total number of unique items that have been enqueued.
-
-        Returns:
-            Count of all unique items ever enqueued
-        """
-        return len(self._seen_items)
-
-    def reset(self) -> None:
-        """
-        Clear the queue and the set of seen items.
-
-        This method resets the queue to its initial state. Use with caution
-        as it eliminates all tracking of previously processed items.
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.enqueue("test_item")
+            >>> queue_manager.is_seen("test_item")
+            True
+            >>> queue_manager.is_seen("new_item")
+            False
         """
         with self._lock:
-            self._queue = queue.Queue(maxsize=config.queue.max_queue_size or 0)
+            item_key = self._item_to_key(item)
+            return item_key in self._seen_items
+
+    def reset_seen(self) -> None:
+        """
+        Clear the set of seen items.
+
+        Thread-safe method to reset tracking of previously seen items.
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.enqueue("test_item")
+            >>> queue_manager.is_seen("test_item")
+            True
+            >>> queue_manager.reset_seen()
+            >>> queue_manager.is_seen("test_item")
+            False
+        """
+        with self._lock:
             self._seen_items.clear()
-            if self._metrics is not None:
-                self._metrics = {"enqueued": 0, "dequeued": 0, "duplicates": 0}
 
-    def batch_enqueue(self, items: Iterator[T]) -> Dict[T, bool]:
+    def process_with(self, processor: QueueProcessor[T], count: int = 1) -> Result[int]:
         """
-        Enqueue multiple items at once and return their success status.
+        Process a specific number of items using the provided processor.
+
+        Thread-safe method to process multiple items in sequence.
 
         Args:
-            items: Iterator of items to enqueue
+            processor: Object implementing the processor interface
+            count: Number of items to process (default 1)
 
         Returns:
-            Dictionary mapping items to their enqueue success status
+            Result containing the number of items successfully processed
         """
-        results: Dict[T, bool] = {}
-        for item in items:
+        if count < 1:
+            return Result.failure(
+                "INVALID_COUNT",
+                "Count must be at least 1",
+                {"requested_count": str(count)},
+            )
+
+        processed = 0
+        failures = 0
+
+        for _ in range(count):
+            # Get the next item
+            dequeue_result = self.dequeue(block=False)
+
+            if dequeue_result.is_failure:
+                # Queue is empty or not active
+                break
+
+            # Process the item
             try:
-                results[item] = self.enqueue(item)
-            except ValueError:
-                results[item] = False
-        return results
+                item = dequeue_result.unwrap()
+                process_result = processor.process(item)
 
-    def get_sample(self, n: int) -> List[T]:
+                if process_result.is_success and process_result.unwrap():
+                    processed += 1
+                else:
+                    failures += 1
+            except Exception:
+                failures += 1
+
+        return Result.success(processed)
+
+    def start(self) -> None:
         """
-        Get a sample of up to n items currently in the queue without removing them.
+        Start or resume queue processing.
 
-        Args:
-            n: Maximum number of items to retrieve
+        Sets the queue state to RUNNING, allowing processing of items.
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.state = QueueState.PAUSED
+            >>> # Queue won't process items while PAUSED
+            >>> queue_manager.start()
+            >>> # Now queue will process items
+        """
+        self.state = QueueState.RUNNING
+
+    def pause(self) -> None:
+        """
+        Pause queue processing.
+
+        Sets the queue state to PAUSED, preventing further processing
+        until resumed.
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> queue_manager.pause()
+            >>> # Queue won't process items until start() is called
+        """
+        self.state = QueueState.PAUSED
+
+    def stop(self) -> None:
+        """
+        Stop queue processing.
+
+        Sets the queue state to STOPPED, preventing any further processing.
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> # After some processing
+            >>> queue_manager.stop()
+            >>> # Queue won't process any more items
+        """
+        self.state = QueueState.STOPPED
+
+    def get_stats(self) -> Dict[str, Union[int, float, str, None]]:
+        """
+        Get comprehensive queue statistics.
+
+        Returns a dictionary of queue metrics and state information.
 
         Returns:
-            List of up to n items from the queue, or empty list if queue is empty
-        """
-        if self.is_empty() or n <= 0:
-            return []
+            Dictionary of queue statistics
 
-        # Apply configured maximum sample size limit
-        n = min(n, config.queue.max_sample_size)
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> # After some processing
+            >>> stats = queue_manager.get_stats()
+            >>> print(f"Queue size: {stats['current_size']}")
+        """
+        with self._lock:
+            return {
+                "state": self.state.name,
+                "current_size": self.size,
+                "enqueued_count": self.metrics.enqueued_count,
+                "dequeued_count": self.metrics.dequeued_count,
+                "rejected_count": self.metrics.rejected_count,
+                "error_count": self.metrics.error_count,
+                "last_enqueued": self.metrics.last_enqueued,
+                "last_dequeued": self.metrics.last_dequeued,
+                "avg_wait_time_ms": self.metrics.avg_wait_time_ms,
+                "high_priority_count": self.metrics.high_priority_count,
+                "normal_priority_count": self.metrics.normal_priority_count,
+                "low_priority_count": self.metrics.low_priority_count,
+            }
+
+
+class WorkDistributor:
+    """
+    Manages parallel processing of queue items.
+
+    Distributes queue processing work across multiple worker threads
+    with load balancing and performance monitoring.
+
+    Attributes:
+        queue_manager: The queue manager containing items to process
+        max_workers: Maximum number of parallel workers
+        metrics: Processing metrics and statistics
+    """
+
+    def __init__(
+        self,
+        queue_manager: QueueManager[T],
+        processor: QueueProcessor[T],
+        max_workers: int = 4,
+    ) -> None:
+        """
+        Initialize the work distributor.
+
+        Args:
+            queue_manager: Queue manager containing items to process
+            processor: The processor to handle each item
+            max_workers: Maximum number of parallel workers
+        """
+        self.queue_manager = queue_manager
+        self.processor = processor
+        self.max_workers = max_workers
+        self._workers: List[threading.Thread] = []
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+
+        self.metrics = {
+            "items_processed": 0,
+            "errors": 0,
+            "start_time": 0.0,
+            "worker_states": {},
+        }
+
+    def start_processing(self) -> None:
+        """
+        Start parallel processing of queue items.
+
+        Launches worker threads to process items from the queue manager.
+        """
+        with self._lock:
+            if self._workers:
+                return  # Already started
+
+            self._stop_event.clear()
+            self.metrics["start_time"] = time.time()
+
+            # Create and start workers
+            for i in range(self.max_workers):
+                worker = threading.Thread(
+                    target=self._worker_loop,
+                    name=f"QueueWorker-{i}",
+                    args=(i,),
+                    daemon=True,
+                )
+                self._workers.append(worker)
+                worker.start()
+                self.metrics["worker_states"][i] = "started"
+
+    def stop_processing(self, timeout: float = 5.0) -> None:
+        """
+        Stop all processing workers.
+
+        Args:
+            timeout: Maximum time to wait for workers to stop
+        """
+        self._stop_event.set()
 
         with self._lock:
-            temp_items: List[T] = []
-            sample_size = min(n, self.size())
+            # Wait for workers to finish
+            for i, worker in enumerate(self._workers):
+                if worker.is_alive():
+                    self.metrics["worker_states"][i] = "stopping"
+                    worker.join(timeout=timeout)
+                    self.metrics["worker_states"][i] = "stopped"
 
-            # Extract items (up to n)
-            for _ in range(sample_size):
-                if self.is_empty():
-                    break
-                item = self._queue.get()
-                temp_items.append(item)
+            self._workers = []
 
-            # Put all items back into the queue
-            for item in temp_items:
-                self._queue.put(item)
-
-            return temp_items[:n]
-
-    def get_metrics(self) -> Optional[Dict[str, int]]:
+    def _worker_loop(self, worker_id: int) -> None:
         """
-        Get queue performance metrics if tracking is enabled.
+        Main worker thread loop.
 
-        Returns:
-            Dictionary with metrics or None if tracking is disabled
-        """
-        return self._metrics.copy() if self._metrics is not None else None
-
-    def get(self, timeout: Optional[float] = None) -> T:
-        """
-        Get an item from the queue, waiting up to timeout seconds if necessary.
-
-        This method provides compatibility with the standard Queue interface.
+        Continuously processes items from the queue until stopped.
 
         Args:
-            timeout: Maximum time to wait in seconds, or None to wait indefinitely
-
-        Returns:
-            The next item from the queue
-
-        Raises:
-            EmptyQueueError: If timeout expires before an item is available
+            worker_id: Unique identifier for this worker
         """
-        start_time = time.time()
-        while timeout is None or time.time() - start_time < timeout:
-            try:
-                return self.dequeue()
-            except EmptyQueueError:
-                time.sleep(0.01)  # Small sleep to avoid busy waiting
+        while not self._stop_event.is_set():
+            # Check if queue is active
+            if self.queue_manager.state != QueueState.RUNNING:
+                time.sleep(0.1)
                 continue
-        raise EmptyQueueError("Queue empty and timeout expired")
 
-    def put(self, item: T) -> None:
-        """
-        Put an item into the queue.
+            # Get the next item
+            result = self.queue_manager.dequeue(block=True, timeout=0.5)
 
-        This method provides compatibility with the standard Queue interface.
+            if result.is_failure:
+                # No items or queue not active
+                continue
 
-        Args:
-            item: The item to add to the queue
-        """
-        self.enqueue(item)
+            # Process the item
+            try:
+                item = result.unwrap()
+                self.metrics["worker_states"][
+                    worker_id
+                ] = f"processing {str(item)[:20]}"
 
-    def task_done(self) -> None:
-        """
-        Indicate that a task is complete.
+                process_result = self.processor.process(item)
 
-        This method provides compatibility with the standard Queue interface
-        but doesn't do anything in this implementation as we don't track
-        in-progress tasks separately.
-        """
-        pass
+                with self._lock:
+                    if process_result.is_success and process_result.unwrap():
+                        self.metrics["items_processed"] += 1
+                    else:
+                        self.metrics["errors"] += 1
 
-    def prioritize_items(self, items: List[T]) -> None:
-        """
-        Increase the priority of specified items in the queue.
-
-        This method is useful when certain items should be processed
-        before others based on dynamic conditions or relationships.
-
-        Args:
-            items: List of items to prioritize
-
-        Note:
-            Currently not implemented - would require an underlying
-            priority queue implementation. This is a placeholder for
-            future enhancement.
-        """
-        # Future implementation would adjust priorities in the internal queue
-        pass
-
-
-# Backward compatibility aliases - type signature enhanced but functionality preserved
-def enqueue_word(self: QueueManager[str], term: str) -> bool:
-    """Backward compatibility alias for enqueue."""
-    return self.enqueue(term)
-
-
-def dequeue_word(self: QueueManager[str]) -> Optional[str]:
-    """Backward compatibility alias for dequeue."""
-    try:
-        return self.dequeue()
-    except EmptyQueueError:
-        return None
-
-
-def queue_size(self: QueueManager[T]) -> int:
-    """Backward compatibility alias for size."""
-    return self.size()
-
-
-# Add backward compatibility methods to QueueManager class
-setattr(QueueManager, "enqueue_word", enqueue_word)
-setattr(QueueManager, "dequeue_word", dequeue_word)
-setattr(QueueManager, "queue_size", queue_size)
+            except Exception:
+                with self._lock:
+                    self.metrics["errors"] += 1
+            finally:
+                self.metrics["worker_states"][worker_id] = "idle"
 
 
 def main() -> None:
     """
-    Demonstrate the usage of QueueManager with a complete workflow example.
+    Demonstrate QueueManager functionality with basic operations.
+
+    This function provides a simple demonstration of key queue operations:
+    - Creating a queue manager
+    - Enqueueing items with various priorities
+    - Dequeuing items
+    - Monitoring queue metrics
+
+    Examples:
+        >>> # Run the demonstration
+        >>> main()
     """
-    # Initialize queue manager
-    word_queue = QueueManager[str]()
+    # Create a string queue manager
+    queue_manager: QueueManager[str] = QueueManager(size_limit=100)
 
-    # Add words to the queue
-    print("=== Enqueuing Words ===")
-    words = ["Python", "java", "PYTHON", "JavaScript", "TypeScript", "python"]
+    print("QueueManager Demo")
+    print("-----------------")
 
-    # Demonstrate batch enqueue
-    results = word_queue.batch_enqueue(iter(words))
-    for word, success in results.items():
-        print(f"Enqueued '{word}': {success}")
+    # Add items with different priorities
+    print("\nAdding items with different priorities...")
+    queue_manager.enqueue("high-priority item", TaskPriority.HIGH)
+    queue_manager.enqueue("normal item 1", TaskPriority.NORMAL)
+    queue_manager.enqueue("normal item 2", TaskPriority.NORMAL)
+    queue_manager.enqueue("low-priority item", TaskPriority.LOW)
 
-    # Show queue status
-    print(f"\nQueue size: {word_queue.size()}")
-    print(f"Total unique items seen: {word_queue.seen_count()}")
+    # Try to add a duplicate
+    result = queue_manager.enqueue("normal item 1")
+    print(f"Adding duplicate item: {'Rejected' if not result.unwrap() else 'Added'}")
 
-    # Demonstrate sample functionality
-    if word_queue.size() > 0:
-        print("\n=== Queue Sample ===")
-        sample = word_queue.get_sample(3)
-        for idx, item in enumerate(sample, 1):
-            print(f"Sample item {idx}: {item}")
+    # Show queue stats
+    print(f"\nQueue size: {queue_manager.size}")
+    print(f"Items enqueued: {queue_manager.metrics.enqueued_count}")
+    print(f"Duplicates rejected: {queue_manager.metrics.rejected_count}")
 
-    # Process queue
-    print("\n=== Processing Queue ===")
-    while not word_queue.is_empty():
-        item = word_queue.dequeue()
-        print(f"Processing: {item}")
+    # Dequeue and process items
+    print("\nProcessing items in priority order:")
+    while not queue_manager.is_empty:
+        result = queue_manager.dequeue()
+        if result.is_success:
+            item = result.unwrap()
+            print(f"- Processing: {item}")
 
-    # Check for emptiness
-    print(f"\nQueue is empty: {word_queue.is_empty()}")
+    # Show final stats
+    print("\nFinal statistics:")
+    stats = queue_manager.get_stats()
+    print(f"Items processed: {stats['dequeued_count']}")
+    print(f"High priority: {stats['high_priority_count']}")
+    print(f"Normal priority: {stats['normal_priority_count']}")
+    print(f"Low priority: {stats['low_priority_count']}")
 
-    # Demonstrate has_seen functionality
-    print("\n=== Checking Seen Words ===")
-    check_words = ["python", "JAVA", "Ruby", "C#"]
-    for word in check_words:
-        print(f"Has seen '{word}': {word_queue.has_seen(word)}")
-
-    # Display metrics if enabled
-    metrics = word_queue.get_metrics()
-    if metrics:
-        print("\n=== Queue Metrics ===")
-        for name, value in metrics.items():
-            print(f"{name.capitalize()}: {value}")
+    print("\nDemo completed!")
 
 
 # Export public elements
 __all__ = [
     "QueueManager",
+    "TaskPriority",
+    "QueueState",
+    "QueueProcessor",
+    "Result",
     "QueueError",
     "EmptyQueueError",
-    "Empty",
-    "Normalizable",
-    "QueueItem",
+    "QueueFullError",
+    "WorkDistributor",
 ]
 
 

@@ -232,23 +232,15 @@ class SQLitePragmas(TypedDict, total=False):
     temp_store: str
 
 
-class SQLTemplates(TypedDict, total=False):
-    """
-    Type definition for SQL query templates.
+class SQLTemplates(TypedDict):
+    """SQL query templates for graph operations."""
 
-    Provides a centralized repository of database queries with type-safe access.
-
-    Attributes:
-        create_words_table: SQL to create the words table
-        create_relationships_table: SQL to create the relationships table
-        create_word_id_index: SQL to create index on word IDs
-        create_unique_relationship_index: SQL to create unique relationship index
-    """
-
-    create_words_table: str
-    create_relationships_table: str
-    create_word_id_index: str
-    create_unique_relationship_index: str
+    check_words_table: str
+    check_relationships_table: str
+    fetch_all_words: str
+    fetch_all_relationships: str
+    insert_sample_word: str
+    insert_sample_relationship: str
 
 
 class TemplateDict(TypedDict):
@@ -333,10 +325,10 @@ class LexicalDataset(TypedDict):
         word: The lexical item itself
         wordnet_data: Data from WordNet
         openthesaurus_synonyms: Synonyms from OpenThesaurus
-        odict_data: Definitions from Open Dictionary
-        dbnary_data: Data from DBnary
-        opendict_data: Data from OpenDict
-        thesaurus_synonyms: Additional synonym data
+        odict_data: DictionaryEntry
+        dbnary_data: List[DbnaryEntry]
+        opendict_data: DictionaryEntry
+        thesaurus_synonyms: List[str]
         example_sentence: Example usage in context
     """
 
@@ -362,8 +354,8 @@ class WordTupleDict(TypedDict):
 
     id: int
     term: str
-    pos: Optional[str] = None
-    frequency: Optional[float] = None
+    pos: Optional[str]
+    frequency: Optional[float]
 
 
 class RelationshipTupleDict(TypedDict):
