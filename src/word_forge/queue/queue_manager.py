@@ -770,6 +770,73 @@ class QueueManager(Generic[T]):
                 "low_priority_count": self.metrics.low_priority_count,
             }
 
+    def get_sample(self, count: int = 10) -> Result[List[T]]:
+        """
+        Get a sample of items from the queue without removing them.
+
+        Thread-safe method to retrieve a subset of queue items for inspection.
+        Does not affect queue state or processing order.
+
+        Args:
+            count: Maximum number of items to retrieve (default 10)
+
+        Returns:
+            Result containing a list of queue items or error information
+
+        Examples:
+            >>> queue_manager = QueueManager[str]()
+            >>> for i in range(5):
+            ...     queue_manager.enqueue(f"item{i}")
+            >>> result = queue_manager.get_sample(3)
+            >>> if result.is_success:
+            ...     items = result.unwrap()
+            ...     for item in items:
+            ...         print(f"Queue contains: {item}")
+        """
+        if count < 1:
+            return Result[List[T]].failure(
+                "INVALID_COUNT",
+                "Sample count must be at least 1",
+                {"requested_count": str(count)},
+            )
+
+        try:
+            with self._lock:
+                # If queue is empty, return empty list
+                if self._queue.empty():
+                    return Result[List[T]].success([])
+
+                # Make a copy of the queue items without removing them
+                # We need to be careful to maintain the original queue state
+                items: List[T] = []
+                temp_storage: List[PrioritizedItem[T]] = []
+
+                # Get items from the queue (temporarily)
+                sample_count = min(count, self.size)
+                for _ in range(sample_count):
+                    if self._queue.empty():
+                        break
+                    try:
+                        prioritized: PrioritizedItem[T] = self._queue.get_nowait()
+                        items.append(prioritized.item)
+                        temp_storage.append(prioritized)
+                    except queue.Empty:
+                        break
+
+                # Put all items back in the queue in their original order
+                for prioritized in temp_storage:
+                    self._queue.put(prioritized)
+
+                return Result[List[T]].success(items)
+
+        except Exception as e:
+            self.metrics.error_count += 1
+            return Result[List[T]].failure(
+                "SAMPLE_ERROR",
+                f"Error retrieving queue sample: {str(e)}",
+                {"error_type": type(e).__name__},
+            )
+
 
 class WorkDistributor:
     """

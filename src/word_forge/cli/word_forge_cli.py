@@ -140,6 +140,12 @@ class WordForgeCLI:
         self._last_stats_time = 0
         self._stats_interval = 10  # seconds between stats updates
 
+        # Error handling
+        self._error_count = 0
+        self._error_threshold = 5
+        self._last_error_time = 0
+        self._error_reset_interval = 60  # seconds
+
         # Initialize components
         self._init_components(db_path, data_dir)
         self.state = CLIState.STOPPED
@@ -158,56 +164,88 @@ class WordForgeCLI:
             self.logger.info(f"{Fore.YELLOW}Worker already running.{Style.RESET_ALL}")
             return
 
+        # Check if we're in error circuit breaker mode
+        current_time = time.time()
+        if (
+            self._error_count >= self._error_threshold
+            and current_time - self._last_error_time < self._error_reset_interval
+        ):
+            self.logger.error(
+                f"{Fore.RED}Too many errors occurred. Waiting before retry.{Style.RESET_ALL}"
+            )
+            return
+
         self.logger.info(f"{Fore.GREEN}Starting WordForge worker...{Style.RESET_ALL}")
 
-        # Create and start worker
-        self.worker = WordForgeWorker(
-            parser_refiner=self.parser_refiner,
-            queue_manager=self.queue_manager,
-            db_manager=self.db_manager,
-            result_callback=self._on_word_processed,  # Changed from callback to result_callback
-            logger=self.logger,
-        )
+        try:
+            # Create and start worker
+            self.worker = WordForgeWorker(
+                parser_refiner=self.parser_refiner,
+                queue_manager=self.queue_manager,
+                db_manager=self.db_manager,
+                result_callback=self._on_word_processed,
+                logger=self.logger,
+            )
 
-        self.worker.start()
-        self.worker_started = True
-        self.start_time = time.time()
-        self.state = CLIState.RUNNING
-        self.logger.info(f"{Fore.GREEN}Worker started successfully.{Style.RESET_ALL}")
+            self.worker.start()
+            self.worker_started = True
+            self.start_time = time.time()
+            self.state = CLIState.RUNNING
+            self.logger.info(
+                f"{Fore.GREEN}Worker started successfully.{Style.RESET_ALL}"
+            )
 
-        # Log initial statistics
-        current_time = time.time()
-        if current_time - self._last_stats_time >= self._stats_interval:
-            self._log_stats_summary(self.worker.get_statistics())
-            self._last_stats_time = current_time
+            # Reset error count on successful start
+            self._error_count = 0
+
+            # Log initial statistics
+            current_time = time.time()
+            if current_time - self._last_stats_time >= self._stats_interval:
+                self._log_stats_summary(self.worker.get_statistics())
+                self._last_stats_time = current_time
+        except Exception as e:
+            self._error_count += 1
+            self._last_error_time = time.time()
+            self.logger.error(
+                f"{Fore.RED}Failed to start worker: {str(e)}{Style.RESET_ALL}"
+            )
+            self.state = CLIState.ERROR
 
     def _on_word_processed(self, result: ProcessingResult) -> None:
         """
         Handle word processing results from the worker.
+
+        Args:
+            result: Processing result object from worker
         """
         try:
-            if not result:
-                self.logger.warning("Received invalid processing result")
+            # Guard clause for null results
+            if result is None:
+                self.logger.warning("Received null processing result")
                 return
 
-            term = result.get("term", "")
-            success = result.get("success", False)
+            # Handle different ProcessingResult types (dict-like or object-like)
+            if isinstance(result, dict):
+                term = result.get("term", "")
+                success = result.get("success", False)
+            else:
+                # Assume object with attributes
+                term = getattr(result, "term", "")
+                success = getattr(result, "success", False)
 
             if success:
                 self.processed_words.add(term)
 
-                # Log processing result at appropriate intervals
+                # Only update stats at appropriate intervals to avoid overhead
                 current_time = time.time()
                 if current_time - self._last_stats_time >= self._stats_interval:
                     self._last_stats_time = current_time
-                    if self.worker is None:
-                        return
-
-                    stats: StatDict = self.worker.get_statistics()
-                    self._log_stats_summary(stats)
+                    if self.worker is not None:
+                        stats = self.worker.get_statistics()
+                        self._log_stats_summary(stats)
         except Exception as e:
-            self.logger.warning(f"Error processing result: {e}")
-            return
+            self.logger.error(f"Error processing result: {str(e)}")
+            # Continue operation despite errors
 
     def _log_stats_summary(self, stats: StatDict) -> None:
         """Log a summary of current statistics."""
@@ -399,14 +437,20 @@ class WordForgeCLI:
 
     def list_queue(self) -> None:
         """Display the current queue size and a sample of queued items."""
-        queue_size = self.queue_manager.size()
+        queue_size = self.queue_manager.size
         self.logger.info(f"Current queue size: {queue_size}")
 
         if queue_size > 0:
-            sample = self.queue_manager.get_sample(5)  # Get 5 sample items
-            self.logger.info("Sample queue items:")
-            for item in sample:
-                self.logger.info(f"  - {item}")
+            # Get up to 5 items from the queue without removing them
+            sample_result = self.queue_manager.get_sample(5)
+            if hasattr(sample_result, "value") and sample_result.value:
+                self.logger.info("Sample queue items:")
+                for item in sample_result.value:
+                    self.logger.info(f"  - {item}")
+            else:
+                self.logger.warning(
+                    f"Failed to get queue sample: {getattr(sample_result, 'error', 'Unknown error')}"
+                )
 
     def shutdown(self) -> None:
         """Gracefully shut down all components."""
@@ -435,7 +479,7 @@ class WordForgeCLI:
         for cmd, desc in commands:
             print(f"{Fore.GREEN}{cmd.ljust(15)}{Style.RESET_ALL}{desc}")
 
-    def add_word(self, term: str) -> bool:
+    def add_word(self, term: str):
         """
         Enqueue a word for processing.
 
@@ -494,7 +538,7 @@ class WordForgeCLI:
             The word entry if found, None otherwise
         """
         try:
-            entry = self.db_manager.get_word_if_exists(term.lower())
+            entry = self.db_manager.get_word_entry(term.lower())
             if not entry:
                 self.logger.info(
                     f"{Fore.RED}No entry found for '{term}'.{Style.RESET_ALL}"
