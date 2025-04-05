@@ -23,8 +23,8 @@ try:
 except ImportError:
     LLM_AVAILABLE = False
 
-from word_forge.configs.emotion_config import EmotionConfig
 from word_forge.database.db_manager import DBManager
+from word_forge.emotion.emotion_config import EmotionConfig
 from word_forge.emotion.emotion_types import (
     EmotionalContext,
     EmotionAnalysisDict,

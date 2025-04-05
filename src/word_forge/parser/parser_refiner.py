@@ -8,7 +8,7 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 import nltk
 from nltk.corpus import wordnet as wn
 
-from word_forge.configs.config_types import LexicalDataset
+from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.db_manager import DBManager
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset

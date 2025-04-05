@@ -17,24 +17,44 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
-from dataclasses import dataclass, replace
+import logging
+import os
+import time
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, TypedDict
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Final,
+    FrozenSet,
+    List,
+    Optional,
+    Protocol,
+    TypedDict,
+    cast,
+)
 
 from word_forge.configs.config_essentials import (
     LOGS_ROOT,
+    EnvMapping,
+    ErrorCategory,
+    ErrorSeverity,
     LogDestination,
     LogFormatTemplate,
     LoggingConfigError,
     LogLevel,
     LogRotationStrategy,
+    R,
+    Result,
+    measure_execution,
 )
-from word_forge.configs.config_types import EnvMapping
 
 
-class RotationConfigDict(TypedDict):
+class RotationConfigDict(TypedDict, total=True):
     """
     Type definition for rotation configuration settings.
 
@@ -54,7 +74,18 @@ class RotationConfigDict(TypedDict):
     max_files: Optional[int]
 
 
-class PythonLoggingHandlerDict(TypedDict):
+class PythonLoggingFormatterDict(TypedDict, total=True):
+    """
+    Type definition for Python logging formatter configuration.
+
+    Attributes:
+        format: Format string for log messages
+    """
+
+    format: str
+
+
+class PythonLoggingHandlerDict(TypedDict, total=False):
     """
     Type definition for Python logging handler configuration.
 
@@ -62,7 +93,7 @@ class PythonLoggingHandlerDict(TypedDict):
     in the Python logging configuration dictionary.
 
     Attributes:
-        class: The handler class name
+        class: The handler class name (using 'class' directly as it's in a dict)
         level: The logging level for this handler
         formatter: The formatter name for this handler
         stream: Stream to use (for StreamHandler)
@@ -72,7 +103,6 @@ class PythonLoggingHandlerDict(TypedDict):
         when: Rotation time specification (for TimedRotatingFileHandler)
     """
 
-    class_: str  # Using class_ as class is a reserved keyword
     level: str
     formatter: str
     stream: Optional[str]
@@ -82,7 +112,22 @@ class PythonLoggingHandlerDict(TypedDict):
     when: Optional[str]
 
 
-class PythonLoggingConfigDict(TypedDict):
+class PythonLoggingLoggerDict(TypedDict, total=True):
+    """
+    Type definition for Python logging logger configuration.
+
+    Attributes:
+        level: Logging level for this logger
+        handlers: List of handler names for this logger
+        propagate: Whether to propagate logs to parent loggers
+    """
+
+    level: str
+    handlers: List[str]
+    propagate: bool
+
+
+class PythonLoggingConfigDict(TypedDict, total=True):
     """
     Type definition for Python logging configuration dictionary.
 
@@ -99,9 +144,115 @@ class PythonLoggingConfigDict(TypedDict):
 
     version: int
     disable_existing_loggers: bool
-    formatters: Dict[str, Dict[str, str]]
-    handlers: Dict[str, Any]  # Using Any for handlers due to varying structure
-    loggers: Dict[str, Dict[str, Any]]
+    formatters: Dict[str, PythonLoggingFormatterDict]
+    handlers: Dict[str, Dict[str, Any]]  # Using Any due to varying structure
+    loggers: Dict[str, PythonLoggingLoggerDict]
+
+
+class LoggingMetrics(TypedDict, total=False):
+    """
+    Metrics for the logging system operation.
+
+    Attributes:
+        log_creation_time_ms: Time to create log entry in milliseconds
+        handler_processing_time_ms: Time for handlers to process log in milliseconds
+        message_size_bytes: Size of log message in bytes
+        formatter_processing_time_ms: Time to format log message in milliseconds
+    """
+
+    log_creation_time_ms: float
+    handler_processing_time_ms: float
+    message_size_bytes: int
+    formatter_processing_time_ms: float
+
+
+class ValidatorMethod(Protocol):
+    """Protocol for validation methods within the LoggingConfig class."""
+
+    def __call__(self, instance: "LoggingConfig", errors: List[str]) -> None: ...
+
+
+# ==========================================
+# Constants for Validation
+# ==========================================
+
+DEFAULT_MAX_FILE_SIZE_MB: Final[int] = 10
+DEFAULT_MAX_FILES: Final[int] = 5
+MIN_FILE_SIZE_MB: Final[int] = 1
+MIN_FILES: Final[int] = 1
+
+VALID_LOG_LEVELS: FrozenSet[int] = frozenset(
+    [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]
+)
+DEFAULT_LOGGER_NAME: Final[str] = "word_forge"
+
+# Logging
+LoggingConfigDict = Dict[str, Any]  # Type alias for logging configuration
+ValidationError = str  # Type alias for validation error messages
+FormatStr = str  # Type alias for log format strings
+LogFilePathStr = Optional[str]  # Type alias for log file path
+
+# Function type for validation handlers
+ValidationFunction = Callable[["LoggingConfig", List[ValidationError]], None]
+
+# ==========================================
+# Helper Functions and Decorators
+# ==========================================
+
+
+def validate_not_empty(value: Optional[str], error_message: str) -> Result[str]:
+    """
+    Validate that a string value is not None or empty.
+
+    Args:
+        value: String value to validate
+        error_message: Error message if validation fails
+
+    Returns:
+        Result containing validated string or error
+    """
+    if not value:
+        return Result[str].failure(
+            code="VALIDATION_ERROR",
+            message=error_message,
+            context={
+                "value": str(value) if value is not None else "",
+                "error_message": error_message,
+            },
+            category=ErrorCategory.VALIDATION,
+            severity=ErrorSeverity.ERROR,
+        )
+    return Result[str].success(value)
+
+
+def with_metrics(operation_name: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
+    """
+    Decorator to measure performance of logging configuration methods.
+
+    Args:
+        operation_name: Name of the operation for metrics collection
+
+    Returns:
+        Decorator function
+    """
+
+    def decorator(func: Callable[..., R]) -> Callable[..., R]:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> R:
+            with measure_execution(f"logging.config.{operation_name}") as metrics:
+                start_time = time.perf_counter()
+                result = func(*args, **kwargs)
+                metrics.duration_ms = (time.perf_counter() - start_time) * 1000
+                return result
+
+        return wrapper
+
+    return decorator
+
+
+# ==========================================
+# Main Configuration Class
+# ==========================================
 
 
 @dataclass
@@ -144,7 +295,7 @@ class LoggingConfig:
     """
 
     # Log level and format
-    level: LogLevel = "INFO"
+    level: LogLevel = logging.INFO
     format: str = LogFormatTemplate.STANDARD.value
 
     # Log file settings
@@ -153,14 +304,19 @@ class LoggingConfig:
 
     # Rotation settings
     rotation_strategy: LogRotationStrategy = LogRotationStrategy.SIZE
-    max_file_size_mb: int = 10
-    max_files: int = 5
+    max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB
+    max_files: int = DEFAULT_MAX_FILES
 
     # Advanced options
     include_timestamp_in_filename: bool = False
     propagate_to_root: bool = False
     log_exceptions: bool = True
     log_initialization: bool = True
+
+    # Internal tracking
+    _validators: List[ValidatorMethod] = field(default_factory=list, repr=False)
+    _last_validation_errors: List[str] = field(default_factory=list, repr=False)
+    _metrics: Dict[str, LoggingMetrics] = field(default_factory=dict, repr=False)
 
     # Environment variable mapping for configuration overrides
     ENV_VARS: ClassVar[EnvMapping] = {
@@ -170,8 +326,22 @@ class LoggingConfig:
         "WORD_FORGE_LOG_DESTINATION": ("destination", LogDestination),
         "WORD_FORGE_LOG_ROTATION": ("rotation_strategy", LogRotationStrategy),
         "WORD_FORGE_LOG_MAX_SIZE": ("max_file_size_mb", int),
+        "WORD_FORGE_LOG_MAX_FILES": ("max_files", int),
         "WORD_FORGE_LOG_EXCEPTIONS": ("log_exceptions", bool),
+        "WORD_FORGE_LOG_INIT": ("log_initialization", bool),
     }
+
+    def __post_init__(self) -> None:
+        """
+        Initialize validators and perform initial configuration setup.
+        """
+        # Register validators
+        self._validators = [
+            self._validate_destination_settings,
+            self._validate_size_settings,
+            self._validate_rotation_settings,
+            self._validate_level_settings,
+        ]
 
     # ==========================================
     # Cached Properties
@@ -237,10 +407,27 @@ class LoggingConfig:
         """
         return self.destination in (LogDestination.CONSOLE, LogDestination.BOTH)
 
+    @cached_property
+    def effective_log_path(self) -> Optional[Path]:
+        """
+        Get the actual log path that will be used, applying all configuration settings.
+
+        Returns:
+            Path: The effective log file path, or None if file logging is disabled
+        """
+        if not self.uses_file_logging or not self.file_path:
+            return None
+
+        if self.include_timestamp_in_filename:
+            return self.get_log_path_with_timestamp()
+
+        return Path(self.file_path)
+
     # ==========================================
     # Public Methods
     # ==========================================
 
+    @with_metrics("get_log_path_with_timestamp")
     def get_log_path_with_timestamp(self) -> Optional[Path]:
         """
         Get log path with timestamp if that option is enabled.
@@ -343,6 +530,73 @@ class LoggingConfig:
 
         return config
 
+    def with_file_path(self, file_path: Optional[str]) -> "LoggingConfig":
+        """
+        Create a new configuration with a different log file path.
+
+        Args:
+            file_path: New file path, or None to disable file logging
+
+        Returns:
+            LoggingConfig: New configuration instance with updated file path
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            new_config = config.with_file_path("/var/log/word_forge.log")
+            ```
+        """
+        # If setting to None, ensure destination is updated accordingly
+        if file_path is None:
+            dest = LogDestination.CONSOLE
+        else:
+            # If we currently don't use files, but now we're adding a file
+            if not self.uses_file_logging:
+                dest = LogDestination.BOTH
+            else:
+                # Keep current destination
+                dest = self.destination
+
+        return self._create_modified_config(file_path=file_path, destination=dest)
+
+    def with_rotation(
+        self,
+        strategy: LogRotationStrategy,
+        max_size_mb: Optional[int] = None,
+        max_files: Optional[int] = None,
+    ) -> "LoggingConfig":
+        """
+        Create a new configuration with modified rotation settings.
+
+        Args:
+            strategy: Log rotation strategy
+            max_size_mb: Maximum file size in MB (for SIZE rotation)
+            max_files: Maximum number of backup files to keep
+
+        Returns:
+            LoggingConfig: New configuration with updated rotation settings
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            rotated_config = config.with_rotation(
+                LogRotationStrategy.SIZE,
+                max_size_mb=20,
+                max_files=10
+            )
+            ```
+        """
+        kwargs: Dict[str, Any] = {"rotation_strategy": strategy}
+
+        if max_size_mb is not None:
+            kwargs["max_file_size_mb"] = max_size_mb
+
+        if max_files is not None:
+            kwargs["max_files"] = max_files
+
+        return self._create_modified_config(**kwargs)
+
+    @with_metrics("get_rotation_config")
     def get_rotation_config(self) -> RotationConfigDict:
         """
         Get rotation-specific configuration parameters.
@@ -372,7 +626,8 @@ class LoggingConfig:
             max_files=self.max_files,
         )
 
-    def validate(self) -> None:
+    @with_metrics("validate")
+    def validate(self) -> Result[None]:
         """
         Validate the configuration for consistency and correctness.
 
@@ -380,31 +635,44 @@ class LoggingConfig:
         - Consistency between destination and file path
         - Positive values for size and count settings
         - Valid rotation settings
+        - Valid log level
 
-        Raises:
-            LoggingConfigError: If any validation fails with detailed error message
+        Returns:
+            Result indicating success or containing detailed error information
 
         Example:
             ```python
             config = LoggingConfig(max_file_size_mb=-1)
-            try:
-                config.validate()
-            except LoggingConfigError as e:
-                print(f"Invalid configuration: {e}")
+            result = config.validate()
+            if result.is_failure:
+                print(f"Invalid configuration: {result.error.message}")
             ```
         """
-        errors = []
+        errors: List[str] = []
 
-        self._validate_destination_settings(errors)
-        self._validate_size_settings(errors)
-        self._validate_rotation_settings(errors)
+        # Run all registered validators
+        for validator in self._validators:
+            validator(self, errors)
+
+        # Store validation errors for later reference
+        self._last_validation_errors = errors.copy()
 
         if errors:
-            raise LoggingConfigError(
-                f"Configuration validation failed: {'; '.join(errors)}"
+            error_message = "; ".join(errors)
+            return Result[None].failure(
+                code="VALIDATION_ERROR",
+                message=error_message,
+                context={
+                    "errors": "; ".join(errors),
+                },
+                category=ErrorCategory.VALIDATION,
+                severity=ErrorSeverity.ERROR,
             )
 
-    def get_python_logging_config(self) -> Dict[str, Any]:
+        return Result[None].success(None)
+
+    @with_metrics("get_python_logging_config")
+    def get_python_logging_config(self) -> PythonLoggingConfigDict:
         """
         Convert configuration to Python's logging module configuration dict.
 
@@ -427,31 +695,106 @@ class LoggingConfig:
         """
         handlers = self._get_active_handlers()
 
-        config: Dict[str, Any] = {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {"standard": {"format": self.format}},
-            "handlers": {
-                "console": {
-                    "class": "logging.StreamHandler",
-                    "level": self.level,
-                    "formatter": "standard",
-                    "stream": "ext://sys.stdout",
-                }
+        config = cast(
+            PythonLoggingConfigDict,
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {"standard": {"format": self.format}},
+                "handlers": {
+                    "console": {
+                        "class": "logging.StreamHandler",
+                        "level": self.level,
+                        "formatter": "standard",
+                        "stream": "ext://sys.stdout",
+                    }
+                },
+                "loggers": {
+                    DEFAULT_LOGGER_NAME: {
+                        "level": self.level,
+                        "handlers": handlers,
+                        "propagate": self.propagate_to_root,
+                    }
+                },
             },
-            "loggers": {
-                "word_forge": {
-                    "level": self.level,
-                    "handlers": handlers,
-                    "propagate": self.propagate_to_root,
-                }
-            },
-        }
+        )
 
         if self.uses_file_logging and self.file_path:
             config["handlers"]["file"] = self._create_file_handler_config()
 
         return config
+
+    def get_validation_errors(self) -> List[str]:
+        """
+        Get list of validation errors from the last validation run.
+
+        Returns:
+            List of validation error messages
+
+        Example:
+            ```python
+            config = LoggingConfig(max_file_size_mb=-1)
+            config.validate()
+            errors = config.get_validation_errors()
+            for error in errors:
+                print(f"- {error}")
+            ```
+        """
+        return self._last_validation_errors.copy()
+
+    def get_metrics(self) -> Dict[str, LoggingMetrics]:
+        """
+        Get metrics collected during logging configuration operations.
+
+        Returns:
+            Dictionary of operation metrics
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            config.validate()
+            metrics = config.get_metrics()
+            print(f"Validation time: {metrics.get('validate', {}).get('duration_ms', 0)} ms")
+            ```
+        """
+        return self._metrics.copy()
+
+    def create_directory_if_needed(self) -> Result[None]:
+        """
+        Create directory for log file if it doesn't exist.
+
+        Returns:
+            Result indicating success or containing error information
+
+        Example:
+            ```python
+            config = LoggingConfig()
+            result = config.create_directory_if_needed()
+            if result.is_failure:
+                print(f"Failed to create log directory: {result.error.message}")
+            ```
+        """
+        if not self.uses_file_logging or not self.file_path:
+            return Result[None].success(None)
+
+        log_path = Path(self.file_path)
+        log_dir = log_path.parent
+
+        try:
+            if not log_dir.exists():
+                log_dir.mkdir(parents=True, exist_ok=True)
+            return Result[None].success(None)
+        except Exception as e:
+            return Result[None].failure(
+                code="DIRECTORY_CREATION_ERROR",
+                message=f"Failed to create log directory: {str(e)}",
+                context={
+                    "log_dir": str(log_dir),
+                    "error": str(e),
+                },
+                category=ErrorCategory.VALIDATION,
+                severity=ErrorSeverity.ERROR,
+            )
 
     # ==========================================
     # Private Helper Methods
@@ -476,7 +819,7 @@ class LoggingConfig:
         Returns:
             List[str]: List of active handler names
         """
-        handlers = []
+        handlers: List[str] = []
 
         if self.uses_console_logging:
             handlers.append("console")
@@ -519,53 +862,179 @@ class LoggingConfig:
                 "filename": self.file_path,
             }
 
-    def _validate_destination_settings(self, errors: List[str]) -> None:
+    def _validate_destination_settings(
+        self, instance: "LoggingConfig", errors: List[str]
+    ) -> None:
         """
         Validate settings related to logging destination.
 
         Args:
+            instance: The configuration instance being validated
             errors: List to accumulate validation errors
         """
         # Validate destination vs file_path consistency
         if (
-            self.destination in (LogDestination.FILE, LogDestination.BOTH)
-            and not self.file_path
+            instance.destination in (LogDestination.FILE, LogDestination.BOTH)
+            and not instance.file_path
         ):
             errors.append("File logging enabled but no file path specified")
 
-    def _validate_size_settings(self, errors: List[str]) -> None:
+        # Validate file path is potentially writable if specified
+        if instance.file_path:
+            try:
+                path = Path(instance.file_path)
+                parent_dir = path.parent
+
+                # Check if directory exists or can be created
+                if not parent_dir.exists() and not os.access(
+                    os.path.dirname(parent_dir), os.W_OK
+                ):
+                    errors.append(
+                        f"Parent directory for log file is not writable: {parent_dir}"
+                    )
+            except Exception as e:
+                errors.append(f"Invalid log file path: {str(e)}")
+
+    def _validate_size_settings(
+        self, instance: "LoggingConfig", errors: List[str]
+    ) -> None:
         """
         Validate settings related to size limitations.
 
         Args:
+            instance: The configuration instance being validated
             errors: List to accumulate validation errors
         """
         # Validate max file size
-        if self.max_file_size_mb <= 0:
+        if instance.max_file_size_mb <= 0:
             errors.append(
-                f"Maximum file size must be positive, got {self.max_file_size_mb}"
+                f"Maximum file size must be positive, got {instance.max_file_size_mb}"
+            )
+        elif instance.max_file_size_mb < MIN_FILE_SIZE_MB:
+            errors.append(
+                f"Maximum file size should be at least {MIN_FILE_SIZE_MB}MB, got {instance.max_file_size_mb}MB"
             )
 
         # Validate max files
-        if self.max_files <= 0:
+        if instance.max_files <= 0:
             errors.append(
-                f"Maximum number of files must be positive, got {self.max_files}"
+                f"Maximum number of files must be positive, got {instance.max_files}"
+            )
+        elif instance.max_files < MIN_FILES:
+            errors.append(
+                f"Maximum number of files should be at least {MIN_FILES}, got {instance.max_files}"
             )
 
-    def _validate_rotation_settings(self, errors: List[str]) -> None:
+    def _validate_rotation_settings(
+        self, instance: "LoggingConfig", errors: List[str]
+    ) -> None:
         """
         Validate settings related to log rotation.
 
         Args:
+            instance: The configuration instance being validated
             errors: List to accumulate validation errors
         """
         # Validate rotation settings
         if (
-            self.rotation_strategy == LogRotationStrategy.SIZE
-            and self.uses_file_logging
-            and self.max_file_size_mb <= 0
+            instance.rotation_strategy == LogRotationStrategy.SIZE
+            and instance.uses_file_logging
+            and instance.max_file_size_mb <= 0
         ):
             errors.append("Size-based rotation requires positive max_file_size_mb")
+
+        # Validate time-based rotation has reasonable backup count
+        if (
+            instance.rotation_strategy == LogRotationStrategy.TIME
+            and instance.uses_file_logging
+            and instance.max_files < 2
+        ):
+            errors.append("Time-based rotation should keep at least 2 backup files")
+
+    def _validate_level_settings(
+        self, instance: "LoggingConfig", errors: List[str]
+    ) -> None:
+        """
+        Validate settings related to logging level.
+
+        Args:
+            instance: The configuration instance being validated
+            errors: List to accumulate validation errors
+        """
+        # Ensure log level is valid
+        if instance.level not in VALID_LOG_LEVELS:
+            errors.append(
+                f"Invalid log level: {instance.level}. Must be one of {', '.join(str(level) for level in VALID_LOG_LEVELS)}"
+            )
+
+
+# ==========================================
+# Utility Functions
+# ==========================================
+
+
+def create_default_logging_config() -> LoggingConfig:
+    """
+    Create default logging configuration with standard settings.
+
+    Returns:
+        LoggingConfig: Default logging configuration instance
+
+    Example:
+        ```python
+        default_config = create_default_logging_config()
+        ```
+    """
+    return LoggingConfig()
+
+
+def create_development_logging_config() -> LoggingConfig:
+    """
+    Create logging configuration optimized for development environments.
+
+    Returns:
+        LoggingConfig: Development-optimized logging configuration
+
+    Example:
+        ```python
+        dev_config = create_development_logging_config()
+        ```
+    """
+    return LoggingConfig(
+        level=logging.DEBUG,
+        format=LogFormatTemplate.DETAILED.value,
+        destination=LogDestination.BOTH,
+        rotation_strategy=LogRotationStrategy.SIZE,
+        max_file_size_mb=5,
+        max_files=3,
+        log_initialization=True,
+        log_exceptions=True,
+    )
+
+
+def create_production_logging_config() -> LoggingConfig:
+    """
+    Create logging configuration optimized for production environments.
+
+    Returns:
+        LoggingConfig: Production-optimized logging configuration
+
+    Example:
+        ```python
+        prod_config = create_production_logging_config()
+        ```
+    """
+    return LoggingConfig(
+        level=logging.INFO,
+        format=LogFormatTemplate.STANDARD.value,
+        destination=LogDestination.BOTH,
+        rotation_strategy=LogRotationStrategy.TIME,
+        max_file_size_mb=20,
+        max_files=14,  # Two weeks of logs
+        log_initialization=True,
+        log_exceptions=True,
+        include_timestamp_in_filename=True,
+    )
 
 
 # ==========================================
@@ -573,11 +1042,19 @@ class LoggingConfig:
 # ==========================================
 
 __all__ = [
+    # Core configuration class
     "LoggingConfig",
+    # Type definitions from config_essentials
     "LogLevel",
     "LogFormatTemplate",
     "LogRotationStrategy",
     "LogDestination",
     "LoggingConfigError",
+    # Type definitions from this module
     "RotationConfigDict",
+    "PythonLoggingConfigDict",
+    # Factory functions
+    "create_default_logging_config",
+    "create_development_logging_config",
+    "create_production_logging_config",
 ]

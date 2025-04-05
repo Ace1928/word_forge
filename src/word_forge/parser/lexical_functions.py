@@ -14,15 +14,13 @@ import nltk
 from nltk.corpus import wordnet as wn
 from rdflib import Graph
 
-from word_forge.configs.config_exceptions import (
-    LexicalResourceError,
-    ResourceParsingError,
-)
-from word_forge.configs.config_types import (
+from word_forge.configs.config_essentials import (
     DbnaryEntry,
     DictionaryEntry,
     JsonData,
     LexicalDataset,
+    LexicalResourceError,
+    ResourceParsingError,
     T,
     WordnetEntry,
 )

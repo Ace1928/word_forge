@@ -151,7 +151,7 @@ class WordForgeWorker(threading.Thread):
     def __init__(
         self,
         parser_refiner: ParserRefiner,
-        queue_manager: QueueManager,
+        queue_manager: QueueManager[str],
         db_manager: Optional[DBManager] = None,
         sleep_interval: float = 1.0,
         error_backoff_factor: float = 1.5,
@@ -207,9 +207,7 @@ class WordForgeWorker(threading.Thread):
         self._recent_errors = []
         self._processed_terms = set()
         self._initial_queue_size = (
-            queue_manager.size
-            if isinstance(queue_manager.size, int)
-            else queue_manager.size()
+            queue_manager.size if queue_manager.size else queue_manager.size == 0
         )
         self._productivity_metric = 1.0
         self.base_sleep_interval = sleep_interval
@@ -256,7 +254,7 @@ class WordForgeWorker(threading.Thread):
             Dictionary with runtime statistics and state information
         """
         runtime = self.stats.runtime_seconds
-        queue_size = self.queue_manager.size()
+        queue_size = self.queue_manager.size
         unique_words = len(list(self.queue_manager.iter_seen()))
 
         # Calculate productivity metric: processed words relative to queue growth

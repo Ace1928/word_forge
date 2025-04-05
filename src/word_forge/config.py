@@ -35,43 +35,38 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Final, List, Optional, Set, Tuple, Type
 
-from word_forge.configs.config_essentials import serialize_config, serialize_dataclass
-from word_forge.configs.config_exceptions import (
-    ConfigError,
-    DatabaseConfigError,
-    DatabaseConnectionError,
-    EnvVarError,
-    GraphConfigError,
-    LoggingConfigError,
-    PathError,
-    VectorConfigError,
-    VectorIndexError,
-)
-from word_forge.configs.config_protocols import C, ConfigComponent
-
 # Import all essential configuration types
-from word_forge.configs.config_types import (
+from word_forge.configs.config_essentials import (
     DATA_ROOT,
     LOGS_ROOT,
     PROJECT_ROOT,
+    C,
     ComponentName,
     ComponentRegistry,
+    ConfigComponent,
     ConfigComponentInfo,
     ConfigDict,
+    ConfigError,
     ConfigValue,
     ConnectionPoolMode,
     ConversationMetadataSchema,
     ConversationStatusMap,
     ConversationStatusValue,
+    DatabaseConfigError,
+    DatabaseConnectionError,
     EmotionRange,
     EnvMapping,
+    EnvVarError,
     EnvVarType,
+    GraphConfigError,
     GraphEdgeWeightStrategy,
     GraphExportFormat,
     GraphNodeSizeStrategy,
     InstructionTemplate,
     LockType,
+    LoggingConfigError,
     LogLevel,
+    PathError,
     PathLike,
     QueryType,
     QueueMetricsFormat,
@@ -80,20 +75,24 @@ from word_forge.configs.config_types import (
     SQLTemplates,
     TemplateDict,
     TransactionIsolationLevel,
+    VectorConfigError,
     VectorDistanceMetric,
+    VectorIndexError,
     VectorOptimizationLevel,
     VectorSearchStrategy,
+    serialize_config,
+    serialize_dataclass,
 )
+from word_forge.configs.logging_config import LoggingConfig
 
 # Import all configuration components
-from word_forge.configs.conversation_config import ConversationConfig
-from word_forge.configs.database_config import DatabaseConfig
-from word_forge.configs.emotion_config import EmotionConfig
-from word_forge.configs.graph_config import GraphConfig
-from word_forge.configs.logging_config import LoggingConfig
-from word_forge.configs.parser_config import ParserConfig
-from word_forge.configs.queue_config import QueueConfig
-from word_forge.configs.vectorizer_config import VectorizerConfig
+from word_forge.conversation.conversation_config import ConversationConfig
+from word_forge.database.database_config import DatabaseConfig
+from word_forge.emotion.emotion_config import EmotionConfig
+from word_forge.graph.graph_config import GraphConfig
+from word_forge.parser.parser_config import ParserConfig
+from word_forge.queue.queue_config import QueueConfig
+from word_forge.vectorizer.vectorizer_config import VectorizerConfig
 
 # ==========================================
 # Configuration Manager
@@ -399,7 +398,7 @@ class Config:
             serialized values that can be converted to JSON
         """
         return {
-            "database": self.database,
+            "database": serialize_dataclass(self.database),
             "vectorizer": serialize_dataclass(self.vectorizer),
             "parser": asdict(self.parser),
             "emotion": serialize_dataclass(self.emotion),
