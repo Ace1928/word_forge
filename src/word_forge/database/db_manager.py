@@ -244,6 +244,7 @@ class WordEntryDict(TypedDict):
     definition: str
     part_of_speech: str
     usage_examples: List[str]
+    language: str
     last_refreshed: float
     relationships: List[RelationshipDict]
 
@@ -870,6 +871,7 @@ class DBManager:
             with structure:
             {
                 "id": int,                         # Word identifier
+                "language": str,                   # Language code (e.g., "en")
                 "term": str,                       # The word itself
                 "definition": str,                 # Word definition
                 "part_of_speech": str,             # Grammatical category
@@ -898,17 +900,15 @@ class DBManager:
 
             # Extract word data with proper type safety
             result = row[0]
-            word_id = result["id"]
-            term_value = result["term"]
-            definition = result["definition"] or ""
-            part_of_speech = result["part_of_speech"] or ""
-            usage_examples_str = result["usage_examples"] or ""
-            last_refreshed = result["last_refreshed"] or time.time()
+            word_id: int = result["id"]
+            term_value: str = result["term"]
+            definition: str = result["definition"] or ""
+            part_of_speech: str = result["part_of_speech"] or ""
+            usage_examples_str: str = result["usage_examples"] or ""
+            last_refreshed: float = result["last_refreshed"] or time.time()
 
             # Parse usage examples with guaranteed type safety
-            usage_examples: List[str] = []
-            if usage_examples_str:
-                usage_examples = usage_examples_str.split("\n")
+            usage_examples: List[str] = self._parse_usage_examples(usage_examples_str)
 
             # Get relationships
             relationships = self.get_relationships(word_id)
@@ -916,6 +916,7 @@ class DBManager:
             # Construct and return the complete word entry
             return {
                 "id": word_id,
+                "language": "en",
                 "term": term_value,
                 "definition": definition,
                 "part_of_speech": part_of_speech,
@@ -925,6 +926,24 @@ class DBManager:
             }
         except QueryError as e:
             raise DatabaseError(f"Database error while retrieving term '{term}'", e)
+
+    def _parse_usage_examples(self, examples_str: str) -> List[str]:
+        """
+        Parse newline-separated usage examples into a list.
+
+        Args:
+            examples_str: String containing newline-separated examples
+
+        Returns:
+            List[str]: Individual usage examples as strings
+
+        Examples:
+            >>> self._parse_usage_examples("Example one.\\nExample two.")
+            ['Example one.', 'Example two.']
+            >>> self._parse_usage_examples("")
+            []
+        """
+        return examples_str.split("\n") if examples_str else []
 
     def get_relationships(self, word_id: int) -> List[RelationshipDict]:
         """

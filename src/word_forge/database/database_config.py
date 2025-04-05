@@ -18,10 +18,10 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Literal, TypedDict, Union, cast
+from typing import Any, ClassVar, Dict, Literal, Set, TypedDict, Union, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -572,18 +572,38 @@ class DatabaseConfig:
         """
         Create a new configuration instance with modified attributes.
 
+        This method ensures immutability by creating a new instance rather than
+        modifying the current one, preserving the original configuration intact.
+        All type checking is enforced by the replace() function.
+
         Args:
             **kwargs: Attribute name-value pairs to override. Valid keys are the attribute
                       names of the DatabaseConfig class.
 
         Returns:
-            DatabaseConfig: New instance with specified modifications
+            DatabaseConfig: New instance with specified modifications while preserving
+                           all other original values
+
+        Raises:
+            TypeError: If an invalid type is provided for any attribute
+            ValueError: If an invalid attribute name is provided
 
         Example:
             ```python
-            new_config = config._create_modified_instance(pool_size=10, enable_wal_mode=False)
+            new_config = config._create_modified_instance(
+                pool_size=10,
+                enable_wal_mode=False
+            )
             ```
         """
+        # Validate kwargs against allowed attributes
+        valid_attrs: Set[str] = set(f.name for f in fields(self))
+        for attr in kwargs:
+            if attr not in valid_attrs:
+                raise ValueError(
+                    f"Invalid attribute: {attr}. Valid attributes are: {', '.join(valid_attrs)}"
+                )
+
         # Type checking is handled by the replace() function and dataclass structure
         return replace(self, **kwargs)
 

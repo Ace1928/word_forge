@@ -46,6 +46,16 @@ class FullEmotionAnalysisDict(EmotionAnalysisDict, total=False):
     recursive_depth: int
 
 
+# Define a TypedDict for VADER sentiment scores
+class VaderSentimentScores(TypedDict):
+    """Type definition for VADER sentiment analyzer output."""
+
+    pos: float
+    neg: float
+    neu: float
+    compound: float
+
+
 class EmotionDimension(enum.Enum):
     """Core emotional dimensions based on psychological models."""
 
@@ -88,6 +98,15 @@ class EmotionDimension(enum.Enum):
     def all_dimensions(cls) -> Set["EmotionDimension"]:
         """Return all available emotional dimensions."""
         return {member for member in cls}
+
+    # Define a TypedDict for VADER sentiment scores
+    class VaderSentimentScores(TypedDict):
+        """Type definition for VADER sentiment analyzer output."""
+
+        pos: float
+        neg: float
+        neu: float
+        compound: float
 
 
 @dataclass(frozen=True)

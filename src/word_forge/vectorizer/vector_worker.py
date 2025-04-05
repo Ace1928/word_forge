@@ -1,3 +1,25 @@
+"""
+Vector Worker module for Word Forge.
+
+This module provides thread-based workers for continuous processing of word data
+into vector embeddings to enable semantic search capabilities. It handles the
+connection between the database layer and the vector store, managing the lifecycle
+of embedding generation and storage.
+
+Architecture:
+    ┌─────────────────────┐
+    │    VectorWorker     │
+    └──────────┬──────────┘
+               │
+    ┌──────────┴──────────┐
+    │      Components     │
+    └─────────────────────┘
+    ┌───────┬────────┬───────┐
+    │  DB   │Embedder│Vector │
+    │Manager│        │Store  │
+    └───────┴────────┴───────┘
+"""
+
 from __future__ import annotations
 
 import logging
@@ -8,12 +30,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Protocol, TypedDict, final
+from typing import Dict, Iterator, List, Optional, Protocol, TypedDict, cast, final
 
 import numpy as np
+from numpy.typing import NDArray
 
 from word_forge.database.db_manager import DBManager
-from word_forge.vectorizer.vector_store import StorageType, VectorStore
+from word_forge.vectorizer.vector_store import VectorStore
 
 
 class VectorState(Enum):
@@ -29,25 +52,45 @@ class VectorState(Enum):
 
 
 class EmbeddingError(Exception):
-    """Raised when embedding generation fails."""
+    """
+    Raised when embedding generation fails.
+
+    This exception captures issues with the embedding process, such as model errors,
+    empty text, or other failures in generating vector representations.
+    """
 
     pass
 
 
 class VectorStoreError(Exception):
-    """Raised when vector storage operations fail."""
+    """
+    Raised when vector storage operations fail.
+
+    This exception is used when operations on the vector store like insertion,
+    retrieval, or search cannot be completed successfully.
+    """
 
     pass
 
 
 class DatabaseError(Exception):
-    """Raised when database operations fail."""
+    """
+    Raised when database operations fail.
+
+    This exception indicates issues with the underlying database operations,
+    such as connection failures, query errors, or data inconsistencies.
+    """
 
     pass
 
 
 class WordData(Protocol):
-    """Protocol defining the required structure for words."""
+    """
+    Protocol defining the required structure for words.
+
+    This protocol establishes the contract that any word-like object must
+    provide certain properties for compatibility with the vector worker.
+    """
 
     @property
     def id(self) -> int:
@@ -72,7 +115,18 @@ class WordData(Protocol):
 
 @dataclass(frozen=True)
 class Word:
-    """Data object for storing word information."""
+    """
+    Data object for storing word information.
+
+    A simple, immutable container for word-related data including the term,
+    definition, and examples of usage.
+
+    Attributes:
+        id: Unique identifier for the word
+        term: The word or phrase itself
+        definition: The meaning or explanation of the word
+        usage_examples: List of example sentences using the word
+    """
 
     id: int
     term: str
@@ -81,28 +135,50 @@ class Word:
 
 
 class ProcessingResult(Enum):
-    """Possible outcomes when processing a word."""
+    """
+    Possible outcomes when processing a word.
 
-    SUCCESS = auto()
-    EMBEDDING_ERROR = auto()
-    STORAGE_ERROR = auto()
+    These enum values represent the different states that can result
+    from attempting to process a word entry.
+    """
+
+    SUCCESS = auto()  # Word was successfully processed and stored
+    EMBEDDING_ERROR = auto()  # Failed to generate embedding
+    STORAGE_ERROR = auto()  # Failed to store embedding
 
 
 class VectorWorkerStatus(TypedDict):
-    """Type definition for worker status information."""
+    """
+    Type definition for worker status information.
 
-    running: bool
-    processed_count: int
-    successful_count: int
-    error_count: int
-    last_update: Optional[float]
-    uptime: Optional[float]
-    state: str
+    This dictionary type defines the structure of status information
+    returned by the vector worker.
+    """
+
+    running: bool  # Whether the worker is currently active
+    processed_count: int  # Number of words processed in current cycle
+    successful_count: int  # Number of successful operations
+    error_count: int  # Number of failed operations
+    last_update: Optional[float]  # Timestamp of last update
+    uptime: Optional[float]  # Seconds since worker was started
+    state: str  # Current worker state (running, stopped, error)
 
 
 @dataclass
 class ProcessingStats:
-    """Statistics about word processing operations."""
+    """
+    Statistics about word processing operations.
+
+    Tracks metrics about processing performance including success and failure counts
+    and categorized error information.
+
+    Attributes:
+        processed: Total number of words processed
+        successful: Number of successfully processed words
+        failed: Number of failed processing attempts
+        errors: Dictionary mapping error types to counts
+        last_update: Timestamp of the last update
+    """
 
     processed: int = 0
     successful: int = 0
@@ -111,7 +187,15 @@ class ProcessingStats:
     last_update: Optional[float] = None
 
     def record_result(self, word_id: int, result: ProcessingResult) -> None:
-        """Record the result of processing a word."""
+        """
+        Record the result of processing a word.
+
+        Updates the statistics counters based on the processing outcome.
+
+        Args:
+            word_id: Identifier of the processed word
+            result: Outcome of the processing operation
+        """
         self.processed += 1
         self.last_update = time.time()
 
@@ -123,7 +207,11 @@ class ProcessingStats:
             self.errors[error_type] = self.errors.get(error_type, 0) + 1
 
     def clear(self) -> None:
-        """Reset all statistics."""
+        """
+        Reset all statistics.
+
+        Sets all counters back to zero and clears the error tracking.
+        """
         self.processed = 0
         self.successful = 0
         self.failed = 0
@@ -132,18 +220,28 @@ class ProcessingStats:
 
 
 class WordRow(TypedDict):
-    """Structure of a word row from the database."""
+    """
+    Structure of a word row from the database.
 
-    id: int
-    term: str
-    definition: str
-    usage_examples: str
+    This type defines the expected structure of dictionary data
+    returned from database queries about words.
+    """
+
+    id: int  # Unique identifier
+    term: str  # The word or phrase
+    definition: str  # Definition text
+    usage_examples: str  # Semicolon-separated examples
 
 
 class Embedder(Protocol):
-    """Protocol for text embedding generators."""
+    """
+    Protocol for text embedding generators.
 
-    def embed(self, text: str) -> np.ndarray:
+    This protocol defines the interface required for any component that
+    can generate vector embeddings from text.
+    """
+
+    def embed(self, text: str) -> NDArray[np.float32]:
         """
         Generate an embedding vector for the given text.
 
@@ -160,12 +258,28 @@ class Embedder(Protocol):
 
 
 class VectorWorkerInterface(Protocol):
-    """Protocol defining the required interface for vector workers."""
+    """
+    Protocol defining the required interface for vector workers.
 
-    def start(self) -> None: ...
-    def stop(self) -> None: ...
-    def get_status(self) -> VectorWorkerStatus: ...
-    def is_alive(self) -> bool: ...
+    This protocol establishes the minimal interface that must be implemented
+    by any vector worker component.
+    """
+
+    def start(self) -> None:
+        """Start the worker thread."""
+        ...
+
+    def stop(self) -> None:
+        """Signal the worker to stop processing."""
+        ...
+
+    def get_status(self) -> VectorWorkerStatus:
+        """Return current worker status information."""
+        ...
+
+    def is_alive(self) -> bool:
+        """Check if the worker thread is running."""
+        ...
 
 
 @final
@@ -176,6 +290,14 @@ class VectorWorker(threading.Thread):
     This worker runs as a daemon thread that polls a database at regular intervals,
     generates vector embeddings for each word (combining term, definition, and usage examples),
     and stores these embeddings in a vector store for similarity search.
+
+    Attributes:
+        db: Database manager providing access to word data
+        vector_store: Vector store for saving embeddings
+        embedder: Text embedding generator
+        poll_interval: Time in seconds between database polling cycles
+        logger: Logger for error reporting and status updates
+        stats: Statistics about processing operations
     """
 
     def __init__(
@@ -194,7 +316,7 @@ class VectorWorker(threading.Thread):
             db: Database manager providing access to word data
             vector_store: Vector store for saving embeddings
             embedder: Text embedding generator
-            poll_interval: Time in seconds between database polling cycles (defaults to config)
+            poll_interval: Time in seconds between database polling cycles (defaults to 10.0)
             daemon: Whether to run as a daemon thread
             logger: Optional logger for error reporting
         """
@@ -412,6 +534,9 @@ class SimpleEmbedder:
 
     Creates random vectors of specified dimension. In a production environment,
     this would be replaced with a proper embedding model.
+
+    Attributes:
+        dimension: Size of the embedding vector
     """
 
     def __init__(self, dimension: int = 768):
@@ -423,7 +548,7 @@ class SimpleEmbedder:
         """
         self.dimension = dimension
 
-    def embed(self, text: str) -> np.ndarray:
+    def embed(self, text: str) -> NDArray[np.float32]:
         """
         Generate a random embedding vector for the given text.
 
@@ -452,6 +577,10 @@ class TransformerEmbedder:
 
     Uses the Multilingual-E5-large-instruct model for sophisticated,
     multilingual text embeddings optimized for search and retrieval tasks.
+
+    Attributes:
+        model: Sentence transformer model instance
+        dimension: Dimension of the generated embeddings
     """
 
     def __init__(self, model_name: str = "intfloat/multilingual-e5-large-instruct"):
@@ -479,7 +608,7 @@ class TransformerEmbedder:
                 f"Failed to initialize embedding model: {str(e)}"
             ) from e
 
-    def embed(self, text: str) -> np.ndarray:
+    def embed(self, text: str) -> NDArray[np.float32]:
         """
         Generate a high-quality embedding vector for the given text.
 
@@ -503,9 +632,10 @@ class TransformerEmbedder:
             formatted_text = f"Instruct: {task}\nQuery: {text}"
 
             # Generate embedding and return as numpy array
-            return self.model.encode(
+            embedding = self.model.encode(
                 formatted_text, convert_to_numpy=True, normalize_embeddings=True
             )
+            return cast(NDArray[np.float32], embedding)
         except Exception as e:
             raise EmbeddingError(f"Failed to generate embedding: {str(e)}") from e
 
@@ -573,92 +703,3 @@ def temporary_database(path: Path) -> Iterator[Path]:
     finally:
         if conn:
             conn.close()
-
-
-def run_vector_worker_example() -> None:
-    """
-    Run an example of the VectorWorker with sample data.
-
-    This creates a temporary database with sample words, initializes
-    the vector worker components, and runs the worker for a brief period.
-    """
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    logger = logging.getLogger("vector_worker_example")
-    logger.info("Starting vector worker example")
-
-    # Define paths
-    db_path = Path("./temp_example.db")
-    vector_store_path = Path("./temp_vector_store")
-
-    try:
-        # Create temporary database with sample data
-        with temporary_database(db_path) as db_file:
-            # Initialize components
-            db_manager = DBManager(db_path=str(db_file))
-
-            # Try to use TransformerEmbedder, fall back to SimpleEmbedder if not available
-            try:
-                embedder = TransformerEmbedder()
-                dimension = embedder.dimension  # 1024 for transformer model
-                logger.info(f"Using TransformerEmbedder with dimension {dimension}")
-            except Exception as e:
-                dimension = 768  # Default for SimpleEmbedder
-                embedder = SimpleEmbedder(dimension=dimension)
-                logger.info(
-                    f"Falling back to SimpleEmbedder with dimension {dimension}: {str(e)}"
-                )
-
-            vector_store = VectorStore(
-                dimension=dimension,
-                index_path=str(vector_store_path),
-                storage_type=StorageType.MEMORY,
-            )
-
-            # Create and start worker
-            worker = VectorWorker(
-                db=db_manager,
-                vector_store=vector_store,
-                embedder=embedder,
-                poll_interval=5.0,  # Short interval for demo
-                logger=logger,
-            )
-
-            logger.info("Starting vector worker")
-            worker.start()
-
-            # Let it run for a short time
-            run_duration = 10  # Reduced for demonstration
-            logger.info(f"Worker will run for {run_duration} seconds")
-            time.sleep(run_duration)
-
-            # Stop the worker
-            logger.info("Stopping vector worker")
-            worker.stop()
-            worker.join(timeout=2)
-
-            if worker.is_alive():
-                logger.warning("Worker did not terminate gracefully within timeout")
-
-            logger.info("Example complete")
-
-    except Exception as e:
-        logger.error(f"Example failed: {str(e)}")
-    finally:
-        # Clean up any leftover files
-        if db_path.exists():
-            db_path.unlink()
-            logger.info(f"Removed temporary database: {db_path}")
-
-        if vector_store_path.exists() and vector_store_path.is_dir():
-            import shutil
-
-            shutil.rmtree(vector_store_path)
-            logger.info(f"Removed temporary vector store: {vector_store_path}")
-
-
-if __name__ == "__main__":
-    run_vector_worker_example()

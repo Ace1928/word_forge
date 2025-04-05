@@ -10,12 +10,102 @@ The module contains:
     - EmotionConfig dataclass with configurable parameters
     - Validation methods for emotional measurements
     - Property accessors for backward compatibility
+
+Architecture:
+    ┌──────────────────────┐
+    │   EmotionConfig      │
+    └──────────┬───────────┘
+               │
+    ┌──────────┴───────────┐
+    │  Emotion Parameters  │
+    └──────────────────────┘
+    ┌─────┬─────┬──────────┐
+    │ SQL │Range│Classif.  │
+    └─────┴─────┴──────────┘
 """
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Dict, Final, List
+from typing import (
+    ClassVar,
+    Dict,
+    Final,
+    List,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypedDict,
+    TypeVar,
+)
 
 from word_forge.configs.config_essentials import EmotionRange, EnvMapping
+
+# Type definitions for better structural typing
+EmotionCategory = Literal[
+    "happiness", "sadness", "anger", "fear", "surprise", "disgust", "neutral"
+]
+
+T = TypeVar("T")  # Generic type for validation results
+
+
+class EmotionValidationResult(NamedTuple):
+    """Result of emotion value validation with detailed context."""
+
+    is_valid: bool
+    """Whether the value is valid according to configuration constraints."""
+
+    message: str
+    """Descriptive message explaining validation result."""
+
+    value: float
+    """The value that was validated."""
+
+    range: EmotionRange
+    """The range against which the value was validated."""
+
+
+class SQLTemplateProtocol(Protocol):
+    """Protocol defining the SQL template interface for emotion operations."""
+
+    @property
+    def create_word_emotion_table(self) -> str: ...
+
+    @property
+    def create_message_emotion_table(self) -> str: ...
+
+    @property
+    def insert_word_emotion(self) -> str: ...
+
+    @property
+    def get_word_emotion(self) -> str: ...
+
+    @property
+    def insert_message_emotion(self) -> str: ...
+
+    @property
+    def get_message_emotion(self) -> str: ...
+
+
+class EmotionKeywordsDict(TypedDict):
+    """Type definition for the emotion keywords dictionary."""
+
+    happiness: List[str]
+    sadness: List[str]
+    anger: List[str]
+    fear: List[str]
+    surprise: List[str]
+    disgust: List[str]
+    neutral: List[str]
+
+
+# Define a TypedDict for VADER sentiment scores
+class VaderSentimentScores(TypedDict):
+    """Type definition for VADER sentiment analyzer output."""
+
+    pos: float
+    neg: float
+    neu: float
+    compound: float
+
 
 # ==========================================
 # SQL Template Constants
@@ -162,10 +252,17 @@ class EmotionConfig:
     # ==========================================
 
     #: Dictionary mapping emotion categories to keywords
-    emotion_keywords: Dict[str, List[str]] = field(
+    emotion_keywords: EmotionKeywordsDict = field(
         default_factory=lambda: {
             "happiness": ["happy", "joy", "delight", "pleased", "glad", "excited"],
-            "sadness": ["sad", "unhappy", "depressed", "down", "miserable", "gloomy"],
+            "sadness": [
+                "sad",
+                "unhappy",
+                "depressed",
+                "down",
+                "miserable",
+                "gloomy",
+            ],
             "anger": ["angry", "furious", "enraged", "mad", "irritated", "annoyed"],
             "fear": [
                 "afraid",
@@ -175,8 +272,20 @@ class EmotionConfig:
                 "anxious",
                 "worried",
             ],
-            "surprise": ["surprised", "astonished", "amazed", "shocked", "startled"],
-            "disgust": ["disgusted", "revolted", "repulsed", "sickened", "appalled"],
+            "surprise": [
+                "surprised",
+                "astonished",
+                "amazed",
+                "shocked",
+                "startled",
+            ],
+            "disgust": [
+                "disgusted",
+                "revolted",
+                "repulsed",
+                "sickened",
+                "appalled",
+            ],
             "neutral": ["okay", "fine", "neutral", "indifferent", "average"],
         }
     )
@@ -194,6 +303,10 @@ class EmotionConfig:
     #: Mapping of environment variables to configuration attributes
     ENV_VARS: ClassVar[EnvMapping] = {
         "WORD_FORGE_ENABLE_VADER": ("enable_vader", bool),
+        "WORD_FORGE_VADER_WEIGHT": ("vader_weight", float),
+        "WORD_FORGE_TEXTBLOB_WEIGHT": ("textblob_weight", float),
+        "WORD_FORGE_MIN_KEYWORD_CONFIDENCE": ("min_keyword_confidence", float),
+        "WORD_FORGE_KEYWORD_MATCH_WEIGHT": ("keyword_match_weight", float),
     }
 
     # ==========================================
@@ -223,6 +336,49 @@ class EmotionConfig:
         min_val, max_val = self.valence_range
         return min_val <= value <= max_val
 
+    def validate_valence(self, value: float) -> EmotionValidationResult:
+        """
+        Validate a valence value with detailed contextual information.
+
+        Provides a rich validation result containing not just a boolean indicator,
+        but also descriptive messages and context about the validation.
+
+        Args:
+            value: The valence value to validate
+
+        Returns:
+            EmotionValidationResult: Structured validation result with context
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> result = config.validate_valence(0.7)
+            >>> result.is_valid
+            True
+            >>> result.message
+            'Valence value 0.7 is within valid range (-1.0, 1.0)'
+
+            >>> result = config.validate_valence(-1.5)
+            >>> result.is_valid
+            False
+            >>> result.message
+            'Valence value -1.5 is outside valid range (-1.0, 1.0)'
+        """
+        min_val, max_val = self.valence_range
+        is_valid = min_val <= value <= max_val
+
+        if is_valid:
+            message = (
+                f"Valence value {value} is within valid range ({min_val}, {max_val})"
+            )
+        else:
+            message = (
+                f"Valence value {value} is outside valid range ({min_val}, {max_val})"
+            )
+
+        return EmotionValidationResult(
+            is_valid=is_valid, message=message, value=value, range=self.valence_range
+        )
+
     def is_valid_arousal(self, value: float) -> bool:
         """
         Check if an arousal value is within the configured range.
@@ -246,6 +402,49 @@ class EmotionConfig:
         min_val, max_val = self.arousal_range
         return min_val <= value <= max_val
 
+    def validate_arousal(self, value: float) -> EmotionValidationResult:
+        """
+        Validate an arousal value with detailed contextual information.
+
+        Provides a rich validation result containing not just a boolean indicator,
+        but also descriptive messages and context about the validation.
+
+        Args:
+            value: The arousal value to validate
+
+        Returns:
+            EmotionValidationResult: Structured validation result with context
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> result = config.validate_arousal(0.5)
+            >>> result.is_valid
+            True
+            >>> result.message
+            'Arousal value 0.5 is within valid range (0.0, 1.0)'
+
+            >>> result = config.validate_arousal(1.2)
+            >>> result.is_valid
+            False
+            >>> result.message
+            'Arousal value 1.2 is outside valid range (0.0, 1.0)'
+        """
+        min_val, max_val = self.arousal_range
+        is_valid = min_val <= value <= max_val
+
+        if is_valid:
+            message = (
+                f"Arousal value {value} is within valid range ({min_val}, {max_val})"
+            )
+        else:
+            message = (
+                f"Arousal value {value} is outside valid range ({min_val}, {max_val})"
+            )
+
+        return EmotionValidationResult(
+            is_valid=is_valid, message=message, value=value, range=self.arousal_range
+        )
+
     def is_valid_confidence(self, value: float) -> bool:
         """
         Check if a confidence value is within the configured range.
@@ -268,6 +467,88 @@ class EmotionConfig:
         """
         min_val, max_val = self.confidence_range
         return min_val <= value <= max_val
+
+    def validate_confidence(self, value: float) -> EmotionValidationResult:
+        """
+        Validate a confidence value with detailed contextual information.
+
+        Provides a rich validation result containing not just a boolean indicator,
+        but also descriptive messages and context about the validation.
+
+        Args:
+            value: The confidence value to validate
+
+        Returns:
+            EmotionValidationResult: Structured validation result with context
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> result = config.validate_confidence(0.9)
+            >>> result.is_valid
+            True
+            >>> result.message
+            'Confidence value 0.9 is within valid range (0.0, 1.0)'
+
+            >>> result = config.validate_confidence(-0.1)
+            >>> result.is_valid
+            False
+            >>> result.message
+            'Confidence value -0.1 is outside valid range (0.0, 1.0)'
+        """
+        min_val, max_val = self.confidence_range
+        is_valid = min_val <= value <= max_val
+
+        if is_valid:
+            message = (
+                f"Confidence value {value} is within valid range ({min_val}, {max_val})"
+            )
+        else:
+            message = f"Confidence value {value} is outside valid range ({min_val}, {max_val})"
+
+        return EmotionValidationResult(
+            is_valid=is_valid, message=message, value=value, range=self.confidence_range
+        )
+
+    def is_valid_emotion_category(self, category: str) -> bool:
+        """
+        Check if an emotion category is valid according to configuration.
+
+        Validates that the provided category exists in the configured emotion keywords.
+
+        Args:
+            category: The emotion category to validate
+
+        Returns:
+            bool: True if the category exists in configuration, False otherwise
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> config.is_valid_emotion_category("happiness")
+            True
+            >>> config.is_valid_emotion_category("confusion")  # Not in config
+            False
+        """
+        return category in self.emotion_keywords
+
+    def get_keywords_for_emotion(self, emotion: EmotionCategory) -> List[str]:
+        """
+        Get the list of keywords associated with an emotion category.
+
+        Args:
+            emotion: The emotion category to retrieve keywords for
+
+        Returns:
+            List of keywords associated with the emotion
+
+        Raises:
+            KeyError: If the emotion category doesn't exist in configuration
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> config.get_keywords_for_emotion("happiness")
+            ['happy', 'joy', 'delight', 'pleased', 'glad', 'excited']
+        """
+        return self.emotion_keywords[emotion]
 
     # ==========================================
     # SQL Template Properties
@@ -333,3 +614,20 @@ class EmotionConfig:
             str: The SQL query for retrieving data from the message_emotion table
         """
         return self.sql_templates["get_message_emotion"]
+
+
+__all__ = [
+    # Main class
+    "EmotionConfig",
+    # Type definitions
+    "EmotionValidationResult",
+    "EmotionCategory",
+    "EmotionKeywordsDict",
+    # SQL Constants (for backward compatibility)
+    "SQL_CREATE_WORD_EMOTION_TABLE",
+    "SQL_CREATE_MESSAGE_EMOTION_TABLE",
+    "SQL_INSERT_WORD_EMOTION",
+    "SQL_GET_WORD_EMOTION",
+    "SQL_INSERT_MESSAGE_EMOTION",
+    "SQL_GET_MESSAGE_EMOTION",
+]

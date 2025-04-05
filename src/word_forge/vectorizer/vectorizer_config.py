@@ -18,10 +18,10 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Optional, Set, Union, cast
+from typing import Any, ClassVar, Dict, List, Optional, Set, Union, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -289,7 +289,7 @@ class VectorizerConfig:
             **kwargs: Configuration parameters to override
 
         Returns:
-            VectorizerConfig: New configuration instance with specified parameters
+            T: New configuration instance with specified parameters (same type as self)
 
         Example:
             # Create configuration optimized for speed
@@ -300,17 +300,20 @@ class VectorizerConfig:
             )
         """
         # Get all current field values
-        current_values = {
-            field_name: getattr(self, field_name)
-            for field_name in self.fields
-            if not field_name.startswith("_") and field_name != "ENV_VARS"
-        }
+        current_values: Dict[str, Any] = {}
+
+        # Access dataclass fields properly
+        self_dataclass = cast("VectorizerConfig", self)
+        for f in fields(self_dataclass):
+            field_name = f.name
+            if not field_name.startswith("_") and field_name != "ENV_VARS":
+                current_values[field_name] = getattr(self, field_name)
 
         # Update with provided overrides
         current_values.update(kwargs)
 
-        # Create new instance
-        return cast(T, self.__class__(**current_values))
+        # Create new instance with the same type as self
+        return self.__class__(**current_values)  # type: ignore
 
     def with_model(
         self, model_name: str, dimension: Optional[int] = None
@@ -357,7 +360,7 @@ class VectorizerConfig:
         Returns:
             VectorizerConfig: New configuration instance with optimized settings
         """
-        settings = {
+        settings: Dict[str, Any] = {
             "optimization_level": "speed" if is_speed_critical else "accuracy",
             "search_strategy": "approximate" if is_speed_critical else "hybrid",
         }
@@ -399,7 +402,7 @@ class VectorizerConfig:
         Raises:
             VectorConfigError: If any validation fails with detailed error message
         """
-        errors = []
+        errors: List[str] = []
 
         # Validate model settings
         if not self.model_name:

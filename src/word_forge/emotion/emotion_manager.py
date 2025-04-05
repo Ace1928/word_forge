@@ -4,35 +4,26 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from textblob import TextBlob
-
-try:
-    from nltk.sentiment.vader import SentimentIntensityAnalyzer
-
-    VADER_AVAILABLE = True
-except ImportError:
-    VADER_AVAILABLE = False
-
-# Optional LLM integration if available
-try:
-    from word_forge.parser.language_model import ModelState as LLMInterface
-
-    LLM_AVAILABLE = True
-except ImportError:
-    LLM_AVAILABLE = False
 
 from word_forge.database.db_manager import DBManager
 from word_forge.emotion.emotion_config import EmotionConfig
 from word_forge.emotion.emotion_types import (
     EmotionalContext,
     EmotionAnalysisDict,
-    EmotionDimension,
     FullEmotionAnalysisDict,
     MessageEmotionDict,
     WordEmotionDict,
 )
+
+# Optional LLM integration if available
+from word_forge.parser.language_model import ModelState as LLMInterface
+
+VADER_AVAILABLE = True
+LLM_AVAILABLE = True
 
 
 class EmotionError(Exception):
@@ -108,9 +99,6 @@ class EmotionManager:
         """
         self.db_manager = db_manager
 
-        # Ensure schema compatibility with migrations
-        self._run_schema_migrations()
-
         # Create config instance
         self.config = EmotionConfig()
         self._create_tables()
@@ -131,25 +119,6 @@ class EmotionManager:
 
         # Initialize recursive emotion processor lazily
         self._recursive_processor = None
-
-    def _run_schema_migrations(self) -> None:
-        """Run necessary database schema migrations.
-
-        Initializes the database schema to ensure compatibility with
-        the current version of the emotion system. Continues even if
-        migrations encounter errors to maintain backward compatibility.
-
-        Any errors are logged but don't prevent the system from operating
-        with the existing schema version.
-        """
-        try:
-            # Import here to avoid circular imports
-            from word_forge.database.db_migration import SchemaMigrator
-
-            migrator = SchemaMigrator(self.db_manager)
-            migrator.migrate_all()
-        except Exception as e:
-            print(f"Warning: Schema migration error (continuing anyway): {e}")
 
     @property
     def recursive_processor(self):
@@ -255,6 +224,7 @@ class EmotionManager:
                 {"operation": "create_tables", "db_path": self.db_manager.db_path},
             ) from e
 
+    @lru_cache(maxsize=256)
     def set_word_emotion(self, word_id: int, valence: float, arousal: float) -> None:
         """Store or update emotional values for a word.
 
@@ -294,6 +264,7 @@ class EmotionManager:
                 {"word_id": word_id, "valence": valence, "arousal": arousal},
             ) from e
 
+    @lru_cache(maxsize=256)
     def get_word_emotion(self, word_id: int) -> Optional[WordEmotionDict]:
         """Retrieve emotional data for a word.
 
@@ -330,6 +301,7 @@ class EmotionManager:
                 f"Failed to retrieve word emotion: {e}", {"word_id": word_id}
             ) from e
 
+    @lru_cache(maxsize=256)
     def set_message_emotion(
         self, message_id: int, label: str, confidence: float = 1.0
     ) -> None:
@@ -370,6 +342,7 @@ class EmotionManager:
                 {"message_id": message_id, "label": label, "confidence": confidence},
             ) from e
 
+    @lru_cache(maxsize=256)
     def get_message_emotion(self, message_id: int) -> Optional[MessageEmotionDict]:
         """Retrieve emotional data for a message.
 
@@ -405,6 +378,7 @@ class EmotionManager:
                 f"Failed to retrieve message emotion: {e}", {"message_id": message_id}
             ) from e
 
+    @lru_cache(maxsize=256)
     def _analyze_with_vader(self, text: str) -> Tuple[float, float]:
         """Analyze text sentiment using VADER.
 
@@ -423,6 +397,7 @@ class EmotionManager:
         if not self.vader:
             return 0.0, 0.0
 
+        # Get sentiment scores from VADER analyzer
         vader_scores = self.vader.polarity_scores(text)
 
         # Map VADER compound score (-1 to 1) directly to valence
@@ -435,6 +410,7 @@ class EmotionManager:
 
         return valence, arousal
 
+    @lru_cache(maxsize=256)
     def _analyze_with_llm(self, text: str) -> Tuple[float, float, Dict[str, float]]:
         """Analyze text sentiment using LLM for deeper emotional understanding.
 
@@ -467,18 +443,53 @@ Return the analysis as a JSON object with these fields:
 - emotion_dimensions: an object with emotional attributes and their strengths (0.0-1.0)
 - emotional_undertones: an array of subtle emotional qualities present
 """
-            response = self.llm_interface.query(prompt, output_format="json")
+            # Get response from LLM and ensure it's a dictionary
+            response_raw = self.llm_interface.query(prompt)
 
-            # Extract the core emotional dimensions
-            valence = float(response.get("valence", 0.0))
-            arousal = float(response.get("arousal", 0.0))
+            # Process response into dict format - handle both string and dict responses
+            response: Dict[str, Any] = {}
+            if isinstance(response_raw, dict):
+                response = cast(Dict[str, Any], response_raw)
+            elif isinstance(response_raw, str):
+                import json
+
+                try:
+                    response = cast(Dict[str, Any], json.loads(response_raw))
+                except json.JSONDecodeError:
+                    # If not valid JSON, create minimal response
+                    response = {}
+
+            # Extract the core emotional dimensions with safe type handling
+            valence_raw: Any = response.get("valence", 0.0)
+            try:
+                valence = float(valence_raw)
+            except (ValueError, TypeError):
+                valence = 0.0
+
+            arousal_raw: Any = response.get("arousal", 0.0)
+            try:
+                arousal = float(arousal_raw)
+            except (ValueError, TypeError):
+                arousal = 0.0
 
             # Normalized to expected ranges
             valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
             arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
 
             # Additional emotional dimensions
-            emotion_dimensions = response.get("emotion_dimensions", {})
+            emotion_dimensions_raw: Any = response.get("emotion_dimensions", {})
+            emotion_dimensions: Dict[str, float] = {}
+
+            # Ensure emotion_dimensions is a valid dictionary with float values
+            if isinstance(emotion_dimensions_raw, dict):
+                # Cast to Dict[Any, Any] to help type checker understand dictionary structure
+                typed_dimensions = cast(Dict[Any, Any], emotion_dimensions_raw)
+                for key_raw, value_raw in typed_dimensions.items():
+                    key = str(key_raw)
+                    try:
+                        emotion_dimensions[key] = float(value_raw)
+                    except (ValueError, TypeError):
+                        emotion_dimensions[key] = 0.0
 
             return valence, arousal, emotion_dimensions
 
@@ -509,20 +520,28 @@ Return the analysis as a JSON object with these fields:
             )
             print(f"Valence: {valence:.2f}, Arousal: {arousal:.2f}")
             # Might output: Valence: 0.82, Arousal: 0.75
-            ```
         """
+
         # TextBlob analysis (always available)
         blob = TextBlob(text)
-        textblob_valence = blob.sentiment.polarity
+        # Extract sentiment properties safely
+        try:
+            # Access properties directly from returned sentiment namedtuple
+            sentiment = blob.sentiment
+            textblob_valence = float(getattr(sentiment, "polarity", 0.0))
+            subjectivity = float(getattr(sentiment, "subjectivity", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            textblob_valence = 0.0
+            subjectivity = 0.0
 
-        # Calculate text characteristics for arousal
-        subjectivity = blob.sentiment.subjectivity
         exclamation_count = text.count("!")
         uppercase_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
 
         # Initialize weighted results
-        valence_components = [(textblob_valence, self.textblob_weight)]
-        arousal_factors = [
+        valence_components: List[Tuple[float, float]] = [
+            (textblob_valence, self.textblob_weight)
+        ]
+        arousal_factors: List[Tuple[float, float]] = [
             (subjectivity, 1.0),
             (min(exclamation_count / 5, 1.0), 1.0),
             (uppercase_ratio * 2, 1.0),
@@ -590,10 +609,15 @@ Return the analysis as a JSON object with these fields:
             ```
         """
         text_lower = text.lower()
-        return {
-            emotion: sum(text_lower.count(word) for word in keywords)
-            for emotion, keywords in self.EMOTION_KEYWORDS.items()
-        }
+        result: Dict[str, int] = {}
+        for emotion, keywords in self.EMOTION_KEYWORDS.items():
+            if isinstance(keywords, list):
+                # Cast keywords to List[str] for type checking
+                str_keywords: List[str] = cast(List[str], keywords)
+                result[emotion] = sum(text_lower.count(word) for word in str_keywords)
+            else:
+                result[emotion] = 0
+        return result
 
     def classify_emotion(self, text: str) -> Tuple[str, float]:
         """Classify text into basic emotion categories.
@@ -622,7 +646,7 @@ Return the analysis as a JSON object with these fields:
             try:
                 _, _, emotion_dims = self._analyze_with_llm(text)
                 if emotion_dims and "primary_emotion" in emotion_dims:
-                    primary = emotion_dims["primary_emotion"]
+                    primary = str(emotion_dims["primary_emotion"])
                     confidence = emotion_dims.get("confidence", 0.7)
                     # Map to our standard emotion categories if needed
                     if primary in self.EMOTION_KEYWORDS:
@@ -759,13 +783,10 @@ Return the analysis as a JSON object with these fields:
         concept = self.recursive_processor.process_term(term, actual_context)
 
         # Get the basic emotion category and confidence
-        primary_dims = concept.primary_emotion.dimensions
-        valence = primary_dims.get(EmotionDimension.VALENCE, 0.0)
-        arousal = primary_dims.get(EmotionDimension.AROUSAL, 0.0)
         emotion_label, confidence = self.classify_emotion(term)
 
         # Enhance with LLM-derived insights if available
-        additional_insights = {}
+        additional_insights: Dict[str, Any] = {}
         if self.llm_interface and self.llm_weight > 0:
             try:
                 prompt = f"""Analyze the emotional associations of the term '{term}' in depth.
@@ -778,15 +799,15 @@ Focus especially on:
 
 Format your response as a structured JSON with insights in each category."""
 
-                insights = self.llm_interface.query(prompt, output_format="json")
-                if insights:
-                    additional_insights = insights
+                insights = self.llm_interface.query(prompt)
+                if isinstance(insights, (dict, str)) and insights:
+                    additional_insights = insights if isinstance(insights, dict) else {}
             except Exception as e:
                 # Continue without LLM insights if there's an error
                 print(f"LLM insights generation failed: {e}")
 
         # Create the return structure
-        result = {
+        result: Dict[str, Any] = {
             "emotion_label": emotion_label,
             "confidence": confidence,
             "concept": concept.as_dict(),
@@ -859,24 +880,26 @@ Consider:
 Return only a numeric value between 0.0 and 1.0 representing the strength."""
 
                 result = self.llm_interface.query(prompt)
-                try:
-                    # Extract numeric value from result
-                    strength = float(result.strip())
-                    # Ensure proper range
-                    strength = max(0.0, min(1.0, strength))
 
-                    # Combine with recursive processor analysis
-                    base_strength = self.recursive_processor.analyze_relationship(
-                        term1, term2, relationship_type
-                    )
+                # Get base strength from recursive processor for fallback or blending
+                base_strength = self.recursive_processor.analyze_relationship(
+                    term1, term2, relationship_type
+                )
 
-                    # Weighted average
-                    return strength * self.llm_weight + base_strength * (
-                        1 - self.llm_weight
-                    )
-                except (ValueError, TypeError):
-                    # Fall back to recursive processor if parsing fails
-                    pass
+                # Extract numeric value from result
+                if result is not None:
+                    try:
+                        strength = float(result.strip())
+                        # Ensure proper range
+                        strength = max(0.0, min(1.0, strength))
+
+                        # Weighted average
+                        return strength * self.llm_weight + base_strength * (
+                            1 - self.llm_weight
+                        )
+                    except (ValueError, TypeError):
+                        # Fall back to recursive processor if parsing fails
+                        pass
             except Exception:
                 # Fall back to recursive processor if LLM fails
                 pass
@@ -888,11 +911,11 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
 
     def create_emotional_context(
         self,
-        domain: str = None,
-        cultural_factors: Dict[str, float] = None,
-        situational_factors: Dict[str, float] = None,
-        temporal_factors: Dict[str, float] = None,
-        domain_specific: Dict[str, float] = None,
+        domain: Optional[str] = None,
+        cultural_factors: Optional[Dict[str, float]] = None,
+        situational_factors: Optional[Dict[str, float]] = None,
+        temporal_factors: Optional[Dict[str, float]] = None,
+        domain_specific: Optional[Dict[str, float]] = None,
     ) -> EmotionalContext:
         """Create a custom emotional context for analysis.
 
@@ -1031,13 +1054,17 @@ Focus on emotional qualities rather than definitions."""
                     insights = self.llm_interface.query(prompt)
 
                     # Extract more precise valence/arousal from LLM if possible
-                    _, llm_valence, llm_arousal = self._analyze_with_llm(
-                        term + ". " + insights
-                    )
+                    if insights is not None:
+                        llm_valence, llm_arousal, _ = self._analyze_with_llm(
+                            term + ". " + str(insights)
+                        )
 
-                    # Blend basic and LLM-enhanced values
-                    valence = (valence + llm_valence) / 2
-                    arousal = (arousal + llm_arousal) / 2
+                        # Blend basic and LLM-enhanced values
+                        if isinstance(llm_valence, float) and isinstance(
+                            llm_arousal, float
+                        ):
+                            valence = (valence + llm_valence) / 2
+                            arousal = (arousal + llm_arousal) / 2
 
                 except Exception as e:
                     # Continue with basic analysis if LLM fails
@@ -1215,20 +1242,20 @@ def main() -> None:
             try:
                 recursive_data = emotion_mgr.analyze_term_recursively(term)
                 print("  - Recursive Analysis:")
-                print(f"    Recursive depth: {recursive_data['recursive_depth']}")
-                if (
-                    recursive_data.get("meta_emotions")
-                    and len(recursive_data["meta_emotions"]) > 0
-                ):
+                print(
+                    f"    Recursive depth: {recursive_data.get('recursive_depth', 'N/A')}"
+                )
+                meta_emotions = recursive_data.get("meta_emotions", [])
+                if meta_emotions and len(meta_emotions) > 0:
                     print(
-                        f"    Meta-emotions: {recursive_data['meta_emotions'][0]['label']}, ..."
+                        f"    Meta-emotions: {meta_emotions[0].get('label', 'unknown')}, ..."
                     )
-                if (
-                    recursive_data.get("patterns")
-                    and len(recursive_data["patterns"]) > 0
-                ):
-                    patterns = list(recursive_data["patterns"].keys())
-                    print(f"    Patterns: {patterns[0] if patterns else 'none'}, ...")
+                patterns = recursive_data.get("patterns", {})
+                if patterns and len(patterns) > 0:
+                    pattern_keys = list(patterns.keys())
+                    print(
+                        f"    Patterns: {pattern_keys[0] if pattern_keys else 'none'}, ..."
+                    )
             except Exception:
                 pass
 
