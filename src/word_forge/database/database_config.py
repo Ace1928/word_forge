@@ -1,4 +1,52 @@
 """
+
+This module provides a comprehensive configuration system for database connections,
+performance tuning, and query management in Word Forge. It centralizes all database-related
+configuration parameters in a type-safe, immutable, and extensible structure.
+
+Key Features:
+- Type-safe database configuration with dataclasses
+- Connection pool management with different pooling strategies
+- SQLite performance optimization through pragmas
+- Transaction isolation level configuration
+- Read and write optimized configuration profiles
+- Validation and error handling with result types
+- Environment variable mapping for configuration overrides
+
+Classes:
+    DatabaseConfig: Central class for database configuration management
+    PoolSettingsDict: Type definition for connection pool settings
+    PragmaDict: Type alias for database pragma dictionaries
+
+    # Basic usage with default configuration
+
+    config = DatabaseConfig()
+    db_path = config.get_db_path
+    connection_uri = config.get_connection_uri()
+
+    # Creating optimized configurations
+    read_config = config.optimize_for_reads()
+    write_config = config.optimize_for_writes()
+
+    # Custom configuration with specific settings
+    custom_config = DatabaseConfig(
+        db_path="/path/to/custom.db",
+        enable_wal_mode=True,
+        cache_size=5000
+
+    The module is structured around the central DatabaseConfig class, which manages
+    different aspects of database configuration through a combination of attributes,
+    cached properties, and methods. It follows an immutable pattern where configuration
+    changes create new instances rather than modifying existing ones.
+
+Dependencies:
+    - word_forge.configs.config_essentials: Core configuration types and utilities
+    - Standard library: dataclasses, functools, pathlib, typing
+
+Notes:
+    - Currently supports SQLite as the primary database dialect
+    - Configuration validation ensures consistency and correctness of settings
+    - Performance optimization profiles for different workload types
 Database configuration system for Word Forge.
 
 This module defines the configuration schema for database connections,
@@ -75,39 +123,40 @@ DatabaseConfigAttrs = Literal[
 @dataclass
 class DatabaseConfig:
     """
-    Database configuration for SQL database connections.
+        Database configuration for SQL database connections.
 
-    Controls SQLite database location, connection parameters, SQL query templates,
-    performance optimizations, and connection pooling settings.
+        Controls SQLite database location, connection parameters, SQL query templates,
+        performance optimizations, and connection pooling settings.
 
-    Attributes:
-        db_path: Path to the SQLite database file
-        dialect: Database dialect (currently supports SQLite)
-        pragmas: SQLite pragmas for performance optimization
-        sql_templates: SQL query templates for database operations
-        pool_mode: Connection pooling mode (fixed, dynamic, none)
-        pool_size: Connection pool size (for fixed/dynamic modes)
-        pool_timeout: Connection pool timeout in seconds
-        pool_recycle: Time in seconds between connection recycling
-        isolation_level: Transaction isolation level
-        enable_foreign_keys: Whether to enforce foreign key constraints
-        enable_wal_mode: Whether to use WAL journal mode (SQLite only)
-        page_size: Database page size in bytes (SQLite only)
-        cache_size: Memory pages to use for database cache (SQLite only)
+        Attributes:
+            db_path: Path to the SQLite database file
+            dialect: Database dialect (currently supports SQLite)
+            pragmas: SQLite pragmas for performance optimization
+            sql_templates: SQL query templates for database operations
+            pool_mode: Connection pooling mode (fixed, dynamic, none)
+            pool_size: Connection pool size (for fixed/dynamic modes)
+            pool_timeout: Connection pool timeout in seconds
+            pool_recycle: Time in seconds between connection recycling
+            isolation_level: Transaction isolation level
+            enable_foreign_keys: Whether to enforce foreign key constraints
+            enable_wal_mode: Whether to use WAL journal mode (SQLite only)
+            page_size: Database page size in bytes (SQLite only)
+            cache_size: Memory pages to use for database cache (SQLite only)
 
-    Usage:
-        ```python
-        from word_forge.config import config
+        Usage:
+            ```python
+            from word_forge.config import config
+    from word_forge.database.database_config import DatabaseConfig
 
-        # Get database path
-        db_path = config.database.get_db_path
+            # Get database path
+            db_path = config.database.get_db_path
 
-        # Get connection URI with pragmas
-        uri = config.database.get_connection_uri()
+            # Get connection URI with pragmas
+            uri = config.database.get_connection_uri()
 
-        # Create a new configuration with a different path
-        test_config = config.database.with_path("path/to/test.db")
-        ```
+            # Create a new configuration with a different path
+            test_config = config.database.with_path("path/to/test.db")
+            ```
     """
 
     # Core database settings

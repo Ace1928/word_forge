@@ -1,4 +1,50 @@
 """
+
+
+
+Key Classes:
+- DBManager: Core class handling all database operations with connection pooling
+- RelationshipTypeManager: Manages and validates relationship type definitions
+
+Data Structures:
+- WordEntryDict: Complete word entry with all metadata and relationships
+- RelationshipDict: Represents relationships between terms
+- WordDataDict: Simplified word data for listing operations
+
+Exception Hierarchy:
+- DatabaseError: Base exception for all database-related errors
+    - ConnectionError: Database connection failures
+    - QueryError: SQL query execution errors
+    - SchemaError: Database schema issues
+    - TransactionError: Transaction management failures
+    - TermNotFoundError: Word lookup failures
+
+Usage Examples:
+        # Initialize the database manager
+        db = DBManager()
+
+        # Create schema if needed
+        db.create_tables()
+
+        # Add or update a word
+        db.insert_or_update_word(
+                "A step-by-step procedure for solving a problem",
+                ["The sorting algorithm runs in O(n log n) time"]
+
+        # Create relationships between words
+        db.insert_relationship("algorithm", "procedure", "synonym")
+
+        # Retrieve complete word information
+        word_entry = db.get_word_entry("algorithm")
+
+        # Use a transaction for multiple operations
+        with db.transaction() as conn:
+                conn.execute("INSERT INTO words (term) VALUES (?)", ("lexicon",))
+                conn.execute("INSERT INTO words (term) VALUES (?)", ("syntax",))
+
+The module uses SQLite as its database backend and provides robust error
+handling, connection management, and performance optimization techniques
+like connection pooling and prepared statements.
 Database Manager Module
 
 This module provides a comprehensive interface for managing a SQLite database

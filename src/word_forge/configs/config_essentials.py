@@ -1,4 +1,46 @@
 """
+Configuration Essentials Module
+
+This module serves as the type system foundation for WordForge's configuration architecture,
+establishing a comprehensive type system that enforces correctness through static analysis
+rather than runtime checking.
+
+Key Features:
+    - Type-safe configuration definitions with strict interfaces
+    - Result pattern for exception-free error propagation
+    - Comprehensive serialization utilities for configuration persistence
+    - Protocol-based interfaces for consistent component behaviors
+    - Fine-grained error classification system with context preservation
+    - Thread-safe execution measurement and distributed tracing support
+
+Type Categories:
+    - Json types: Primitives, dictionaries, and lists for serialization
+    - Configuration types: Component registries and environment mappings
+    - Result types: Monadic error handling patterns
+    - Worker types: Task priority, worker state management, circuit breakers
+    - Domain-specific types: Query types, vector operations, graph processing
+    - Template types: Structured definitions for consistent formatting
+
+Performance Support:
+    - Execution metrics collection for critical operations
+    - Circuit breaker pattern implementation for failure isolation
+    - Worker pool configurations for parallel processing
+    - Tracing context for distributed operation monitoring
+
+Error Handling:
+    - Fine-grained error categorization (validation, resource, business, etc.)
+    - Severity classification for appropriate handling strategies
+    - Context preservation for diagnostic traceability
+    - Monadic Result type for functional error propagation
+
+Usage Guidelines:
+    - Import specific types rather than using wildcard imports
+    - Leverage type checking tools (mypy, pyright) with this module
+    - Follow the Result pattern for cross-component error handling
+    - Use the provided serialization utilities for configuration persistence
+
+This module embodies the principle that strong typing prevents more errors than
+exception handling ever could, making it the foundation of WordForge's reliability.
 This module defines all essential types and constants used throughout the
 configuration system, providing a consistent way to handle various
 configuration-related tasks, including serialization, path management,
@@ -744,17 +786,24 @@ class InstructionTemplate(NamedTuple):
 
 class SQLitePragmas(TypedDict, total=False):
     """
-    Type definition for SQLite pragma settings.
+    Type definition for SQLite pragma settings with precise performance control.
 
-    Defines the type-safe structure for SQLite performance and behavior
-    configuration options.
+    Provides a comprehensive, type-safe structure for SQLite behavior configuration,
+    allowing fine-grained control over database performance characteristics,
+    concurrency behavior, and data integrity guarantees.
+
+    Each pragma represents a specific optimization dimension with carefully constrained
+    valid values. This structure prevents configuration errors through type checking
+    rather than runtime exceptions—embodying the Eidosian principle that architecture
+    prevents errors better than exception handling.
 
     Attributes:
         foreign_keys: Enable/disable foreign key constraints ("ON"/"OFF")
-        journal_mode: Transaction journaling mode (WAL, DELETE, etc.)
-        synchronous: Disk synchronization strategy (NORMAL, FULL, OFF)
-        cache_size: Database cache size in pages or KiB
-        temp_store: Temporary storage location (MEMORY, FILE)
+        journal_mode: Transaction journaling mode ("WAL", "DELETE", "MEMORY", "OFF", "PERSIST", "TRUNCATE")
+        synchronous: Disk synchronization strategy ("NORMAL", "FULL", "OFF", "EXTRA")
+        cache_size: Database cache size in pages or KiB (positive for pages, negative for KiB)
+        temp_store: Temporary storage location ("MEMORY", "FILE", "DEFAULT")
+        mmap_size: Memory map size in bytes for file access optimization (e.g., "1073741824" for 1GB)
     """
 
     foreign_keys: str
@@ -762,6 +811,7 @@ class SQLitePragmas(TypedDict, total=False):
     synchronous: str
     cache_size: str
     temp_store: str
+    mmap_size: str
 
 
 class SQLTemplates(TypedDict):

@@ -1,3 +1,31 @@
+"""Emotional analysis and persistence system for text and lexical entities.
+
+Provides dimensional, categorical, and contextual emotional processing through
+a hybrid analysis architecture that combines:
+
+- Dimensional analysis: Valence (-1.0 to 1.0) and arousal (0.0 to 1.0)
+- Categorical classification: Discrete emotional states with confidence scores
+- Multi-method sentiment fusion: TextBlob, VADER, and optional LLM integration
+- Recursive emotional processing: Meta-emotions and emotional relationships
+- Contextual analysis: Domain, cultural, and situational emotional adjustments
+- Persistent storage: Sqlite-backed emotion data with efficient retrieval
+
+Core capabilities:
+1. Text sentiment measurement with configurable analyzer weights
+2. Message-level emotion classification and confidence scoring
+3. Word-level emotion association tracking
+4. Recursive emotional relationship analysis
+5. Custom emotional context creation and management
+
+This system progressively enhances emotional understanding based on available
+analyzers, providing graceful degradation when advanced components like
+VADER or LLM are unavailable.
+
+The EmotionManager serves as the unified interface to all emotional processing
+operations while maintaining backward compatibility with earlier emotion
+analysis implementations.
+"""
+
 import datetime
 import random
 import sqlite3
@@ -6,8 +34,8 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from textblob import TextBlob
+from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
+from textblob import TextBlob  # type: ignore
 
 from word_forge.database.db_manager import DBManager
 from word_forge.emotion.emotion_config import EmotionConfig
@@ -16,6 +44,7 @@ from word_forge.emotion.emotion_types import (
     EmotionAnalysisDict,
     FullEmotionAnalysisDict,
     MessageEmotionDict,
+    VaderSentimentScores,
     WordEmotionDict,
 )
 
@@ -398,7 +427,8 @@ class EmotionManager:
             return 0.0, 0.0
 
         # Get sentiment scores from VADER analyzer
-        vader_scores = self.vader.polarity_scores(text)
+        vader_scores_dict: Dict[str, float] = self.vader.polarity_scores(text)
+        vader_scores = cast(VaderSentimentScores, vader_scores_dict)
 
         # Map VADER compound score (-1 to 1) directly to valence
         valence = vader_scores["compound"]

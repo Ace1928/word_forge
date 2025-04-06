@@ -46,14 +46,23 @@ class FullEmotionAnalysisDict(EmotionAnalysisDict, total=False):
     recursive_depth: int
 
 
-# Define a TypedDict for VADER sentiment scores
 class VaderSentimentScores(TypedDict):
-    """Type definition for VADER sentiment analyzer output."""
+    """Type definition for VADER sentiment analyzer output.
 
-    pos: float
-    neg: float
-    neu: float
-    compound: float
+    The VADER (Valence Aware Dictionary and sEntiment Reasoner) lexicon
+    provides sentiment intensity scores across four dimensions:
+
+    Attributes:
+        neg: Negative sentiment intensity score [0.0-1.0]
+        neu: Neutral sentiment intensity score [0.0-1.0]
+        pos: Positive sentiment intensity score [0.0-1.0]
+        compound: Normalized compound score [-1.0-1.0], representing overall sentiment
+    """
+
+    neg: float  # Negative sentiment intensity
+    neu: float  # Neutral sentiment intensity
+    pos: float  # Positive sentiment intensity
+    compound: float  # Normalized, weighted composite score
 
 
 class EmotionDimension(enum.Enum):

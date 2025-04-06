@@ -1,4 +1,42 @@
 """
+Logging Configuration System for Word Forge
+===========================================
+
+This module implements a comprehensive, type-safe configuration system for Word Forge's
+logging infrastructure. It provides a flexible, consistent interface for controlling
+log output formats, destinations, levels, and rotation policies.
+
+Key Features:
+- Type-safe configuration with validation
+- Environment variable support for runtime configuration
+- Multiple output destinations (console, file, both)
+- Log rotation with size and time-based strategies
+- Structured logging format templates
+- Performance metrics for logging operations
+- Complete compatibility with Python's standard logging module
+
+
+Classes:
+    - LoggingConfig: Central configuration class with immutable settings
+    - Various TypedDict classes for type-safe configuration structures
+
+Usage Examples:
+        # Basic configuration
+        config = create_default_logging_config()
+
+        # Environment-specific configurations
+
+        # Functional modification pattern
+        debug_config = config.with_level(logging.DEBUG)
+        rotated_config = config.with_rotation(LogRotationStrategy.SIZE, max_size_mb=20)
+
+        # Integration with Python's logging system
+
+Design Notes:
+    - Uses immutable configuration pattern with functional modifications
+    - Provides comprehensive validation before configuration application
+    - Supports metrics collection for performance monitoring
+    - Implements proper error handling with Result types
 Logging configuration system for Word Forge.
 
 This module defines the configuration schema for the Word Forge logging system,
