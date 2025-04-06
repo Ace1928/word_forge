@@ -307,7 +307,7 @@ class RecursiveEmotionProcessor:
     def _get_word_id(self, term: str) -> Optional[int]:
         """Get the database ID for a word."""
         try:
-            return self.db._get_word_id(term)
+            return self.db.get_word_id(term)
         except Exception:
             return None
 
@@ -320,7 +320,7 @@ class RecursiveEmotionProcessor:
                 part_of_speech="unknown",  # Using part_of_speech instead of pos
             )
             # Get the word ID after insertion
-            return self._get_word_id(term) or -1
+            return self.db.get_word_id(term) or -1
         except Exception as e:
             print(f"Error creating word entry: {e}")
             return -1
@@ -361,6 +361,11 @@ class RecursiveEmotionProcessor:
 
     def _generate_vector_based_emotion(self, term: str) -> EmotionVector:
         """Generate emotion using word vectors and reference terms."""
+        # Check if NLP is available
+        if self.nlp is None:
+            # Fallback to heuristic if NLP is not available
+            return self._generate_heuristic_emotion(term)
+
         # Process the term with spaCy
         doc = self.nlp(term)
 
@@ -387,7 +392,7 @@ class RecursiveEmotionProcessor:
         }
 
         # Calculate emotional dimensions based on similarity to reference words
-        dimensions = {}
+        dimensions: Dict[EmotionDimension, float] = {}
         for ref_word, (dimension, ref_value) in reference_emotions.items():
             ref_doc = self.nlp(ref_word)
 
@@ -525,6 +530,7 @@ class RecursiveEmotionProcessor:
                 "related",
                 "emotional_component",
                 "intensifies",
+                "diminishes",
                 "evokes",
                 "hypernym",
                 "hyponym",
@@ -649,7 +655,7 @@ class RecursiveEmotionProcessor:
         self, concept: EmotionalConcept, primary: EmotionVector
     ) -> None:
         """Add temporal sequence pattern (how the emotion evolves over time)."""
-        timeline = []
+        timeline: List[EmotionVector] = []
 
         # Starting emotion (onset)
         start_emotion = primary.diminish(0.7)
@@ -674,7 +680,7 @@ class RecursiveEmotionProcessor:
         self, concept: EmotionalConcept, primary: EmotionVector
     ) -> None:
         """Add intensity gradation pattern (emotion at different intensity levels)."""
-        gradation = []
+        gradation: List[EmotionVector] = []
 
         # Minimal intensity (threshold of perception)
         minimal = EmotionVector(
@@ -725,7 +731,7 @@ class RecursiveEmotionProcessor:
         self, concept: EmotionalConcept, primary: EmotionVector
     ) -> None:
         """Add contextual variations pattern (emotion in different contexts)."""
-        variations = []
+        variations: List[EmotionVector] = []
 
         # Personal/intimate context
         personal_dims = dict(primary.dimensions)
@@ -797,7 +803,7 @@ class RecursiveEmotionProcessor:
             """
 
             try:
-                with self.db._create_connection() as conn:
+                with self.db.create_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(primary_query, (word_id,))
                     results = [
@@ -820,7 +826,7 @@ class RecursiveEmotionProcessor:
             """
 
             try:
-                with self.db._create_connection() as conn:
+                with self.db.create_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(fallback_query, (word_id,))
                     return [
@@ -843,7 +849,7 @@ class RecursiveEmotionProcessor:
         term = None
         try:
             query = "SELECT term FROM words WHERE id = ?"
-            with self.db._create_connection() as conn:
+            with self.db.create_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query, (word_id,))
                 row = cursor.fetchone()
@@ -863,19 +869,31 @@ class RecursiveEmotionProcessor:
             return []
 
         # Find similar words in vocabulary
-        result = []
-        seen = set()
+        result: List[Tuple[str, str, float]] = []
+        seen: set[str] = set()
 
-        # Find synonyms
-        for word, similarity in self.nlp.vocab.vectors.most_similar(doc.vector, n=5):
-            similar_term = self.nlp.vocab[word].text
-            if (
-                similar_term != term
-                and similar_term not in seen
-                and len(similar_term) > 2
-            ):
-                result.append(("synonym", similar_term, similarity))
-                seen.add(similar_term)
+        # Find synonyms using vector similarity
+        similar_terms: List[Tuple[str, float]] = []
+        if doc.has_vector:
+            # Get words from vocabulary that have vectors
+            for word in self.nlp.vocab:
+                # Skip words without vectors, non-alphabetic words, and the term itself
+                if (
+                    word.has_vector
+                    and word.is_alpha
+                    and word.text.lower() != term.lower()
+                    and len(word.text) > 2
+                ):
+                    similarity = word.similarity(doc)
+                    if similarity > 0.6:  # Only consider reasonably similar words
+                        similar_terms.append((word.text, similarity))
+
+            # Sort by similarity and take top 5
+            similar_terms.sort(key=lambda x: x[1], reverse=True)
+            for similar_term, similarity in similar_terms[:5]:
+                if similar_term not in seen:
+                    result.append(("synonym", similar_term, float(similarity)))
+                    seen.add(similar_term)
 
         # Use additional heuristics based on term properties
         # For example, prefix/suffix modifications suggest related words
@@ -926,10 +944,9 @@ class RecursiveEmotionProcessor:
         arousal1 = emotion1.dimensions.get(EmotionDimension.AROUSAL, 0.0)
         arousal2 = emotion2.dimensions.get(EmotionDimension.AROUSAL, 0.0)
         dominance1 = emotion1.dimensions.get(EmotionDimension.DOMINANCE, 0.0)
-        dominance2 = emotion2.dimensions.get(EmotionDimension.DOMINANCE, 0.0)
 
         # Common evocation patterns:
-        pattern_strengths = []
+        pattern_strengths: List[float] = []
 
         # 1. Negative valence often evokes high arousal
         if valence1 < -0.3 and arousal2 > 0.3:

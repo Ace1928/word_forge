@@ -10,8 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
 
-import nltk
-from nltk.corpus import wordnet as wn
+import nltk  # type: ignore
+from nltk.corpus import wordnet as wn  # type: ignore
 from rdflib import Graph
 
 from word_forge.configs.config_essentials import (
@@ -155,7 +155,7 @@ def get_synsets(word: str) -> List[Any]:
     Returns:
         List of WordNet synsets for the word
     """
-    return wn.synsets(word)
+    return wn.synsets(word)  # type: ignore
 
 
 def get_wordnet_data(word: str) -> List[WordnetEntry]:

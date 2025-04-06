@@ -32,7 +32,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
 from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
 from textblob import TextBlob  # type: ignore
@@ -408,7 +408,7 @@ class EmotionManager:
             ) from e
 
     @lru_cache(maxsize=256)
-    def _analyze_with_vader(self, text: str) -> Tuple[float, float]:
+    def _analyze_with_vader(self, input_text: str) -> Tuple[float, float]:
         """Analyze text sentiment using VADER.
 
         VADER is specifically tuned for social media content and handles
@@ -426,9 +426,11 @@ class EmotionManager:
         if not self.vader:
             return 0.0, 0.0
 
+        input_text = input_text.strip()
+
         # Get sentiment scores from VADER analyzer
-        vader_scores_dict: Dict[str, float] = self.vader.polarity_scores(text)
-        vader_scores = cast(VaderSentimentScores, vader_scores_dict)
+        raw_scores = self.vader.polarity_scores(input_text)  # type: ignore
+        vader_scores: VaderSentimentScores = cast(VaderSentimentScores, raw_scores)
 
         # Map VADER compound score (-1 to 1) directly to valence
         valence = vader_scores["compound"]
@@ -552,14 +554,27 @@ Return the analysis as a JSON object with these fields:
             # Might output: Valence: 0.82, Arousal: 0.75
         """
 
+        # Define type for TextBlob sentiment
+        class TextBlobSentiment(NamedTuple):
+            polarity: float
+            subjectivity: float
+
         # TextBlob analysis (always available)
         blob = TextBlob(text)
         # Extract sentiment properties safely
         try:
-            # Access properties directly from returned sentiment namedtuple
-            sentiment = blob.sentiment
-            textblob_valence = float(getattr(sentiment, "polarity", 0.0))
-            subjectivity = float(getattr(sentiment, "subjectivity", 0.0))
+            # Extract properties directly with safe fallbacks
+            polarity = getattr(blob.sentiment, "polarity", 0.0)  # type: ignore
+            subjectivity = getattr(blob.sentiment, "subjectivity", 0.0)  # type: ignore
+
+            # Create a properly typed TextBlobSentiment
+            sentiment_value = TextBlobSentiment(
+                polarity=float(polarity), subjectivity=float(subjectivity)
+            )
+
+            # Now we have a properly typed sentiment object
+            textblob_valence = sentiment_value.polarity
+            subjectivity = sentiment_value.subjectivity
         except (AttributeError, TypeError, ValueError):
             textblob_valence = 0.0
             subjectivity = 0.0
@@ -837,7 +852,7 @@ Format your response as a structured JSON with insights in each category."""
                 print(f"LLM insights generation failed: {e}")
 
         # Create the return structure
-        result: Dict[str, Any] = {
+        result: FullEmotionAnalysisDict = {
             "emotion_label": emotion_label,
             "confidence": confidence,
             "concept": concept.as_dict(),

@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
-import nltk
-from nltk.corpus import wordnet as wn
+import nltk  # type: ignore
+from nltk.corpus import wordnet as wn  # type: ignore
 
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.db_manager import DBManager
@@ -31,7 +31,7 @@ REQUIRED_NLTK_RESOURCES = frozenset(
 def _ensure_nltk_resources() -> None:
     """Initialize all required NLTK resources silently."""
     for resource in REQUIRED_NLTK_RESOURCES:
-        nltk.download(resource, quiet=True)
+        nltk.download(resource, quiet=True)  # type: ignore
 
 
 # Preload NLTK resources at module initialization
@@ -176,7 +176,7 @@ class TermExtractor:
 
         try:
             # Process text with advanced NLP techniques
-            sentences = nltk.sent_tokenize(text_to_parse)
+            sentences = nltk.sent_tokenize(text_to_parse)  # type: ignore
             for sentence in sentences:
                 self._process_sentence(
                     sentence, discovered_terms, multiword_expressions, named_entities
@@ -217,12 +217,12 @@ class TermExtractor:
             named_entities: Set to collect named entities
         """
         # Basic tokenization and POS tagging
-        tokens = nltk.word_tokenize(sentence)
-        tagged = nltk.pos_tag(tokens)
+        tokens = nltk.word_tokenize(sentence)  # type: ignore
+        tagged: List[Tuple[str, str]] = nltk.pos_tag(tokens)  # type: ignore
 
         # Extract single words with POS filtering and lemmatization
         for word, tag in tagged:
-            word_lower = word.lower()
+            word_lower: str = word.lower()  # Normalize to lowercase
 
             # Skip punctuation, short words, stop words, and numbers
             if (
@@ -259,10 +259,17 @@ class TermExtractor:
             discovered_terms: Set to add component terms to
         """
         try:
-            chunked = nltk.ne_chunk(tagged)
-            for subtree in chunked:
-                if isinstance(subtree, nltk.Tree):
-                    entity = " ".join(word for word, tag in subtree.leaves())
+            # Type annotation to help the type checker with nltk.ne_chunk
+            from typing import List, Tuple, cast
+
+            from nltk import Tree  # type: ignore
+
+            chunked = nltk.ne_chunk(tagged)  # type: ignore
+            for subtree in chunked:  # type: ignore
+                if isinstance(subtree, Tree):
+                    # Explicitly cast the leaves to the correct type
+                    leaves = cast(List[Tuple[str, str]], subtree.leaves())
+                    entity = " ".join(word for word, _ in leaves)
                     if len(entity) > 3:  # Filter out very short entities
                         entity_lower = entity.lower()
                         named_entities.add(entity_lower)
@@ -314,44 +321,75 @@ class TermExtractor:
         """
         Find semantically related terms through WordNet.
 
+        This function discovers and extracts semantically related terms by traversing
+        WordNet's lexical database. It explores three relationship types to build a
+        comprehensive semantic network:
+
+        1. Synonyms - Words with the same meaning
+        2. Hypernyms - Broader category terms (e.g., 'vehicle' is a hypernym of 'car')
+        3. Hyponyms - More specific terms (e.g., 'sedan' is a hyponym of 'car')
+
         Args:
-            base_terms: Initial set of discovered terms
+            base_terms: Initial set of discovered terms to find semantic relations for
 
         Returns:
-            Set of semantically related terms
+            Set[str]: Collection of semantically related terms, limited to 200 results
+
+        Note:
+            The function implements performance optimizations:
+            - Processes only a subset of input terms (max 75) to prevent combinatorial explosion
+            - Uses LRU caching for repeated invocations with identical inputs
+            - Limits result set size to 200 terms to prevent downstream overload
+            - Silently continues on WordNet lookup failures (term not found, etc.)
         """
+        # Import with type annotations for the type checker
+        from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
+
         semantic_terms: Set[str] = set()
-        # Use only a subset of terms to avoid excessive processing
+        # Process only a subset of terms to prevent excessive computation
         term_sample = list(base_terms)[:75]
 
+        # Local helper function for processing WordNet lemmas consistently
+        def _process_lemma(lemma: Lemma) -> None:
+            """Extract and normalize a lemma name, adding to results if valid."""
+            lemma_name = lemma.name()
+            if not isinstance(lemma_name, str):
+                return
+
+            # Normalize: replace underscores with spaces, convert to lowercase
+            processed_name = lemma_name.replace("_", " ").lower()
+
+            # Only include terms meeting minimum length requirement
+            if len(processed_name) >= 3:
+                semantic_terms.add(processed_name)
+
+        # Process each base term
         for base_term in term_sample:
             try:
-                for synset in wn.synsets(base_term):
-                    # Add synonyms (lemma names)
-                    for lemma in synset.lemmas():
-                        lemma_name = lemma.name().replace("_", " ").lower()
-                        if len(lemma_name) >= 3:
-                            semantic_terms.add(lemma_name)
+                # Retrieve all synsets (word senses) for the term
+                synsets: List[Synset] = wn.synsets(base_term)  # type: ignore
+                for synset in synsets:
+                    # 1. Process direct synonyms from the synset
+                    for lemma in synset.lemmas():  # type: ignore
+                        _process_lemma(lemma)  # type: ignore
 
-                    # Add hypernyms (broader terms)
-                    for hypernym in synset.hypernyms():
-                        for lemma in hypernym.lemmas():
-                            hyper_name = lemma.name().replace("_", " ").lower()
-                            if len(hyper_name) >= 3:
-                                semantic_terms.add(hyper_name)
+                    # 2. Process hypernyms (broader/parent categories)
+                    for hypernym in synset.hypernyms():  # type: ignore
+                        for lemma in hypernym.lemmas():  # type: ignore
+                            _process_lemma(lemma)  # type: ignore
 
-                    # Add hyponyms (narrower terms) - limited to direct hyponyms
-                    for hyponym in synset.hyponyms():
-                        for lemma in hyponym.lemmas():
-                            hypo_name = lemma.name().replace("_", " ").lower()
-                            if len(hypo_name) >= 3:
-                                semantic_terms.add(hypo_name)
-            except Exception:
-                # Silently continue if WordNet lookup fails for a term
+                    # 3. Process hyponyms (more specific/child categories)
+                    for hyponym in synset.hyponyms():  # type: ignore
+                        for lemma in hyponym.lemmas():  # type: ignore
+                            _process_lemma(lemma)  # type: ignore
+
+            except (LookupError, AttributeError, ValueError):
+                # Common failures: term not in WordNet, invalid synset structure
+                # Silently continue to process remaining terms
                 continue
 
-        # Limit returned set to avoid overwhelming the system
-        return set(list(semantic_terms)[:200])
+        # Limit returned set to prevent overwhelming downstream processing
+        return set(sorted(semantic_terms)[:200])
 
     def _filter_terms(
         self,
@@ -688,8 +726,8 @@ class ParserRefiner:
             Dictionary containing processing statistics
         """
         return self.stats.as_dict(
-            queue_size=self.queue_manager.size(),
-            unique_words=len(list(self.queue_manager.iter_seen())),
+            queue_size=self.queue_manager.size,
+            unique_words=len(list(self.queue_manager._seen_items)),  # type: ignore
         )
 
     def shutdown(self) -> None:
@@ -766,7 +804,7 @@ def run_demonstration() -> None:
                 )
 
                 # Display relationships
-                rel_by_type = {}
+                rel_by_type: Dict[str, List[str]] = {}
                 for rel in entry["relationships"]:
                     rel_type = rel["relationship_type"]
                     if rel_type not in rel_by_type:
@@ -782,16 +820,21 @@ def run_demonstration() -> None:
                     )
 
                 # Show queue growth from term
-                current_queue_size = parser.queue_manager.size()
+                current_queue_size = parser.queue_manager.size
                 print(
                     f"\n  [QUEUE] Discovered {current_queue_size} new candidate terms"
                 )
 
                 # Show sample of discovered terms
                 if current_queue_size > 0:
-                    sample = parser.queue_manager.get_sample(5)
+                    sample_result = parser.queue_manager.get_sample(5)
+                    sample = (
+                        sample_result.value if hasattr(sample_result, "value") else []
+                    )
+                    # Ensure sample is not None before joining
+                    sample_list = sample if sample is not None else []
                     print(
-                        f"  Sample terms: {', '.join(sample)}"
+                        f"  Sample terms: {', '.join(sample_list)}"
                         + (
                             f" and {current_queue_size-5} more..."
                             if current_queue_size > 5
@@ -813,10 +856,15 @@ def run_demonstration() -> None:
 
     # Process a term from the queue if available
     print("\n[QUEUE PROCESSING]")
-    if parser.queue_manager.size() > 0:
-        queued_term = parser.queue_manager.dequeue()
-        print(f"Processing term from queue: '{queued_term}'")
-        success = parser.process_word(queued_term)
+    if parser.queue_manager.size > 0:
+        result = parser.queue_manager.dequeue()
+        queued_term = result.value if hasattr(result, "value") else str(result)
+        if queued_term is not None:
+            print(f"Processing term from queue: '{queued_term}'")
+            success = parser.process_word(queued_term)
+        else:
+            print("No valid term retrieved from queue")
+            success = False
         print(f"  Status: {'✓ Success' if success else '✗ Failed'}")
 
         if success:
@@ -858,11 +906,5 @@ __all__ = ["ParserRefiner", "TermExtractor", "LexicalResources", "ProcessingStat
 
 # Run demonstration when executed directly
 if __name__ == "__main__":
-    # Import missing modules only needed for executing directly
-    import os
-    import re
-
-    import nltk
-
     # Run the comprehensive demonstration
     run_demonstration()

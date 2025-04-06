@@ -68,7 +68,7 @@ import time
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Lock, local
 from typing import (
     Any,
     Dict,
@@ -434,38 +434,15 @@ class DBManager:
     """
     Manages the SQLite database for terms, definitions, relationships, etc.
 
-    This class provides a comprehensive interface for storing and retrieving
-    linguistic data, including words, definitions, and the relationships
-    between words. It handles database connections, schema management,
-    and provides type-safe methods for data operations.
-
-    Attributes:
-        db_path: Path to the SQLite database file
-        connection: Active database connection (created on demand)
-        _conn_pool: Pool of database connections for reuse
-        _lock: Thread synchronization lock for connection management
-        _max_pool_size: Maximum number of connections to keep in the pool
+    Thread-safe implementation that automatically handles connection lifecycle
+    across different execution contexts including multithreaded environments.
     """
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
-        """
-        Initialize the database manager with an optional custom path.
-
-        Args:
-            db_path: Optional custom path to the database file.
-                    If None, uses the default path from configuration.
-
-        Raises:
-            ConnectionError: If the database directory cannot be created
-            SchemaError: If database schema cannot be initialized
-
-        Examples:
-            >>> db = DBManager()  # Uses default path from config
-            >>> db = DBManager("custom/path/lexical.db")  # Uses custom path
-        """
+        """Initialize the database manager with an optional custom path."""
         self.db_path = Path(db_path) if db_path else Path(config.database.db_path)
-        self.connection: Optional[sqlite3.Connection] = None
-        self._conn_pool: List[Connection] = []
+        self._thread_local = local()  # Thread-local storage for connections
+        self._thread_local.conn_pool = []  # Initialize connection pool
         self._lock = Lock()
         self._max_pool_size = getattr(config.database, "max_connections", 5)
 
@@ -478,29 +455,32 @@ class DBManager:
                 str(self.db_path),
             )
 
-    def _ensure_database_directory(self) -> None:
-        """
-        Ensure the database directory exists.
+    @property
+    def connection(self) -> Optional[sqlite3.Connection]:
+        """Get the current thread's connection, if any."""
+        return getattr(self._thread_local, "connection", None)
 
-        Creates all parent directories for the database file if they don't exist.
-        """
+    @connection.setter
+    def connection(self, conn: Optional[sqlite3.Connection]) -> None:
+        """Set the current thread's connection."""
+        self._thread_local.connection = conn
+
+    @property
+    def _conn_pool(self) -> List[Connection]:
+        """Get the connection pool for the current thread."""
+        if not hasattr(self._thread_local, "conn_pool"):
+            self._thread_local.conn_pool = []  # Connection list is created empty
+        return cast(List[Connection], self._thread_local.conn_pool)  # type: ignore
+        return self._thread_local.conn_pool
+
+    def _ensure_database_directory(self) -> None:
+        """Ensure the database directory exists."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _create_connection(self) -> sqlite3.Connection:
-        """
-        Create a new database connection with proper configuration.
-
-        Returns:
-            A configured SQLite connection object
-
-        Raises:
-            ConnectionError: If connection creation fails
-        """
+        """Create a new database connection with proper configuration."""
         try:
-            # Create directory for database if it doesn't exist
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Create connection with properly configured pragmas
             connection = sqlite3.connect(str(self.db_path))
             connection.row_factory = sqlite3.Row
 
@@ -516,68 +496,55 @@ class DBManager:
             )
 
     def create_tables(self) -> None:
-        """
-        Create database tables if they don't exist.
-
-        Initializes the complete database schema including:
-        - Words table for storing lexical entries
-        - Relationships table for storing term connections
-        - Indexes for optimizing query performance
-
-        This method is safe to call multiple times as it uses
-        IF NOT EXISTS in all schema creation statements.
-
-        Raises:
-            SchemaError: If schema creation fails
-        """
+        """Create database tables if they don't exist."""
         try:
-            with self.transaction() as conn:
-                # Create primary tables
+            with self.get_connection() as conn:
+                # Create core tables
                 conn.execute(SQL_CREATE_WORDS_TABLE)
                 conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
 
-                # Create indexes for performance optimization
+                # Create indexes for performance
                 conn.execute(SQL_CREATE_WORD_ID_INDEX)
                 conn.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
+
+                # Configure database settings
+                conn.execute(SQL_PRAGMA_FOREIGN_KEYS)
+                conn.execute(SQL_PRAGMA_JOURNAL_MODE)
+                conn.execute(SQL_PRAGMA_SYNCHRONOUS)
         except (ConnectionError, sqlite3.Error) as e:
-            raise SchemaError("Failed to create database tables", e)
+            raise SchemaError("Failed to create database schema", e)
+
+    def ensure_tables_exist(self) -> None:
+        """Ensure that all required tables exist in the database."""
+        if not self.table_exists("words"):
+            self.create_tables()
 
     @contextmanager
     def get_connection(self) -> Iterator[Connection]:
         """
-        Retrieve a database connection from the pool or create a new one.
+        Thread-safe retrieval of a database connection.
 
-        Manages connection lifecycle, returning connections to the pool
-        when finished or closing them on error.
+        Each thread receives its own dedicated connection, ensuring SQLite's
+        thread requirements are respected while maintaining optimal performance.
 
         Yields:
-            An active SQLite database connection
-
-        Raises:
-            ConnectionError: If a connection cannot be established
-
-        Examples:
-            >>> with db.get_connection() as conn:
-            ...     cursor = conn.execute("SELECT 1")
-            ...     result = cursor.fetchone()
+            An active SQLite database connection for the current thread
         """
         conn = None
         try:
-            # Try to get connection from pool first
-            with self._lock:
-                if self._conn_pool:
-                    conn = self._conn_pool.pop()
-                else:
-                    conn = self._create_connection()
+            # First try to get connection from thread-local pool
+            if self._conn_pool:
+                conn = self._conn_pool.pop()
+            else:
+                conn = self._create_connection()
 
             # Yield connection to caller
             yield conn
 
-            # Return connection to pool if still valid
-            with self._lock:
-                if conn and len(self._conn_pool) < self._max_pool_size:
-                    self._conn_pool.append(conn)
-                    conn = None  # Prevent closing outside lock
+            # Return connection to thread-local pool if still valid
+            if conn and len(self._conn_pool) < self._max_pool_size:
+                self._conn_pool.append(conn)
+                conn = None  # Prevent closing outside
 
         except sqlite3.Error as e:
             raise ConnectionError(
@@ -594,61 +561,25 @@ class DBManager:
 
     def _get_connection(self) -> sqlite3.Connection:
         """
-        Get the current database connection or create a new one.
+        Get the current thread's database connection or create a new one.
 
-        Provides connection caching to avoid repeated connection creation.
-        For backward compatibility - new code should use get_connection() context manager.
-
-        Returns:
-            An active SQLite connection object
-
-        Raises:
-            ConnectionError: If connection cannot be established
+        This method ensures each thread has its own dedicated connection,
+        maintaining SQLite's thread affinity requirements.
         """
         if self.connection is None:
             self.connection = self._create_connection()
         return self.connection
 
-    def get_legacy_connection(self) -> sqlite3.Connection:
-        """
-        Get an active database connection.
-
-        Provides public access to obtain a database connection,
-        creating one if it doesn't exist. Maintains backward compatibility
-        with older code that doesn't use the context manager pattern.
-
-        Returns:
-            sqlite3.Connection: An active SQLite connection object
-
-        Raises:
-            ConnectionError: If connection cannot be established
-        """
-        return self._get_connection()
-
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
         """
-        Provide a connection with transaction management.
+        Thread-safe transaction context manager.
 
         Creates a transaction context that automatically commits on successful
-        completion or rolls back on error.
-
-        Yields:
-            An SQLite connection with an active transaction
-
-        Raises:
-            TransactionError: If transaction operations fail
-            ConnectionError: If database connection fails
-
-        Examples:
-            >>> with db.transaction() as conn:
-            ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("lexicon",))
-            ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("syntax",))
-            ...     # Both inserts happen or neither does
+        completion or rolls back on error, using the current thread's connection.
         """
         with self.get_connection() as conn:
             try:
-                # Start transaction explicitly for clarity
                 conn.execute("BEGIN")
                 yield conn
                 conn.commit()
@@ -782,6 +713,9 @@ class DBManager:
         """
         if not term:
             raise ValueError("Term cannot be empty")
+
+        # Ensure tables exist before attempting operations
+        self.ensure_tables_exist()
 
         # Handle optional usage examples
         examples = usage_examples if usage_examples else []
@@ -1074,17 +1008,8 @@ class DBManager:
             raise QueryError("Failed to retrieve word list", e, SQL_GET_ALL_WORDS)
 
     def close(self) -> None:
-        """
-        Close the database connection.
-
-        Safely closes all connections, ensuring all pending transactions
-        are committed or rolled back as appropriate.
-
-        Examples:
-            >>> # When application is shutting down
-            >>> db.close()
-        """
-        # Close legacy connection
+        """Close the database connection for the current thread."""
+        # Close thread-local connection
         if self.connection is not None:
             try:
                 self.connection.close()
@@ -1093,14 +1018,13 @@ class DBManager:
             finally:
                 self.connection = None
 
-        # Close all pooled connections
-        with self._lock:
-            for conn in self._conn_pool:
-                try:
-                    conn.close()
-                except sqlite3.Error:
-                    pass  # Ignore errors during cleanup
-            self._conn_pool.clear()
+        # Close thread-local pooled connections
+        for conn in self._conn_pool:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass  # Ignore errors during cleanup
+        self._conn_pool.clear()
 
 
 class RelationshipTypeManager:

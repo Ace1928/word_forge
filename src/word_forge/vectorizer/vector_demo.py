@@ -13,6 +13,7 @@ Architecture:
     1. In-memory or disk-based SQLite database
     2. Vector embeddings using selected model
     3. Search functionality across multiple languages
+    4. Bidirectional linking between semantic database and vector store
 """
 
 import logging
@@ -123,6 +124,32 @@ class WordStorageError(Exception):
     pass
 
 
+class DuplicateWordError(WordStorageError):
+    """
+    Raised when attempting to store a word that already exists.
+
+    Provides information about the existing entry to facilitate
+    appropriate handling by caller.
+
+    Attributes:
+        word_id: ID of the existing word entry
+        term: The term that was duplicated
+    """
+
+    def __init__(self, message: str, word_id: int, term: str):
+        """
+        Initialize the duplicate word error with context.
+
+        Args:
+            message: Error message
+            word_id: ID of the existing word
+            term: The term that was duplicated
+        """
+        super().__init__(message)
+        self.word_id = word_id
+        self.term = term
+
+
 class VectorDemo:
     """
     Demonstration of Word Forge vector embedding and search capabilities.
@@ -196,12 +223,16 @@ class VectorDemo:
         # Keep track of added words
         self.words: Dict[WordID, WordEntryDict] = {}
 
+        # Load existing words from database
+        self._load_existing_words()
+
     def _setup_database(self) -> None:
         """
         Set up a test database with schema for demonstration.
 
         Creates an SQLite database with the necessary tables for
         storing word entries with their definitions and usage examples.
+        Configures the primary key with AUTOINCREMENT for robust ID generation.
 
         Raises:
             sqlite3.Error: If database operations fail
@@ -212,16 +243,23 @@ class VectorDemo:
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
 
-            # Create words table
+            # Create words table with AUTOINCREMENT
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS words (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     term TEXT NOT NULL,
                     definition TEXT NOT NULL,
                     usage_examples TEXT,
                     language TEXT
                 )
+                """
+            )
+
+            # Create index on term for faster lookups
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_words_term ON words(term)
                 """
             )
 
@@ -234,6 +272,49 @@ class VectorDemo:
 
         # Initialize DB manager
         self.db_manager = DBManager(db_path=str(self.db_path))
+
+    def _load_existing_words(self) -> None:
+        """
+        Load existing words from the database into memory.
+
+        Retrieves all word entries from the database and populates
+        the internal words dictionary with complete WordEntryDict objects.
+
+        This ensures the demo instance is aware of all existing words,
+        preventing ID conflicts and enabling proper vector integration.
+        """
+        try:
+            with self.db_manager.transaction() as conn:
+                cursor = conn.execute(
+                    "SELECT id, term, definition, usage_examples, language FROM words"
+                )
+                rows = cursor.fetchall()
+
+            for row in rows:
+                word_id, term, definition, usage_examples_str, language = row
+
+                # Convert string to list for usage examples
+                usage_examples: List[str] = (
+                    usage_examples_str.split("; ") if usage_examples_str else []
+                )
+
+                # Create word entry dict
+                self.words[word_id] = {
+                    "id": word_id,
+                    "term": term,
+                    "definition": definition,
+                    "usage_examples": usage_examples,
+                    "language": language,
+                    "part_of_speech": "",  # Required by WordEntryDict
+                    "last_refreshed": 0.0,  # Required by WordEntryDict
+                    "relationships": [],  # Required by WordEntryDict
+                }
+
+            if rows:
+                logger.info(f"Loaded {len(rows)} existing words from database")
+        except Exception as e:
+            logger.warning(f"Failed to load existing words: {e}")
+            # Non-fatal error - continue with empty words dict
 
     def _initialize_embedder(self, use_transformer: bool) -> EmbedderType:
         """
@@ -294,24 +375,28 @@ class VectorDemo:
         definition: str,
         usage_examples: Union[str, List[str]] = "",
         language: Language = "en",
+        handle_duplicates: bool = True,
     ) -> WordID:
         """
         Add a word to the database and process it for vector storage.
 
         Creates a database entry for the word and generates vector
-        embeddings for semantic search capabilities.
+        embeddings for semantic search capabilities. Handles potential
+        duplication conflicts through configurable behavior.
 
         Args:
             term: The word or phrase
             definition: The meaning or explanation
             usage_examples: Examples of the word in context (string or list)
             language: Language code (en, fr, zh, es, de, ja)
+            handle_duplicates: Whether to handle duplicate entries (True) or raise error (False)
 
         Returns:
             ID of the added word
 
         Raises:
             WordStorageError: If storing the word fails
+            DuplicateWordError: If term already exists and handle_duplicates is False
 
         Examples:
             >>> demo = VectorDemo()
@@ -325,45 +410,189 @@ class VectorDemo:
         # Format usage examples
         examples_str = self._format_usage_examples(usage_examples)
 
-        # Get next ID
-        next_id = len(self.words) + 1
-
-        # Create word entry
-        word: WordEntryDict = {
-            "id": next_id,
-            "term": term,
-            "definition": definition,
-            "usage_examples": examples_str,
-            "language": language,
-            "part_of_speech": "",  # Required by WordEntryDict
-            "last_refreshed": 0.0,  # Required by WordEntryDict
-            "relationships": [],  # Required by WordEntryDict
-        }
+        # Check for duplicate term
+        existing_id = self._check_for_duplicate_term(term, language)
+        if existing_id is not None:
+            if handle_duplicates:
+                logger.info(
+                    f"Word '{term}' already exists with ID {existing_id}, updating definition"
+                )
+                return self._update_existing_word(
+                    existing_id, term, definition, examples_str, language
+                )
+            else:
+                raise DuplicateWordError(
+                    f"Word '{term}' already exists with ID {existing_id}",
+                    existing_id,
+                    term,
+                )
 
         try:
-            # Store in database using transaction
-            with self.db_manager.transaction() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO words (id, term, definition, usage_examples, language)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (next_id, term, definition, examples_str, language),
-                )
+            # Store in database and get new ID
+            word_id = self._insert_word_in_database(
+                term, definition, examples_str, language
+            )
+
+            # Create word entry
+            word: WordEntryDict = {
+                "id": word_id,
+                "term": term,
+                "definition": definition,
+                "usage_examples": examples_str.split("; ") if examples_str else [],
+                "language": language,
+                "part_of_speech": "",  # Required by WordEntryDict
+                "last_refreshed": 0.0,  # Required by WordEntryDict
+                "relationships": [],  # Required by WordEntryDict
+            }
 
             # Process for vector storage
             vectors_added = self.vector_store.store_word(word)
 
             # Keep track of added word
-            self.words[next_id] = word
+            self.words[word_id] = word
 
             logger.info(
-                f"Added word '{term}' (ID: {next_id}, Language: {language}) with {vectors_added} vectors"
+                f"Added word '{term}' (ID: {word_id}, Language: {language}) with {vectors_added} vectors"
             )
-            return next_id
+            return word_id
 
         except Exception as e:
             raise WordStorageError(f"Failed to store word '{term}': {str(e)}") from e
+
+    def _check_for_duplicate_term(
+        self, term: str, language: Language
+    ) -> Optional[WordID]:
+        """
+        Check if a term already exists in the database.
+
+        Performs a case-insensitive search for matching terms in the specified language.
+
+        Args:
+            term: The word or phrase to check
+            language: Language code to match
+
+        Returns:
+            ID of the existing word if found, None otherwise
+        """
+        try:
+            with self.db_manager.transaction() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT id FROM words
+                    WHERE LOWER(term) = LOWER(?) AND language = ?
+                    """,
+                    (term, language),
+                )
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.warning(f"Error checking for duplicate term: {e}")
+            return None
+
+    def _insert_word_in_database(
+        self, term: str, definition: str, examples_str: str, language: str
+    ) -> WordID:
+        """
+        Insert a new word into the database.
+
+        Uses SQLite's AUTOINCREMENT to generate a unique ID and
+        returns the ID of the newly inserted word.
+
+        Args:
+            term: The word or phrase
+            definition: The meaning or explanation
+            examples_str: Formatted usage examples string
+            language: Language code
+
+        Returns:
+            ID of the newly inserted word
+
+        Raises:
+            QueryError: If database insertion fails
+        """
+        # Use NULL for id to trigger AUTOINCREMENT
+        with self.db_manager.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO words (id, term, definition, usage_examples, language)
+                VALUES (NULL, ?, ?, ?, ?)
+                """,
+                (term, definition, examples_str, language),
+            )
+            # Get the last inserted row ID
+            word_id = cursor.lastrowid
+
+        if word_id is None:
+            raise WordStorageError(f"Failed to get ID for newly inserted word '{term}'")
+
+        return word_id
+
+    def _update_existing_word(
+        self,
+        word_id: WordID,
+        term: str,
+        definition: str,
+        examples_str: str,
+        language: str,
+    ) -> WordID:
+        """
+        Update an existing word in the database and vector store.
+
+        Updates the definition and usage examples of an existing word
+        and regenerates its vector embeddings.
+
+        Args:
+            word_id: ID of the existing word
+            term: The word or phrase
+            definition: The updated meaning or explanation
+            examples_str: Formatted usage examples string
+            language: Language code
+
+        Returns:
+            ID of the updated word
+
+        Raises:
+            QueryError: If database update fails
+            WordStorageError: If vector update fails
+        """
+        try:
+            # Update database
+            with self.db_manager.transaction() as conn:
+                conn.execute(
+                    """
+                    UPDATE words
+                    SET definition = ?, usage_examples = ?
+                    WHERE id = ?
+                    """,
+                    (definition, examples_str, word_id),
+                )
+
+            # Update word entry
+            word: WordEntryDict = {
+                "id": word_id,
+                "term": term,
+                "definition": definition,
+                "usage_examples": examples_str.split("; ") if examples_str else [],
+                "language": language,
+                "part_of_speech": "",  # Required by WordEntryDict
+                "last_refreshed": 0.0,  # Required by WordEntryDict
+                "relationships": [],  # Required by WordEntryDict
+            }
+
+            # Update in-memory storage
+            self.words[word_id] = word
+
+            # Delete old vectors and add new ones
+            self.vector_store.delete_vectors_for_word(word_id)
+            vectors_added = self.vector_store.store_word(word)
+
+            logger.info(
+                f"Updated word '{term}' (ID: {word_id}, Language: {language}) with {vectors_added} vectors"
+            )
+            return word_id
+
+        except Exception as e:
+            raise WordStorageError(f"Failed to update word '{term}': {str(e)}") from e
 
     def _format_usage_examples(self, usage_examples: Union[str, List[str]]) -> str:
         """
@@ -388,9 +617,10 @@ class VectorDemo:
 
         Creates a standard set of words in English, Chinese, and French
         to demonstrate the multilingual capabilities of the system.
+        Handles potential duplicates gracefully.
 
         Raises:
-            WordStorageError: If adding any word fails
+            WordStorageError: If adding any word fails (except duplicates)
         """
         logger.info("Adding multilingual examples...")
 
@@ -452,28 +682,48 @@ class VectorDemo:
             ],
         }
 
-        # Add all examples
+        # Track successfully added words
+        success_count = 0
+        duplicate_count = 0
+        error_count = 0
+
+        # Add all examples with duplicate handling
         for language, words in examples.items():
             for word in words:
-                self.add_word(
-                    term=cast(str, word["term"]),
-                    definition=cast(str, word["definition"]),
-                    usage_examples=word["usage_examples"],
-                    language=language,
-                )
+                try:
+                    self.add_word(
+                        term=cast(str, word["term"]),
+                        definition=cast(str, word["definition"]),
+                        usage_examples=word["usage_examples"],
+                        language=language,
+                        handle_duplicates=True,
+                    )
+                    success_count += 1
+                except DuplicateWordError as e:
+                    logger.info(f"Duplicate word '{e.term}' with ID {e.word_id}")
+                    duplicate_count += 1
+                except WordStorageError as e:
+                    logger.error(f"Failed to add word: {str(e)}")
+                    error_count += 1
 
-        logger.info(f"Added {len(self.words)} multilingual examples")
+        logger.info(
+            f"Added {success_count} words ({duplicate_count} duplicates handled, {error_count} errors)"
+        )
 
-    def search_similar(self, query: str, k: int = 3) -> List[SearchResult]:
+    def search_similar(
+        self, query: str, k: int = 3, filter_language: Optional[Language] = None
+    ) -> List[SearchResult]:
         """
         Search for words similar to the query and display results.
 
         Performs semantic search using the query text and formats
-        the results into a structured display.
+        the results into a structured display. Optionally filters
+        results by language.
 
         Args:
             query: Text query to search for
             k: Number of results to return
+            filter_language: Optional language to filter results by
 
         Returns:
             List of formatted search results
@@ -481,13 +731,19 @@ class VectorDemo:
         Examples:
             >>> demo = VectorDemo()
             >>> demo.add_multilingual_examples()
+            >>> # Search in all languages
             >>> results = demo.search_similar("computer algorithms")
-            Found 3 results:
-            1. algorithm (Type: word, Language: en, Distance: 0.1234)
-               Text: algorithm - A step-by-step procedure for solving a problem...
+            >>> # Search only in Chinese
+            >>> zh_results = demo.search_similar("recursive technique", k=5, filter_language="zh")
         """
-        logger.info(f"Searching for: '{query}'")
-        raw_results = self.vector_store.search(query_text=query, k=k)
+        logger.info(
+            f"Searching for: '{query}'{' in ' + filter_language if filter_language else ''}"
+        )
+        raw_results = self.vector_store.search(
+            query_text=query,
+            k=k,
+            filter_metadata={"language": filter_language} if filter_language else None,
+        )
 
         # Format results
         results = self._format_search_results(raw_results)
@@ -560,23 +816,91 @@ class VectorDemo:
                 print("   Text: Not available")
         print("\n")
 
+    def get_word_by_id(self, word_id: WordID) -> Optional[WordEntryDict]:
+        """
+        Retrieve a word entry by its ID.
+
+        Attempts to find the word in the in-memory cache first,
+        then queries the database if not found.
+
+        Args:
+            word_id: ID of the word to retrieve
+
+        Returns:
+            Word entry dictionary if found, None otherwise
+        """
+        # Check in-memory cache first
+        if word_id in self.words:
+            return self.words[word_id]
+
+        # Query database if not in memory
+        try:
+            with self.db_manager.transaction() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT id, term, definition, usage_examples, language FROM words
+                    WHERE id = ?
+                    """,
+                    (word_id,),
+                )
+                row = cursor.fetchone()
+
+            if row:
+                word_id, term, definition, usage_examples_str, language = row
+
+                # Create word entry dict
+                word: WordEntryDict = {
+                    "id": word_id,
+                    "term": term,
+                    "definition": definition,
+                    "usage_examples": (
+                        usage_examples_str.split("; ") if usage_examples_str else []
+                    ),
+                    "language": language,
+                    "part_of_speech": "",  # Required by WordEntryDict
+                    "last_refreshed": 0.0,  # Required by WordEntryDict
+                    "relationships": [],  # Required by WordEntryDict
+                }
+
+                # Cache for future use
+                self.words[word_id] = word
+                return word
+
+            return None
+        except Exception as e:
+            logger.warning(f"Error retrieving word {word_id}: {e}")
+            return None
+
 
 def main() -> None:
     """
     Main entry point for running the vector demo.
 
     Creates a demo instance, adds multilingual examples, and
-    performs a sample search to showcase capabilities.
-    """
-    demo = VectorDemo()
-    demo.add_multilingual_examples()
+    performs sample searches to showcase capabilities.
 
-    # Perform sample searches
-    demo.search_similar("algorithm for solving problems")
-    demo.search_similar("递归技术", k=5)  # "recursive technique" in Chinese
-    demo.search_similar(
-        "procédure étape par étape"
-    )  # "step by step procedure" in French
+    Contains error handling to ensure the demo runs successfully
+    even if some operations fail.
+    """
+    try:
+        # Initialize demo
+        demo = VectorDemo()
+
+        # Add test data
+        demo.add_multilingual_examples()
+
+        # Perform sample searches
+        demo.search_similar("algorithm for solving problems")
+        demo.search_similar("递归技术", k=5)  # "recursive technique" in Chinese
+        demo.search_similar(
+            "procédure étape par étape"
+        )  # "step by step procedure" in French
+
+        # Demonstrate language filtering
+        demo.search_similar("algorithm", filter_language="zh")
+
+    except Exception as e:
+        logger.error(f"Demo failed: {e}")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Protocol, TypedDict, cast, final
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
 from word_forge.database.db_manager import DBManager
@@ -596,7 +597,9 @@ class TransformerEmbedder:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self.model = SentenceTransformer(model_name)
+            self.model = SentenceTransformer(
+                model_name  # type: ignore
+            )  # Multilingual-E5-large-instruct
             # Multilingual-E5-large-instruct has embedding dimension of 1024
             self.dimension = 1024
         except ImportError:
@@ -632,8 +635,15 @@ class TransformerEmbedder:
             formatted_text = f"Instruct: {task}\nQuery: {text}"
 
             # Generate embedding and return as numpy array
-            embedding = self.model.encode(
-                formatted_text, convert_to_numpy=True, normalize_embeddings=True
+            embedding = self.model.encode(  # type: ignore
+                sentences=formatted_text,  # Use the formatted text directly as sentences
+                batch_size=10,  # Batch text optimization
+                convert_to_numpy=True,
+                normalize_embeddings=True,  # Pre-normalize for cosine similarity
+                show_progress_bar=True,  # Show Progress
+                output_value="sentence_embedding",  # Ensure correct output
+                precision="float32",  # Use float32 for consistency
+                device="cuda" if torch.cuda.is_available() else "cpu",
             )
             return cast(NDArray[np.float32], embedding)
         except Exception as e:

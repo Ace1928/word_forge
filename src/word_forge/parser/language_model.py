@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional, Union
 
-import nltk
+import nltk  # type: ignore
 import torch
-from transformers import (
+from transformers import (  # type: ignore
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedModel,
@@ -11,8 +11,8 @@ from transformers import (
 )
 
 # Download NLTK data quietly
-nltk.download("wordnet", quiet=True)
-nltk.download("omw-1.4", quiet=True)
+nltk.download("wordnet", quiet=True)  # type: ignore
+nltk.download("omw-1.4", quiet=True)  # type: ignore
 
 
 class ModelState:
@@ -58,11 +58,12 @@ class ModelState:
             return False
 
         try:
-            # Load tokenizer without unnecessary cast
-            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)
+            # Load tokenizer with explicit type annotation
+            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)  # type: ignore
+            assert cls.tokenizer is not None
 
             # Load model with appropriate configuration
-            cls.model = AutoModelForCausalLM.from_pretrained(
+            cls.model = AutoModelForCausalLM.from_pretrained(  # type: ignore
                 cls._model_name,
                 device_map=cls._device,
                 torch_dtype=(
@@ -108,12 +109,22 @@ class ModelState:
         try:
             # Create input tensors
             input_tokens = cls.tokenizer(prompt, return_tensors="pt")
-            input_ids = input_tokens["input_ids"].to(cls._device)
+            input_ids = input_tokens["input_ids"]
+            input_ids = (
+                input_ids.to(cls._device)
+                if isinstance(input_ids, torch.Tensor)
+                else torch.tensor(input_ids, device=cls._device)
+            )
 
             # Handle attention mask if present
             attention_mask = None
             if "attention_mask" in input_tokens:
-                attention_mask = input_tokens["attention_mask"].to(cls._device)
+                attention_mask = input_tokens["attention_mask"]
+                attention_mask = (
+                    attention_mask.to(cls._device)
+                    if isinstance(attention_mask, torch.Tensor)
+                    else torch.tensor(attention_mask, device=cls._device)
+                )
 
             # Configure generation parameters
             gen_kwargs: Dict[str, Any] = {
@@ -123,27 +134,39 @@ class ModelState:
                 "do_sample": temperature > 0.1,
             }
 
-            # Set pad_token_id if eos_token_id exists
+            # Set pad_token_id if eos_token_id exists and is usable
             if (
                 hasattr(cls.tokenizer, "eos_token_id")
-                and cls.tokenizer.eos_token_id is not None
+                and getattr(cls.tokenizer, "eos_token_id", None) is not None
             ):
-                gen_kwargs["pad_token_id"] = cls.tokenizer.eos_token_id
+                # Handle different possible types of eos_token_id
+                eos_token_id: Any = cls.tokenizer.eos_token_id  # type: ignore
+                if isinstance(eos_token_id, int):
+                    gen_kwargs["pad_token_id"] = eos_token_id
+                elif isinstance(eos_token_id, str) and eos_token_id.isdigit():
+                    gen_kwargs["pad_token_id"] = int(eos_token_id)
+                elif (
+                    isinstance(eos_token_id, list)
+                    and eos_token_id
+                    and isinstance(eos_token_id[0], int)
+                ):
+                    gen_kwargs["pad_token_id"] = eos_token_id[0]
 
             # Generate text
-            outputs = cls.model.generate(
+            outputs = cls.model.generate(  # type: ignore
                 input_ids=input_ids, attention_mask=attention_mask, **gen_kwargs
             )
 
             # Process the output
             result = ""
             if isinstance(outputs, torch.Tensor):
-                result = cls.tokenizer.decode(
-                    outputs[0].tolist(), skip_special_tokens=True
+                output_ids = outputs[0].tolist()  # type: ignore[attr-defined]
+                result = cls.tokenizer.decode(  # type: ignore
+                    output_ids, skip_special_tokens=True
                 )
             else:
                 # For other output types
-                result = cls.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                result = cls.tokenizer.decode(outputs[0], skip_special_tokens=True)  # type: ignore
 
             # Remove the prompt from the result
             if result.startswith(prompt):

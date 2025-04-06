@@ -189,6 +189,7 @@ class EmotionWorker(threading.Thread):
         WHERE we.word_id IS NULL
         LIMIT ?
         """
+        connection = None
         try:
             connection = sqlite3.connect(self.db.db_path)
             cursor = connection.cursor()
@@ -198,7 +199,7 @@ class EmotionWorker(threading.Thread):
         except sqlite3.Error as e:
             raise EmotionDBError(f"Failed to retrieve words: {str(e)}") from e
         finally:
-            if "connection" in locals():
+            if connection is not None:
                 connection.close()
 
     def _process_word_emotions(self, words: List[WordEmotion]) -> None:
@@ -304,7 +305,7 @@ def main() -> None:
         print("-" * 60)
         for word in sample_words:
             try:
-                word_id = db._get_word_id(word)
+                word_id = db.get_word_id(word)
                 if word_id:
                     emotion_data = emotion_manager.get_word_emotion(word_id)
                     if emotion_data:

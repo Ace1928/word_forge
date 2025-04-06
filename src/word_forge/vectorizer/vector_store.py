@@ -22,6 +22,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import (
     Any,
@@ -54,6 +55,7 @@ ContentType = Literal["word", "definition", "example", "message", "conversation"
 EmbeddingList = List[float]  # Type for ChromaDB's embedding format
 QueryType = Literal["search", "definition", "similarity"]
 TemplateDict = Dict[str, Optional[str]]
+WordID = Union[int, str]  # ID can be int or str for ChromaDB compatibility
 
 
 class VectorMetadata(TypedDict, total=False):
@@ -158,6 +160,14 @@ class ChromaCollection(Protocol):
         where: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, List[Any]]:
         """Query the collection for similar items."""
+        ...
+
+    def delete(
+        self,
+        ids: Optional[List[str]] = None,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Delete items from the collection by ID or filter."""
         ...
 
 
@@ -499,9 +509,8 @@ class VectorStore:
             formatted_text = self.format_with_instruction(text, template_key, is_query)
 
             # Generate embedding with optimal parameters for similarity search
-            vector = self.model.encode(
-                sentences=text,
-                prompt=formatted_text,
+            vector = self.model.encode(  # type: ignore
+                sentences=formatted_text,  # Use the formatted text directly as sentences
                 batch_size=10,  # Batch text optimization
                 convert_to_numpy=True,
                 normalize_embeddings=True,  # Pre-normalize for cosine similarity
@@ -770,6 +779,67 @@ class VectorStore:
         except Exception as e:
             raise ContentProcessingError(f"Failed to store word: {str(e)}") from e
 
+    def delete_vectors_for_word(self, word_id: WordID) -> int:
+        """
+        Delete all vectors associated with a specific word.
+
+        Removes vectors associated with the word from the vector store,
+        enabling clean updates and replacements without duplicate entries.
+
+        Args:
+            word_id: ID of the word whose vectors should be deleted
+
+        Returns:
+            Number of vectors deleted
+
+        Raises:
+            VectorStoreError: If the deletion operation fails
+
+        Examples:
+            >>> store = VectorStore(dimension=384)
+            >>> # After adding vectors for a word
+            >>> deleted_count = store.delete_vectors_for_word(123)
+            >>> print(f"Deleted {deleted_count} vectors")
+        """
+        try:
+            # Convert word_id to string for ChromaDB
+            word_id_str = str(word_id)
+
+            # Use metadata filter to find all vectors for this word
+            where_filter = {"original_id": word_id}
+
+            # Try to delete vectors by ID and filter
+            deleted_count = 0
+
+            # First try direct ID-based deletion
+            try:
+                self.collection.delete(ids=[word_id_str])
+                deleted_count += 1
+            except Exception as direct_error:
+                logging.debug(f"Direct ID deletion failed: {str(direct_error)}")
+
+            # Then try filter-based deletion if supported
+            try:
+                self.collection.delete(where=where_filter)
+                # We don't know exactly how many were deleted, but at least 1
+                deleted_count = max(deleted_count, 1)
+            except Exception as filter_error:
+                logging.debug(f"Filter-based deletion failed: {str(filter_error)}")
+
+            # If both approaches failed, propagate the error
+            if deleted_count == 0:
+                raise VectorStoreError("Neither ID nor filter-based deletion succeeded")
+
+            # Persist changes if using disk storage
+            self._persist_if_needed()
+
+            return deleted_count
+
+        except Exception as e:
+            raise VectorStoreError(
+                f"Failed to delete vectors for word {word_id}: {str(e)}"
+            ) from e
+
     def upsert(
         self,
         vec_id: VectorID,
@@ -853,10 +923,9 @@ class VectorStore:
     @overload
     def search(
         self,
-        *,
         query_vector: NDArray[np.float32],
         k: int = 5,
-        content_filters: Optional[Dict[str, Any]] = None,
+        filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResultDict]: ...
 
     @overload
@@ -865,91 +934,247 @@ class VectorStore:
         *,
         query_text: str,
         k: int = 5,
-        content_filters: Optional[Dict[str, Any]] = None,
+        filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResultDict]: ...
 
     def search(
         self,
-        *,
         query_vector: Optional[NDArray[np.float32]] = None,
-        query_text: Optional[str] = None,
         k: int = 5,
-        content_filters: Optional[Dict[str, Any]] = None,
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        *,
+        query_text: Optional[str] = None,
     ) -> List[SearchResultDict]:
         """
-        Find k most similar vectors to the query.
+        Search for semantically similar vectors using vector or text query.
+
+        Performs a similarity search against the vector database, finding items
+        that are semantically closest to the provided query. Results are sorted
+        by similarity (closest first). This method supports two search modes:
+        1. Direct vector search - when you already have an embedding
+        2. Text-based search - automatically converts text to embedding
 
         Args:
-            query_vector: Query embedding to search against
-            query_text: Raw text query (will be converted to vector if provided)
-            k: Number of results to return (limited by collection size)
-            content_filters: Optional metadata filters for the search
+            query_vector: Vector representation to search against
+                (mutually exclusive with query_text)
+            query_text: Text to search for (will be converted to a vector)
+            k: Maximum number of results to return (default: 5)
+            filter_metadata: Optional metadata filters to restrict search
+                (e.g., {"language": "en"})
 
         Returns:
-            List of result dictionaries containing id, distance and metadata,
-            sorted by similarity (lowest distance first)
+            List[SearchResultDict]: Search results with metadata, sorted by similarity
+                Each result contains:
+                - id: Unique identifier of the matching item
+                - distance: Semantic distance from query (lower is better)
+                - metadata: Associated metadata for the match
+                - text: Raw text content if available
 
         Raises:
-            DimensionMismatchError: If query vector dimension doesn't match expected dimension
-            SearchError: If search operation fails or if no query is provided
+            SearchError: If search parameters are invalid or operation fails
+            ContentProcessingError: If embedding query_text fails
+            DimensionMismatchError: If query vector dimensions are incorrect
+            ValueError: If k is not a positive integer
+
+        Examples:
+            >>> # Search by text with language filter
+            >>> results = vector_store.search(
+            ...     query_text="quantum computing",
+            ...     k=5,
+            ...     filter_metadata={"language": "en"}
+            ... )
+            >>> print(f"Found {len(results)} matches")
+
+            >>> # Search by vector
+            >>> results = vector_store.search(query_vector=embedding)
         """
-        # Handle text query if provided
-        if query_text and query_vector is None:
-            try:
-                query_vector = self.embed_text(query_text, is_query=True)
-            except Exception as e:
-                raise SearchError(f"Failed to embed query text: {str(e)}") from e
+        # Validate k parameter
+        if not k or k <= 0:
+            raise ValueError(f"Parameter 'k' must be a positive integer, got {k}")
 
-        if query_vector is None:
-            raise SearchError("Either query_vector or query_text must be provided")
-
-        self._validate_vector_dimension(query_vector, "Query vector")
-
-        # For backward compatibility with FAISS interface
-        if self.collection.count() == 0:
-            return []
-
-        try:
-            # Convert numpy array to list for ChromaDB
-            query_embeddings = [query_vector.tolist()]
-
-            # Prepare where clause for filtering
-            where_clause = content_filters or {}
-
-            # Execute query against collection
-            chroma_results = self.collection.query(
-                query_embeddings=query_embeddings,
-                n_results=min(k, self.collection.count()),
-                where=where_clause if where_clause else None,
+        # Input validation - exclusive parameters
+        if query_vector is None and query_text is None:
+            raise SearchError(
+                "Search requires either query_vector or query_text parameter"
             )
 
-            # Extract results
-            ids = chroma_results.get("ids", [[]])[0]
-            distances = chroma_results.get("distances", [[]])[0]
-            metadatas = chroma_results.get("metadatas", [None] * len(ids))
-            documents = chroma_results.get("documents", [None] * len(ids))
+        if query_vector is not None and query_text is not None:
+            raise SearchError("Provide either query_vector or query_text, not both")
 
-            # Convert similarities to distances for consistency
-            distances = self._convert_similarities_to_distances(distances)
+        # Prepare search vector
+        search_vector = self._prepare_search_vector(query_vector, query_text)
 
-            # Format results
+        # Execute search and return results
+        return self._execute_vector_search(
+            search_vector=search_vector, k=k, filter_metadata=filter_metadata
+        )
+
+    def _prepare_search_vector(
+        self, query_vector: Optional[NDArray[np.float32]], query_text: Optional[str]
+    ) -> NDArray[np.float32]:
+        """
+        Prepare the search vector from either direct vector or text input.
+
+        Args:
+            query_vector: Pre-computed vector embedding if available
+            query_text: Text to embed if vector not provided
+
+        Returns:
+            NDArray[np.float32]: Vector to use for similarity search
+
+        Raises:
+            ContentProcessingError: If text embedding fails
+            DimensionMismatchError: If vector has incorrect dimensions
+        """
+        # Case 1: Direct vector provided
+        if query_vector is not None:
+            self._validate_vector_dimension(query_vector, context="Query vector")
+            return query_vector
+
+        # Case 2: Text query provided
+        assert query_text is not None, "Both query_vector and query_text cannot be None"
+
+        try:
+            embedded_vector = self.embed_text(
+                query_text, template_key="search", is_query=True
+            )
+            self._validate_vector_dimension(embedded_vector, context="Embedded query")
+            return embedded_vector
+        except Exception as e:
+            # Preserve dimension mismatch errors but wrap others
+            if isinstance(e, DimensionMismatchError):
+                raise e
+            raise ContentProcessingError(
+                f"Failed to embed query text '{query_text[:50]}...': {str(e)}"
+            ) from e
+
+    def _execute_vector_search(
+        self,
+        search_vector: NDArray[np.float32],
+        k: int,
+        filter_metadata: Optional[Dict[str, Any]],
+    ) -> List[SearchResultDict]:
+        """
+        Execute similarity search against the vector database.
+
+        Args:
+            search_vector: Vector to search against
+            k: Maximum number of results to return
+            filter_metadata: Optional filters to apply to search
+
+        Returns:
+            List[SearchResultDict]: Search results sorted by similarity
+
+        Raises:
+            SearchError: If the search operation fails
+        """
+        try:
+            # Ensure k is reasonable to prevent performance issues
+            max_allowed = getattr(config.vectorizer, "max_results", 100)
+            adjusted_k = max(1, min(k, max_allowed))
+
+            # Performance logging for large searches
+            if adjusted_k != k:
+                logging.warning(
+                    f"Requested {k} results but limited to {adjusted_k} for performance"
+                )
+
+            # Record search operation start time
+            start_time = time.time()
+
+            # Execute query against ChromaDB collection
+            query_results = self.collection.query(
+                query_embeddings=[search_vector.tolist()],
+                n_results=adjusted_k,
+                where=filter_metadata,  # ChromaDB accepts None as "no filter"
+            )
+
+            # Log slow searches for performance monitoring
+            search_time = time.time() - start_time
+            if search_time > 1.0:
+                logging.info(
+                    f"Vector search took {search_time:.2f}s for k={adjusted_k}, "
+                    f"filters={filter_metadata}"
+                )
+
+            # Process results into standardized format
+            return self._process_chromadb_results(query_results)
+        except Exception as e:
+            error_msg = f"Vector search failed: {str(e)}"
+            logging.error(
+                f"{error_msg} | Vector shape: {search_vector.shape} | "
+                f"Filters: {filter_metadata} | Collection size: {self.collection.count()}"
+            )
+            raise SearchError(error_msg) from e
+
+    def _process_chromadb_results(
+        self, query_results: Dict[str, List[Any]]
+    ) -> List[SearchResultDict]:
+        """
+        Process raw ChromaDB results into standardized search result format.
+
+        Args:
+            query_results: Raw results from ChromaDB query operation
+
+        Returns:
+            List[SearchResultDict]: Standardized search results
+
+        Raises:
+            SearchError: If results cannot be properly processed
+        """
+        try:
+            # Handle empty results gracefully
+            if (
+                not query_results
+                or "ids" not in query_results
+                or not query_results["ids"]
+            ):
+                return []
+
+            # Access first query's results (ChromaDB uses nested arrays)
+            ids_list: List[str] = (
+                query_results["ids"][0] if query_results["ids"] else []
+            )
+            if not ids_list:
+                return []
+
+            # Convert string IDs to integers
+            ids = [int(id_str) for id_str in ids_list]
+
+            # Safely extract and process distances
+            distances_data = query_results.get("distances", [[]])
+            distances_list: List[float] = distances_data[0] if distances_data else []
+            distances = self._convert_similarities_to_distances(distances_list)
+
+            # Safely extract metadata and documents with proper defaults
+            metadatas_data = query_results.get("metadatas", [[]])
+            metadatas = metadatas_data[0] if metadatas_data else [None] * len(ids)
+
+            documents_data = query_results.get("documents", [[]])
+            documents = documents_data[0] if documents_data else [None] * len(ids)
+
+            # Build result objects with proper type safety
             results: List[SearchResultDict] = []
-            for i in range(len(ids)):
-                result: SearchResultDict = {
-                    "id": int(ids[i]),
-                    "distance": distances[i],
-                    "metadata": cast(
-                        Optional[VectorMetadata],
-                        metadatas[i] if i < len(metadatas) else None,
-                    ),
-                    "text": documents[i] if i < len(documents) else None,
-                }
+            for i, id_ in enumerate(ids):
+                # Get corresponding values with bounds checking
+                distance = (
+                    distances[i] if i < len(distances) else 2.0
+                )  # Default to max distance
+                metadata = metadatas[i] if i < len(metadatas) else None
+                document = documents[i] if i < len(documents) else None
+
+                # Construct the result with proper typing
+                result = SearchResultDict(
+                    id=id_,
+                    distance=distance,
+                    metadata=cast(Optional[VectorMetadata], metadata),
+                    text=document,
+                )
                 results.append(result)
 
             return results
-
         except Exception as e:
-            raise SearchError(f"Search operation failed: {str(e)}") from e
+            raise SearchError(f"Failed to process search results: {str(e)}") from e
 
     def get_legacy_search_results(
         self, query_vector: NDArray[np.float32], k: int = 5

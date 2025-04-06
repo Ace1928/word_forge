@@ -26,6 +26,7 @@ from typing import (
     Optional,
     Protocol,
     Set,
+    TypedDict,
     TypeVar,
     Union,
     cast,
@@ -35,6 +36,8 @@ from typing import (
 # Type variable for queue items - allows for generic queue
 T = TypeVar("T")
 R = TypeVar("R")
+# Contravariant type variable for QueueProcessor
+T_contra = TypeVar("T_contra", contravariant=True)
 
 
 class QueueError(Exception):
@@ -289,14 +292,14 @@ class Result(Generic[T]):
         )
 
 
-class QueueProcessor(Protocol, Generic[T]):
+class QueueProcessor(Protocol, Generic[T_contra]):
     """
     Protocol defining the interface for queue item processors.
 
     Ensures type safety when working with queue processors.
     """
 
-    def process(self, item: T) -> Result[bool]:
+    def process(self, item: T_contra) -> Result[bool]:
         """
         Process a queue item.
 
@@ -431,7 +434,7 @@ class QueueManager(Generic[T]):
             ...     print("Item added" if result.unwrap() else "Item was duplicate")
         """
         if self.state in (QueueState.STOPPING, QueueState.STOPPED):
-            return Result.failure(
+            return Result[bool].failure(
                 "QUEUE_STOPPED",
                 "Queue is not accepting new items",
                 {"state": self.state.name},
@@ -444,7 +447,7 @@ class QueueManager(Generic[T]):
                 # Check if it's already been seen
                 if item_key in self._seen_items:
                     self.metrics.rejected_count += 1
-                    return Result.success(False)
+                    return Result[bool].success(False)
 
                 # Add to the queue with priority
                 prioritized = PrioritizedItem(
@@ -455,7 +458,7 @@ class QueueManager(Generic[T]):
                 try:
                     self._queue.put_nowait(prioritized)
                 except queue.Full:
-                    return Result.failure(
+                    return Result[bool].failure(
                         "QUEUE_FULL",
                         f"Queue is full (max size: {self._size_limit})",
                         {"size_limit": str(self._size_limit)},
@@ -469,11 +472,11 @@ class QueueManager(Generic[T]):
                 self.metrics.enqueued_count += 1
                 self.metrics.last_enqueued = str(item)
 
-                return Result.success(True)
+                return Result[bool].success(True)
 
         except Exception as e:
             self.metrics.error_count += 1
-            return Result.failure(
+            return Result[bool].failure(
                 "ENQUEUE_ERROR",
                 f"Error enqueueing item: {str(e)}",
                 {"error_type": type(e).__name__},
@@ -503,7 +506,7 @@ class QueueManager(Generic[T]):
             ...     print(f"Processing: {item}")
         """
         if self.state in (QueueState.PAUSED, QueueState.STOPPING, QueueState.STOPPED):
-            return Result.failure(
+            return Result[T].failure(
                 "QUEUE_NOT_ACTIVE",
                 f"Queue is not actively processing items (state: {self.state.name})",
                 {"state": self.state.name},
@@ -529,16 +532,16 @@ class QueueManager(Generic[T]):
                         wait_time_ms = (time.time() - entry_time) * 1000
                         self.metrics.update_wait_time(wait_time_ms)
 
-                return Result.success(item)
+                return Result[T].success(item)
 
             except queue.Empty:
-                return Result.failure(
+                return Result[T].failure(
                     "QUEUE_EMPTY", "Queue is empty, no items to dequeue", {}
                 )
 
         except Exception as e:
             self.metrics.error_count += 1
-            return Result.failure(
+            return Result[T].failure(
                 "DEQUEUE_ERROR",
                 f"Error dequeuing item: {str(e)}",
                 {"error_type": type(e).__name__},
@@ -578,11 +581,11 @@ class QueueManager(Generic[T]):
                 self._seen_items.clear()
                 self._entry_times.clear()
 
-                return Result.success(count)
+                return Result[int].success(count)
 
         except Exception as e:
             self.metrics.error_count += 1
-            return Result.failure(
+            return Result[int].failure(
                 "CLEAR_ERROR",
                 f"Error clearing queue: {str(e)}",
                 {"error_type": type(e).__name__},
@@ -665,7 +668,7 @@ class QueueManager(Generic[T]):
             Result containing the number of items successfully processed
         """
         if count < 1:
-            return Result.failure(
+            return Result[int].failure(
                 "INVALID_COUNT",
                 "Count must be at least 1",
                 {"requested_count": str(count)},
@@ -694,7 +697,7 @@ class QueueManager(Generic[T]):
             except Exception:
                 failures += 1
 
-        return Result.success(processed)
+        return Result[int].success(processed)
 
     def start(self) -> None:
         """
@@ -838,6 +841,20 @@ class QueueManager(Generic[T]):
             )
 
 
+class WorkerMetrics(TypedDict):
+    """
+    Type definition for work distributor metrics.
+
+    Defines the structure of the metrics dictionary used in WorkDistributor.
+    """
+
+    items_processed: int
+    errors: int
+    start_time: float
+    worker_states: Dict[int, str]
+    last_processed_item: Optional[str]
+
+
 class WorkDistributor:
     """
     Manages parallel processing of queue items.
@@ -858,12 +875,12 @@ class WorkDistributor:
         max_workers: int = 4,
     ) -> None:
         """
-        Initialize the work distributor.
+        Initialize the work distributor with a queue and processor.
 
         Args:
-            queue_manager: Queue manager containing items to process
-            processor: The processor to handle each item
-            max_workers: Maximum number of parallel workers
+            queue_manager: The queue to process items from
+            processor: The processor to handle queue items
+            max_workers: Maximum number of concurrent worker threads
         """
         self.queue_manager = queue_manager
         self.processor = processor
@@ -872,11 +889,12 @@ class WorkDistributor:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
-        self.metrics = {
+        self.metrics: WorkerMetrics = {
             "items_processed": 0,
             "errors": 0,
             "start_time": 0.0,
             "worker_states": {},
+            "last_processed_item": None,
         }
 
     def start_processing(self) -> None:
