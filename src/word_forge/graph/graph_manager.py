@@ -31,152 +31,33 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    TypedDict,
-    Union,
-    cast,
-)
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
 
 import networkx as nx
 import numpy as np
-from pyvis.network import Network
 
-from word_forge.config import config
-from word_forge.database.db_manager import DatabaseError, DBManager
-from word_forge.relationships import RELATIONSHIP_TYPES
+# Import pyvis with a type ignore comment to fix the missing stub issue
+from pyvis.network import Network  # type: ignore
 
+from word_forge.database.db_manager import DBManager
+from word_forge.exceptions import (
+    GraphDimensionError,
+    GraphError,
+    GraphVisualizationError,
+    NodeNotFoundError,
+)
+from word_forge.graph.graph_config import (
+    GraphConfig,
+    GraphInfoDict,
+    LayoutAlgorithm,
+    Position,
+    PositionDict,
+    WordId,
+)
+from word_forge.relationships import RELATIONSHIP_TYPES, RelationshipProperties
 
-class GraphError(DatabaseError):
-    """
-    Base exception for graph operations providing context on failures.
-
-    Inherits from DatabaseError to maintain error hierarchy while
-    adding graph-specific context information.
-    """
-
-    pass
-
-
-class NodeNotFoundError(GraphError):
-    """
-    Raised when a term lookup fails within the graph.
-
-    This occurs when attempting to access a node that doesn't exist,
-    typically during relationship or subgraph operations.
-    """
-
-    pass
-
-
-class GraphDataError(GraphError):
-    """
-    Raised when graph data structure contains inconsistencies.
-
-    This indicates a structural problem with the graph data itself,
-    such as missing required node attributes or invalid edge structures.
-    """
-
-    pass
-
-
-class GraphVisualizationError(GraphError):
-    """
-    Raised when graph visualization generation fails.
-
-    This typically occurs during rendering operations, HTML generation,
-    or when visualization libraries encounter errors.
-    """
-
-    pass
-
-
-class GraphDimensionError(GraphError):
-    """
-    Raised when graph dimensional operations fail.
-
-    This occurs when attempting to set invalid dimensions or
-    when dimensional operations (like projection) fail.
-    """
-
-    pass
-
-
-class WordTupleDict(TypedDict):
-    """
-    Type definition for word node information in the graph.
-
-    Attributes:
-        id: Unique identifier for the word
-        term: The actual word or phrase text
-    """
-
-    id: int
-    term: str
-
-
-class RelationshipTupleDict(TypedDict):
-    """
-    Type definition for relationship information between words.
-
-    Attributes:
-        word_id: ID of the source word
-        related_term: Text of the target word
-        relationship_type: Type of relationship (e.g., synonym, antonym)
-    """
-
-    word_id: int
-    related_term: str
-    relationship_type: str
-
-
-class GraphInfoDict(TypedDict):
-    """
-    Type definition for aggregated graph information.
-
-    Attributes:
-        nodes: Total number of nodes in the graph
-        edges: Total number of edges in the graph
-        dimensions: Dimensionality of the graph (2D or 3D)
-        sample_nodes: Representative sample of nodes
-        sample_relationships: Representative sample of edges
-        relationship_types: List of all relationship types in the graph
-    """
-
-    nodes: int
-    edges: int
-    dimensions: int
-    sample_nodes: List[WordTupleDict]
-    sample_relationships: List[Dict[str, str]]
-    relationship_types: List[str]
-
-
-# Type aliases for improved readability and type safety
-WordId = int
-Term = str
-RelType = str
-WordTuple = Tuple[WordId, Term]
-RelationshipTuple = Tuple[WordId, Term, RelType]
-GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
-Position = Union[Tuple[float, float], Tuple[float, float, float]]
-PositionDict = Dict[int, Position]
-
-
-# SQL query constants from centralized config
-SQL_CHECK_WORDS_TABLE = config.graph.sql_templates["check_words_table"]
-SQL_CHECK_RELATIONSHIPS_TABLE = config.graph.sql_templates["check_relationships_table"]
-SQL_FETCH_ALL_WORDS = config.graph.sql_templates["fetch_all_words"]
-SQL_FETCH_ALL_RELATIONSHIPS = config.graph.sql_templates["fetch_all_relationships"]
-SQL_INSERT_SAMPLE_WORD = config.graph.sql_templates["insert_sample_word"]
-SQL_INSERT_SAMPLE_RELATIONSHIP = config.graph.sql_templates[
-    "insert_sample_relationship"
-]
+config = GraphConfig()  # Create instance first
+get_export_path = config.get_export_filepath("default_gexf")
 
 
 class GraphManager:
@@ -230,10 +111,10 @@ class GraphManager:
             db_manager: Database manager providing access to word data
         """
         self.db_manager = db_manager
-        self.g = nx.Graph()
-        self._term_to_id: Dict[str, WordId] = {}
+        self.g: nx.Graph = nx.Graph()  # Add proper type annotation
+        self._term_to_id: Dict[str, int] = {}
         self._dimensions: int = 2  # Default is 2D for backward compatibility
-        self._positions: Dict[WordId, Position] = {}
+        self._positions: Dict[int, Tuple[float, ...]] = {}
         self._relationship_counts: Dict[str, int] = {}
 
         # Ensure the database parent directory exists
@@ -316,8 +197,7 @@ class GraphManager:
                 conn.close()
         except sqlite3.Error as e:
             error_msg = f"Database connection error in graph manager: {e}"
-            logging.error(error_msg)
-            raise GraphError(error_msg) from e
+            raise GraphError(error_msg, e) from e
 
     def build_graph(self) -> None:
         """
@@ -339,7 +219,7 @@ class GraphManager:
             graph_manager.build_graph()
             ```
         """
-        self.g.clear()
+        self.g.clear()  # type: ignore
         self._term_to_id.clear()
         self._positions.clear()
         self._relationship_counts = {}
@@ -348,9 +228,11 @@ class GraphManager:
 
         # Add nodes and build term->id mapping
         for word_id, term in words:
-            self.g.add_node(word_id, term=term, label=term)
+            self.g.add_node(node_for_adding=word_id, term=term)
             if term:  # Ensure term is not None or empty
                 self._term_to_id[term.lower()] = word_id
+                self.g.nodes[word_id]["id"] = word_id
+                self.g.nodes[word_id]["term"] = term
 
         # Add edges between related words with rich attributes
         for word_id, related_term, rel_type in relationships:
@@ -408,9 +290,7 @@ class GraphManager:
         # Generate layout positions
         self._compute_layout()
 
-    def _get_relationship_properties(
-        self, rel_type: str
-    ) -> Dict[str, Union[float, str, bool]]:
+    def _get_relationship_properties(self, rel_type: str) -> RelationshipProperties:
         """
         Get the properties for a given relationship type.
 
@@ -420,9 +300,10 @@ class GraphManager:
         Returns:
             Dictionary with weight, color, and bidirectional properties
         """
-        return RELATIONSHIP_TYPES.get(rel_type, RELATIONSHIP_TYPES["default"])
+        result = RELATIONSHIP_TYPES.get(rel_type, RELATIONSHIP_TYPES["default"])
+        return result
 
-    def _compute_layout(self, algorithm: Optional[str] = None) -> None:
+    def _compute_layout(self, algorithm: Optional[LayoutAlgorithm] = None) -> None:
         """
         Compute node positions for the graph using the specified algorithm.
 
@@ -431,7 +312,7 @@ class GraphManager:
         Results are stored in both the _positions dictionary and as node attributes.
 
         Args:
-            algorithm: Layout algorithm to use (defaults to config.graph.default_layout)
+            algorithm: Layout algorithm to use (defaults to config.default_layout)
                 Options include: "force_directed", "spectral", "circular"
 
         Raises:
@@ -451,10 +332,14 @@ class GraphManager:
 
         try:
             # Choose layout algorithm based on dimensions
+            algorithm_to_use: LayoutAlgorithm
             if not algorithm:
-                algorithm = config.graph.default_layout
+                # Cast to ensure type safety
+                algorithm_to_use = "force_directed"
+            else:
+                algorithm_to_use = algorithm
 
-            pos = self._calculate_layout_positions(algorithm)
+            pos: PositionDict = self._calculate_layout_positions(algorithm_to_use)
 
             # Store positions
             self._positions = pos
@@ -468,11 +353,11 @@ class GraphManager:
                 else:
                     self.g.nodes[node_id]["x"] = float(position[0])
                     self.g.nodes[node_id]["y"] = float(position[1])
-
         except Exception as e:
-            raise GraphError(f"Failed to compute graph layout: {e}") from e
+            error_msg = f"Failed to compute layout: {e}"
+            raise GraphError(error_msg, e) from e
 
-    def _calculate_layout_positions(self, algorithm: str) -> PositionDict:
+    def _calculate_layout_positions(self, algorithm: LayoutAlgorithm) -> PositionDict:
         """
         Calculate node positions using the specified layout algorithm.
 
@@ -540,13 +425,14 @@ class GraphManager:
         if self.g.number_of_nodes() == 0:
             raise ValueError("Cannot save an empty graph")
 
-        gexf_path = path or str(config.graph.get_export_path())
+        gexf_path = path or str(get_export_path)
         try:
             # Ensure directory exists
             Path(gexf_path).parent.mkdir(parents=True, exist_ok=True)
             nx.write_gexf(self.g, gexf_path)
         except Exception as e:
-            raise GraphError(f"Failed to save graph to {gexf_path}: {e}") from e
+            error_msg = f"Failed to save graph to {gexf_path}: {e}"
+            raise GraphError(error_msg, e) from e
 
     def load_from_gexf(self, path: Optional[str] = None) -> None:
         """
@@ -572,7 +458,7 @@ class GraphManager:
             graph_manager.load_from_gexf("data/my_graph.gexf")
             ```
         """
-        gexf_path = path or str(config.graph.get_export_path())
+        gexf_path = path or str(get_export_path)
         if not Path(gexf_path).exists():
             raise FileNotFoundError(f"Graph file not found: {gexf_path}")
 
@@ -608,7 +494,8 @@ class GraphManager:
                 )
 
         except Exception as e:
-            raise GraphError(f"Failed to load graph from {gexf_path}: {e}") from e
+            error_msg = f"Failed to load graph from {gexf_path}: {e}"
+            raise GraphError(error_msg, e) from e
 
     def update_graph(self) -> int:
         """
@@ -746,7 +633,8 @@ class GraphManager:
                     self.g.nodes[node_id]["y"] = float(position[1])
 
         except Exception as e:
-            raise GraphError(f"Failed to update graph layout incrementally: {e}") from e
+            error_msg = f"Failed to update graph layout incrementally: {e}"
+            raise GraphError(error_msg, e) from e
 
     def _initialize_new_node_positions(self, nodes_without_pos: List[int]) -> None:
         """
@@ -874,7 +762,7 @@ class GraphManager:
                 cursor = conn.cursor()
 
                 # Add sample words if not present
-                for word_data in config.graph.sample_words:
+                for word_data in GraphConfig.sample_relationships:
                     term = word_data.get("term", "")
                     definition = word_data.get("definition", "")
                     pos = word_data.get("part_of_speech", "")
@@ -887,14 +775,20 @@ class GraphManager:
                 words = cursor.fetchall()
 
                 # Create a mapping of term to ID
-                word_id_map = {term.lower(): id for id, term in words}
+                word_id_map = {term.lower(): id for id, term, _ in words}
 
                 # Add sample relationships from config
-                for term1, term2, rel_type in config.graph.sample_relationships:
+                for term1, term2, rel_type in GraphConfig.sample_relationships:
                     if term1.lower() in word_id_map:
                         cursor.execute(
-                            SQL_INSERT_SAMPLE_RELATIONSHIP,
-                            (word_id_map[term1.lower()], term2, rel_type),
+                            GraphConfig.sql_templates.get(
+                                "SQL_INSERT_SAMPLE_RELATIONSHIP"
+                            ),
+                            (
+                                word_id_map[term1.lower()],
+                                word_id_map[term2.lower()],
+                                rel_type,
+                            ),
                         )
 
                 conn.commit()
@@ -902,15 +796,11 @@ class GraphManager:
 
         except sqlite3.Error as e:
             error_msg = f"Failed to add sample data: {e}"
-            logging.error(error_msg)
-            raise GraphError(error_msg) from e
+            raise GraphError(error_msg, e) from e
 
-    def _fetch_data(self) -> GraphData:
+    def _fetch_data(self) -> Tuple[List[Tuple[int, str]], List[Tuple[int, str, str]]]:
         """
         Fetch words and relationships from the database.
-
-        Retrieves all words and their relationships including lexical, emotional,
-        and affective dimensions from the database tables.
 
         Returns:
             Tuple containing (word_tuples, relationship_tuples)
@@ -921,78 +811,40 @@ class GraphManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                # Check if tables exist
-                cursor.execute(SQL_CHECK_WORDS_TABLE)
-                words_table_exists = bool(cursor.fetchone())
 
-                cursor.execute(SQL_CHECK_RELATIONSHIPS_TABLE)
-                relationships_table_exists = bool(cursor.fetchone())
+                # Check if tables exist before querying
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
+                )
+                if not cursor.fetchone():
+                    # Tables don't exist, return empty data
+                    return [], []
 
-                if not words_table_exists or not relationships_table_exists:
-                    # If tables don't exist, create them and add sample data
-                    if self.ensure_sample_data():
-                        return (
-                            self._fetch_data()
-                        )  # Recursive call after creating sample data
+                # Get all words - use id instead of word_id to match actual schema
+                cursor.execute("SELECT id, term FROM words")
+                words = cursor.fetchall()
 
-                # Fetch words
-                cursor.execute(SQL_FETCH_ALL_WORDS)
-                words = [(word_id, term) for word_id, term, _ in cursor.fetchall()]
+                # Check if relationships table exists
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='relationships'"
+                )
+                if not cursor.fetchone():
+                    # Relationships table doesn't exist, return words without relationships
+                    return words, []
 
-                # Fetch standard lexical relationships
-                cursor.execute(SQL_FETCH_ALL_RELATIONSHIPS)
-                relationships = [
-                    (word_id, related_term, rel_type)
-                    for word_id, related_term, rel_type in cursor.fetchall()
-                ]
-
-                # Fetch emotional relationships if table exists
-                try:
-                    cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='emotional_relationships'"
-                    )
-                    if cursor.fetchone():
-                        cursor.execute(
-                            config.graph.sql_templates.get(
-                                "get_all_emotional_relationships",
-                                "SELECT word_id, related_term, relationship_type FROM emotional_relationships",
-                            )
-                        )
-                        emotional_rels = cursor.fetchall()
-                        relationships.extend(
-                            [
-                                (word_id, related_term, f"{rel_type}")
-                                for word_id, related_term, rel_type, *_ in emotional_rels
-                            ]
-                        )
-                except Exception as e:
-                    # Log but continue if emotional relationships table doesn't exist
-                    print(f"Note: Could not fetch emotional relationships: {e}")
-
-                # Fetch affective relationships if table exists
-                try:
-                    cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='affective_relationships'"
-                    )
-                    if cursor.fetchone():
-                        cursor.execute(
-                            "SELECT word_id, related_term, relationship_type FROM affective_relationships"
-                        )
-                        affective_rels = cursor.fetchall()
-                        relationships.extend(
-                            [
-                                (word_id, related_term, f"{rel_type}")
-                                for word_id, related_term, rel_type in affective_rels
-                            ]
-                        )
-                except Exception as e:
-                    # Log but continue if affective relationships table doesn't exist
-                    print(f"Note: Could not fetch affective relationships: {e}")
+                # Get relationships - ensure column names match the actual schema
+                cursor.execute(
+                    """
+                    SELECT word_id, related_term, relationship_type
+                    FROM relationships
+                """
+                )
+                relationships = cursor.fetchall()
 
                 return words, relationships
-
         except Exception as e:
-            raise GraphError(f"Failed to fetch graph data: {e}") from e
+            # Ensure proper error propagation with cause parameter
+            raise GraphError(f"Failed to fetch graph data: {e}", e)
 
     def get_related_terms(self, term: str, rel_type: Optional[str] = None) -> List[str]:
         """
@@ -1141,7 +993,8 @@ class GraphManager:
                 "relationship_types": relationship_types,
             }
         except Exception as e:
-            raise GraphDataError(f"Error generating graph information: {e}") from e
+            error_msg = f"Error generating graph information: {e}"
+            raise GraphDataError(error_msg, e) from e
 
     def display_graph_summary(self) -> None:
         """
@@ -1203,8 +1056,8 @@ class GraphManager:
 
         Args:
             output_path: Path to save the HTML file (defaults to config value)
-            height: Height of the visualization (default: config.graph.vis_height)
-            width: Width of the visualization (default: config.graph.vis_width)
+            height: Height of the visualization (default: config.vis_height)
+            width: Width of the visualization (default: config.vis_width)
             use_3d: Whether to use 3D visualization (defaults to self._dimensions == 3)
             dimensions: List of dimensions to include (default: all dimensions)
                         Options: ["lexical", "emotional", "affective"]
@@ -1232,8 +1085,8 @@ class GraphManager:
 
         # Create network
         net = Network(
-            height=height or f"{config.graph.vis_height}px",
-            width=width or f"{config.graph.vis_width}px",
+            height=height or f"{config.vis_height}px",
+            width=width or f"{config.vis_width}px",
             directed=True,
             notebook=False,
         )
@@ -1267,9 +1120,9 @@ class GraphManager:
                 x, y, z = (random.uniform(-50, 50) for _ in range(3))
 
             # Calculate node size based on connectivity
-            size = config.graph.min_node_size + (
+            size = config.min_node_size + (
                 filtered_graph.degree(node_id)
-                * (config.graph.max_node_size - config.graph.min_node_size)
+                * (config.max_node_size - config.min_node_size)
                 / max(max(dict(filtered_graph.degree()).values(), default=1), 1)
             )
 
@@ -1293,8 +1146,8 @@ class GraphManager:
             bidirectional = data.get("bidirectional", True)
 
             # Add to visualization
-            width = config.graph.min_edge_width + (
-                weight * (config.graph.max_edge_width - config.graph.min_edge_width)
+            width = config.min_edge_width + (
+                weight * (config.max_edge_width - config.min_edge_width)
             )
 
             net.add_edge(
@@ -1307,15 +1160,14 @@ class GraphManager:
             )
 
         # Save to file
-        viz_path = output_path or str(
-            config.graph.get_visualization_path() / "graph.html"
-        )
+        viz_path = output_path or str(config.get_visualization_path() / "graph.html")
         Path(viz_path).parent.mkdir(parents=True, exist_ok=True)
         try:
             net.save_graph(viz_path)
             print(f"Visualization saved to: {viz_path}")
         except Exception as e:
-            raise GraphVisualizationError(f"Failed to save visualization: {e}") from e
+            error_msg = f"Failed to save visualization: {e}"
+            raise GraphVisualizationError(error_msg, e) from e
 
     def _configure_visualization_options(self, net: "Network", use_3d: bool) -> None:
         """
@@ -1452,8 +1304,8 @@ class GraphManager:
             title = data.get("title", "")
 
             # Set width based on weight (scaled)
-            width = config.graph.min_edge_width + (
-                weight * (config.graph.max_edge_width - config.graph.min_edge_width)
+            width = config.min_edge_width + (
+                weight * (config.max_edge_width - config.min_edge_width)
             )
 
             # Set edge style based on dimension
@@ -1582,49 +1434,31 @@ class GraphManager:
         self, term: str, depth: int = 1, output_path: Optional[str] = None
     ) -> str:
         """
-        Extract and save a subgraph centered on the given term.
-
-        Extracts a local neighborhood of the specified term and saves it to a file
-        in GEXF format. Combines the functionality of get_subgraph() and save_to_gexf().
+        Export a subgraph centered on a specific term to a GEXF file.
 
         Args:
             term: The central term for the subgraph
-            depth: How many hops to include (1 = immediate neighbors only)
-            output_path: Path where to save the subgraph (defaults to a generated path)
+            depth: How many relationship hops to include
+            output_path: Optional custom output path
 
         Returns:
-            Path where the subgraph was saved
+            Path to the exported file
 
         Raises:
             NodeNotFoundError: If the term is not found in the graph
-            GraphError: If the export fails
-
-        Example:
-            ```python
-            # Export immediate neighborhood of "algorithm"
-            subgraph_path = graph_manager.export_subgraph("algorithm", depth=1)
-            print(f"Subgraph saved to {subgraph_path}")
-            ```
         """
-        # Get the subgraph
         subgraph = self.get_subgraph(term, depth)
 
-        # Generate a default path if none provided
-        if not output_path:
-            safe_term = term.replace(" ", "_").lower()
-            # Handle the export_path correctly whether it's a property or method
-            export_path = config.graph.get_export_path
-            if callable(export_path):
-                export_path = export_path()
-            output_path = str(export_path / f"subgraph_{safe_term}_d{depth}.gexf")
+        # Fix: Use global get_export_path or config's get_export_filepath directly
+        export_path = output_path or str(get_export_path)
 
-        try:
-            # Ensure directory exists
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            nx.write_gexf(subgraph, output_path)
-            return output_path
-        except Exception as e:
-            raise GraphError(f"Failed to export subgraph: {e}") from e
+        # Create parent directory if it doesn't exist
+        Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Save the subgraph
+        nx.write_gexf(subgraph, export_path)
+
+        return export_path
 
     def analyze_semantic_clusters(
         self,
@@ -1838,7 +1672,8 @@ class GraphManager:
                 k: v for k, v in communities.items() if len(v) >= min_community_size
             }
         except Exception as e:
-            raise GraphError(f"Failed to analyze semantic clusters: {e}") from e
+            error_msg = f"Failed to analyze semantic clusters: {e}"
+            raise GraphError(error_msg, e) from e
 
     def get_relationships_by_dimension(
         self,
@@ -2835,8 +2670,8 @@ class GraphManager:
             List of node ID paths
         """
         # Simple BFS path finding
-        paths = []
-        queue = [(start_node, [start_node])]
+        paths: List[List[WordId]] = []
+        queue: List[Tuple[WordId, List[WordId]]] = [(start_node, [start_node])]
 
         while queue:
             node, path = queue.pop(0)
@@ -2846,24 +2681,53 @@ class GraphManager:
                 continue
 
             for neighbor in self.g.neighbors(node):
+                # Cast neighbor to WordId to satisfy type checker
+                neighbor_id: WordId = cast(WordId, neighbor)
+
                 # Skip already visited nodes in this path
-                if neighbor in path:
+                if neighbor_id in path:
                     continue
 
                 # Create new path with this neighbor
-                new_path = path + [neighbor]
+                new_path: List[WordId] = path + [neighbor_id]
 
                 # If neighbor is a valid destination, add the path
-                if neighbor in valid_nodes and neighbor != start_node:
+                if neighbor_id in valid_nodes and neighbor_id != start_node:
                     paths.append(new_path)
 
                 # Continue BFS with this new path
-                queue.append((neighbor, new_path))
+                queue.append((neighbor_id, new_path))
 
         return paths
 
+    def verify_database_tables(self) -> bool:
+        """Verify that required database tables exist.
 
-def main() -> None:
+        Returns:
+            bool: True if tables exist, False otherwise
+        """
+        try:
+            # Use _db_connection to verify tables
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                # Check if words table exists
+                cursor.execute(SQL_CHECK_WORDS_TABLE)
+                if not cursor.fetchone():
+                    return False
+
+                # Check if relationships table exists
+                cursor.execute(SQL_CHECK_RELATIONSHIPS_TABLE)
+                if not cursor.fetchone():
+                    return False
+
+                return True
+        except Exception as e:
+            # Log the specific database error for debugging
+            logging.error(f"Database verification failed: {e}")
+            return False
+
+
+def graph_demo() -> None:
     """
     Demonstrate key functionality of the GraphManager class.
 
@@ -2887,8 +2751,6 @@ def main() -> None:
         ```
     """
     import time
-
-    from word_forge.database.db_manager import DBManager
 
     start_time = time.time()
     print("Starting GraphManager demonstration...\n")
@@ -3291,4 +3153,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    graph_demo()

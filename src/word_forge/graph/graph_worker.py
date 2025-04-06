@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -201,9 +202,20 @@ class GraphWorker(threading.Thread):
             raise GraphDirectoryError(f"Failed to create directories: {str(e)}") from e
 
         try:
+            # Check if database tables exist and are accessible before updating
+            if not self._verify_database_tables():
+                self.logger.warning(
+                    "Required database tables not found. Graph updates paused until data becomes available."
+                )
+                # Set a longer backoff period before trying again
+                self._trigger_backoff(30.0)  # Wait 30 seconds before retry
+                return
+
             self._update_graph()
         except Exception as e:
-            raise GraphUpdateError(f"Failed to update graph: {str(e)}") from e
+            # Record error and trigger backoff
+            self._handle_graph_error(e)
+            return
 
         try:
             self._save_graph()
@@ -222,9 +234,64 @@ class GraphWorker(threading.Thread):
             self._update_count += 1
             self._current_state = WorkerState.RUNNING
             self._last_error = None  # Clear error state after successful update
+            self._error_backoff = self.update_interval  # Reset backoff
 
         self.logger.debug(
             f"Graph updated and saved to {self.output_path} (update #{self._update_count})"
+        )
+
+    def _verify_database_tables(self) -> bool:
+        """Verify that required database tables exist.
+
+        Returns:
+            bool: True if tables exist, False otherwise
+        """
+        try:
+            # Use graph_manager's connection to verify tables
+            return self.graph_manager.verify_database_tables()
+        except Exception as e:
+            self.logger.error(f"Database verification failed: {e}")
+            return False
+
+    def _handle_graph_error(self, error: Exception) -> None:
+        """Handle graph update errors with exponential backoff.
+
+        Args:
+            error: The exception that occurred
+        """
+        self._error_count += 1
+
+        # Store the error
+        with self._status_lock:
+            self._last_error = str(error)
+            self._current_state = WorkerState.ERROR
+
+        # Implement exponential backoff
+        self._trigger_backoff()
+
+        # Log error (but prevent error spam)
+        if self._error_count <= 3 or self._error_count % 10 == 0:
+            self.logger.error(f"GraphUpdateError updating graph: {error}")
+        else:
+            self.logger.debug(f"GraphUpdateError updating graph: {error}")
+
+    def _trigger_backoff(self, initial_delay: Optional[float] = None) -> None:
+        """Implement exponential backoff for error recovery.
+
+        Args:
+            initial_delay: Optional custom initial delay
+        """
+        if initial_delay is not None:
+            self._error_backoff = initial_delay
+        else:
+            # Exponential backoff with jitter - increase delay with each consecutive error
+            self._error_backoff = min(
+                60.0,  # Cap at 60 seconds max
+                self._error_backoff * 1.5 + random.uniform(0, 1),
+            )
+
+        self.logger.info(
+            f"Graph updates paused for {self._error_backoff:.1f}s (backoff)"
         )
 
     def _handle_execution_error(self, error: Exception) -> None:

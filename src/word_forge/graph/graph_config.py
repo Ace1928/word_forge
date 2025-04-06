@@ -25,7 +25,18 @@ Architecture:
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Set
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+)
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -42,7 +53,21 @@ from word_forge.configs.config_essentials import (
 # ==========================================
 # Relationship Dimension Types
 # ==========================================
+# Type definitions
+WordId = int  # Node identifier type
+Position = Tuple[float, ...]  # Position coordinates (2D or 3D)
+PositionDict = Dict[WordId, Position]
+GraphData = Tuple[List[Tuple[WordId, str]], List[Tuple[WordId, str, str]]]
 
+# Type aliases for improved readability and type safety
+WordId = int
+Term = str
+RelType = str
+WordTuple = Tuple[WordId, Term]
+RelationshipTuple = Tuple[WordId, Term, RelType]
+GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
+Position = Union[Tuple[float, float], Tuple[float, float, float]]
+PositionDict = Dict[int, Position]
 RelationshipDimension = Literal[
     "lexical", "emotional", "affective", "connotative", "contextual"
 ]
@@ -50,6 +75,60 @@ RelationshipDimension = Literal[
 RelationshipStrength = float  # 0.0 to 1.0, representing connection strength
 
 DimensionWeighting = Dict[RelationshipDimension, float]
+
+# Define layout algorithm types
+LayoutAlgorithm = Literal[
+    "force_directed", "spectral", "circular", "hierarchical", "radial", "grid"
+]
+
+
+class WordTupleDict(TypedDict):
+    """
+    Type definition for word node information in the graph.
+
+    Attributes:
+        id: Unique identifier for the word
+        term: The actual word or phrase text
+    """
+
+    id: int
+    term: str
+
+
+class RelationshipTupleDict(TypedDict):
+    """
+    Type definition for relationship information between words.
+
+    Attributes:
+        word_id: ID of the source word
+        related_term: Text of the target word
+        relationship_type: Type of relationship (e.g., synonym, antonym)
+    """
+
+    word_id: int
+    related_term: str
+    relationship_type: str
+
+
+class GraphInfoDict(TypedDict):
+    """
+    Type definition for aggregated graph information.
+
+    Attributes:
+        nodes: Total number of nodes in the graph
+        edges: Total number of edges in the graph
+        dimensions: Dimensionality of the graph (2D or 3D)
+        sample_nodes: Representative sample of nodes
+        sample_relationships: Representative sample of edges
+        relationship_types: List of all relationship types in the graph
+    """
+
+    nodes: int
+    edges: int
+    dimensions: int
+    sample_nodes: List[WordTupleDict]
+    sample_relationships: List[Dict[str, str]]
+    relationship_types: List[str]
 
 
 @dataclass
@@ -690,6 +769,16 @@ class GraphConfig:
 
 __all__ = [
     # Configuration class
+    "GraphConfig",
+    # Type definitions
+    "GraphLayoutAlgorithm",
+    "GraphColorScheme",
+    "GraphExportFormat",
+    "GraphNodeSizeStrategy",
+    "GraphEdgeWeightStrategy",
+    "RelationshipDimension",
+    # Error type
+    "GraphConfigError",
     "GraphConfig",
     # Type definitions
     "GraphLayoutAlgorithm",

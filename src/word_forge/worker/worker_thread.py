@@ -209,7 +209,7 @@ class WordForgeWorker(threading.Thread):
         self._initial_queue_size = (
             queue_manager.size
             if isinstance(queue_manager.size, int)
-            else queue_manager.size()
+            else queue_manager.size
         )
         self._productivity_metric = 1.0
         self.base_sleep_interval = sleep_interval
@@ -256,7 +256,7 @@ class WordForgeWorker(threading.Thread):
             Dictionary with runtime statistics and state information
         """
         runtime = self.stats.runtime_seconds
-        queue_size = self.queue_manager.size()
+        queue_size = self.queue_manager.size
         unique_words = len(list(self.queue_manager.iter_seen()))
 
         # Calculate productivity metric: processed words relative to queue growth
@@ -352,18 +352,13 @@ class WordForgeWorker(threading.Thread):
             self.logger.info("WordForgeWorker stopped")
 
     def _process_next_word(self) -> None:
-        """
-        Process the next word from the queue with recursive intelligence.
-
-        This core logic applies Eidosian principles by:
-        1. Analyzing processing patterns to optimize future operations
-        2. Dynamically adjusting discovery depth based on semantic relevance
-        3. Recording lexical pathways for knowledge graph enrichment
-        4. Maintaining processing history to avoid redundant work
-        """
+        """Process the next word from the queue with recursive intelligence."""
         try:
-            # Get next word from queue
-            term = self.queue_manager.next_item()
+            # Replace next_item() with dequeue()
+            dequeue_result = self.queue_manager.dequeue(block=False)
+            if dequeue_result.is_failure:
+                raise EmptyQueueError()
+            term = dequeue_result.unwrap()
 
             # Check if we've already processed this term
             if term in self._processed_terms:
@@ -378,7 +373,7 @@ class WordForgeWorker(threading.Thread):
             current_queue_depth = (
                 self.queue_manager.size
                 if isinstance(self.queue_manager.size, int)
-                else self.queue_manager.size()
+                else self.queue_manager.size
             )
             processing_depth = self._calculate_processing_depth(
                 term, current_queue_depth
