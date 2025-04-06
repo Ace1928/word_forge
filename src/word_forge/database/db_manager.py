@@ -495,6 +495,13 @@ class DBManager:
                 f"Failed to connect to database at {self.db_path}", e, str(self.db_path)
             )
 
+    def create_connection(self) -> sqlite3.Connection:
+        """Create a new database connection."""
+        with self._lock:
+            conn = self._create_connection()
+            self._conn_pool.append(conn)
+            return conn
+
     def create_tables(self) -> None:
         """Create database tables if they don't exist."""
         try:

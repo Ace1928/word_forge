@@ -22,6 +22,7 @@ from enum import Enum, auto
 from typing import (
     Dict,
     Generic,
+    Iterator,
     List,
     Optional,
     Protocol,
@@ -351,6 +352,38 @@ class QueueManager(Generic[T]):
 
         # Public attributes
         self.metrics = QueueMetrics()
+
+    def __repr__(self) -> str:
+        """Return a string representation of the queue manager."""
+        return f"<QueueManager state={self.state.name} size={self.size}>"
+
+    def __len__(self) -> int:
+        """Return the current size of the queue."""
+        return self.size
+
+    def __bool__(self) -> bool:
+        """Check if the queue is empty."""
+        return not self.is_empty
+
+    def __iter__(self) -> Iterator[PrioritizedItem[T]]:
+        """Return an iterator over the queue items."""
+        with self._lock:
+            return iter(self._queue.queue)
+
+    def __iter_seen__(self) -> Iterator[str]:
+        """Return an iterator over the seen items keys."""
+        with self._lock:
+            return iter(self._seen_items)
+
+    def seen_items(self) -> List[str]:
+        """Return a list of seen item keys."""
+        with self._lock:
+            return list(self._seen_items)
+
+    def iter_seen(self) -> Iterator[str]:
+        """Return an iterator over the seen item keys."""
+        with self._lock:
+            return iter(self._seen_items)
 
     @property
     def size(self) -> int:

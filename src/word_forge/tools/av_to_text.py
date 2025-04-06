@@ -27,13 +27,7 @@ from datetime import timedelta
 from typing import List, Set, Tuple, cast
 
 # Conditionally import Whisper to handle potential import failures gracefully
-try:
-    import whisper
-except ImportError:
-    logging.critical(
-        "Required package 'openai-whisper' not found. Install it with: pip install openai-whisper"
-    )
-    sys.exit(1)
+import whisper  # type: ignore
 
 # For Python 3.7-3.8 compatibility
 try:
@@ -242,7 +236,7 @@ def transcribe_audio(audio_path: str, model_size: str) -> TranscriptionResult:
         logging.info("Beginning transcription...")
         # Transcribe with options that preserve segmentation.
         # fp16 must be false for CPU-only inference
-        result = model.transcribe(audio_path, fp16=False)
+        result = model.transcribe(audio_path, fp16=False)  # type: ignore
         logging.info("Transcription complete.")
 
         # Cast to TranscriptionResult to ensure type safety
@@ -264,7 +258,7 @@ def generate_formatted_transcript(result: TranscriptionResult) -> str:
     Returns:
         Formatted transcript text with timestamps
     """
-    transcript_lines = []
+    transcript_lines: List[str] = []
     segments = result.get("segments", [])
 
     if not segments:
@@ -525,7 +519,7 @@ def process_directory(
     os.makedirs(output_dir, exist_ok=True)
 
     # Collect media files
-    media_files = []
+    media_files: List[str] = []
 
     if recursive:
         for root, _, files in os.walk(input_dir):

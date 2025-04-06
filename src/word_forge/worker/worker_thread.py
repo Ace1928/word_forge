@@ -1,5 +1,4 @@
 import datetime
-import json
 import logging
 import os
 import signal
@@ -10,9 +9,10 @@ import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypedDict, Union, cast
 
 from word_forge.database.db_manager import DBManager
+from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import EmptyQueueError, QueueManager
@@ -38,6 +38,7 @@ class WorkerEvent(TypedDict, total=False):
     duration: Optional[float]
     error: Optional[str]
     details: Dict[str, Any]
+    error_count: Optional[int]
 
 
 @dataclass
@@ -151,8 +152,11 @@ class WordForgeWorker(threading.Thread):
     def __init__(
         self,
         parser_refiner: ParserRefiner,
-        queue_manager: QueueManager,
+        queue_manager: QueueManager[str],
+        emotion_manager: EmotionManager,
         db_manager: Optional[DBManager] = None,
+        embedder: Optional[Any] = "intfloat/multilingual-e5-large-v2",
+        vector_store: Optional[Any] = "data/chroma.sqlite3",
         sleep_interval: float = 1.0,
         error_backoff_factor: float = 1.5,
         max_errors_per_minute: int = 10,
@@ -179,7 +183,10 @@ class WordForgeWorker(threading.Thread):
         super().__init__(daemon=daemon)
         self.parser_refiner = parser_refiner
         self.queue_manager = queue_manager
+        self.emotion_manager = emotion_manager
         self.db_manager = db_manager
+        self.embedder = embedder
+        self.vector_store = vector_store
         self.sleep_interval = sleep_interval
         self.error_backoff_factor = error_backoff_factor
         self.max_errors_per_minute = max_errors_per_minute
@@ -197,28 +204,28 @@ class WordForgeWorker(threading.Thread):
         self.stats = WorkerStatistics()
         self.stats.start_time = time.time()
 
-        self.auxiliary_workers = []
+        self.auxiliary_workers: List[threading.Thread] = []
         self.launch_auxiliary_workers = launch_auxiliary_workers
 
         self._register_signal_handlers()
 
         self._state_lock = threading.RLock()
         self._stop_requested = threading.Event()
-        self._recent_errors = []
-        self._processed_terms = set()
+        self._recent_errors: List[float] = []
+        self._processed_terms: set[str] = set()
         self._initial_queue_size = (
             queue_manager.size
-            if isinstance(queue_manager.size, int)
+            if callable(getattr(queue_manager, "size", None))
             else queue_manager.size
         )
         self._productivity_metric = 1.0
         self.base_sleep_interval = sleep_interval
 
-        self._term_frequencies = {}
-        self._term_dependency_graph = {}
-        self._consecutive_fast_processes = 0
-        self._semantic_clusters = {}
-        self._processing_patterns = []
+        self._term_frequencies: Dict[str, int] = {}
+        self._term_dependency_graph: Dict[str, List[str]] = {}
+        self._consecutive_fast_processes: int = 0
+        self._semantic_clusters: Dict[str, List[str]] = {}
+        self._processing_patterns: List[str] = []
 
     def _register_signal_handlers(self) -> None:
         """Register handlers for graceful shutdown on system signals."""
@@ -269,7 +276,7 @@ class WordForgeWorker(threading.Thread):
                 )
 
         # Create a snapshot of current statistics
-        stats = {
+        stats: Dict[str, Union[int, float, str, None, List[Any], Dict[str, Any]]] = {
             "state": self.state.name,
             "runtime_seconds": runtime,
             "runtime_formatted": str(datetime.timedelta(seconds=int(runtime))),
@@ -303,13 +310,20 @@ class WordForgeWorker(threading.Thread):
         """
         stats = self.get_statistics()
 
+        # Handle the avg_processing_time which might be of various types
+        avg_time = stats["avg_processing_time"]
+        if avg_time is None or not isinstance(avg_time, (int, float)):
+            avg_time_ms = 0.0
+        else:
+            avg_time_ms = float(avg_time) * 1000
+
         return (
             f"Status: {stats['state']} | "
             f"Processed: {stats['processed_count']} | "
             f"Rate: {stats['processing_rate_per_minute']:.1f}/min | "
             f"Queue: {stats['queue_size']} | "
             f"Unique: {stats['total_unique_words']} | "
-            f"Avg time: {stats['avg_processing_time']*1000:.1f}ms"
+            f"Avg time: {avg_time_ms:.1f}ms"
         )
 
     def run(self) -> None:
@@ -351,6 +365,11 @@ class WordForgeWorker(threading.Thread):
             self.state = WorkerState.STOPPED
             self.logger.info("WordForgeWorker stopped")
 
+    def stop(self) -> None:
+        """Request the worker to stop gracefully."""
+        self.logger.info("Stop requested")
+        self._stop_requested.set()
+
     def _process_next_word(self) -> None:
         """Process the next word from the queue with recursive intelligence."""
         try:
@@ -370,11 +389,7 @@ class WordForgeWorker(threading.Thread):
             self._processed_terms.add(term)
 
             # Calculate processing depth based on term and system state
-            current_queue_depth = (
-                self.queue_manager.size
-                if isinstance(self.queue_manager.size, int)
-                else self.queue_manager.size
-            )
+            current_queue_depth = self.queue_manager.size if self.queue_manager else 0
             processing_depth = self._calculate_processing_depth(
                 term, current_queue_depth
             )
@@ -383,30 +398,62 @@ class WordForgeWorker(threading.Thread):
             start_time = time.time()
 
             # Process the word
-            if hasattr(self.parser_refiner, "process_term"):
-                # Use process_term if available
-                result = self.parser_refiner.process_term(term, depth=processing_depth)
-            else:
-                # Fallback to process_word
-                result = self.parser_refiner.process_word(term)
+            process_success = self.parser_refiner.process_word(term)
 
             # Calculate duration
             duration = time.time() - start_time
 
-            # Gather relationship data if word exists in database
-            relationship_counts = {}
-            if self.db_manager:
-                if hasattr(self.db_manager, "get_word_if_exists"):
-                    word_entry = self.db_manager.get_word_if_exists(term)
-                    if word_entry:
-                        relationships = word_entry.get("relationships", [])
-                        relationship_count = len(relationships)
-                        relationship_counts = self._categorize_relationships(
-                            relationships
-                        )
-
-            # Create result object
+            # Create result dictionary from the boolean result
             result = {
+                "success": process_success,
+                "term": term,
+                "duration": duration,
+                "relationships_count": 0,  # Default values to be updated later
+                "relationship_types": {},
+                "new_terms_count": 0,
+                "processing_depth": processing_depth,
+            }
+
+            # Get word entry if db_manager is available
+            word_entry = None
+            if self.db_manager is not None:
+                try:
+                    word_entry = self.db_manager.get_word_entry(term)
+                except AttributeError:
+                    self.logger.warning(
+                        f"db_manager does not have get_word_entry method for term: {term}"
+                    )
+
+            # Gather relationship data if word exists in database
+            relationship_counts: Dict[str, int] = {}
+            if word_entry:
+                # Safely extract relationships as a sequence of dictionaries
+                relationships = word_entry.get("relationships", [])
+                # Cast to appropriate type for compatibility
+                relationships_compatible = cast(Sequence[Dict[str, Any]], relationships)
+                relationship_counts = self._categorize_relationships(
+                    relationships_compatible
+                )
+                self._update_term_frequency(term)
+                self._processing_patterns.append(term)
+
+                # Convert strings to dictionary format for _categorize_relationships
+                recent_patterns = self._get_recent_term_pattern()
+                self.logger.info(f"Recent term patterns: {recent_patterns}")
+
+                # Create dictionary objects for each pattern string
+                pattern_dicts: List[Dict[str, Any]] = [
+                    {"term": p} for p in recent_patterns
+                ]
+                relationship_types = self._categorize_relationships(pattern_dicts)
+
+                self._update_term_frequency(term)
+                self._processing_patterns.append(term)
+                self.logger.info(f"Processing patterns: {self._processing_patterns}")
+                self.logger.info(f"Relationship types: {relationship_types}")
+
+            # Create result object with properly typed fields
+            result: Dict[str, Any] = {
                 "success": True,
                 "term": term,
                 "duration": duration,
@@ -464,30 +511,26 @@ class WordForgeWorker(threading.Thread):
 
         # If a term appears frequently, it might be semantically central
         if self._term_frequencies[term] >= 5:
-            # Log high-frequency terms and consider optimizing their processing
-            self.stats.add_event(
-                {
-                    "timestamp": time.time(),
-                    "event_type": "high_frequency_term",
-                    "term": term,
-                    "frequency": self._term_frequencies[term],
-                }
-            )
+
+            self.logger.info(f"Term '{term}' is frequently encountered.")
 
     def _get_recent_term_pattern(self) -> List[str]:
         """Identify recent processing patterns to detect semantic clusters."""
-        return [
-            event.get("term", "")
-            for event in self.stats.recent_events[-10:]
-            if event.get("event_type") == "processed" and event.get("term") is not None
-        ]
+        patterns: List[str] = []
+        for event in self.stats.recent_events[-10:]:
+            if event.get("event_type") == "processed" and event.get("term") is not None:
+                term = event.get("term", "")
+                if isinstance(term, str):
+                    patterns.append(term)
+        return patterns
 
     def _categorize_relationships(
-        self, relationships: List[Dict[str, Any]]
+        self, relationships: Sequence[Dict[str, Any]]
     ) -> Dict[str, int]:
         """Categorize relationship types for semantic analysis."""
         type_counts: Dict[str, int] = {}
         for rel in relationships:
+            # Handle both regular relationship objects and our pattern objects
             rel_type = rel.get("type", "unknown")
             if rel_type not in type_counts:
                 type_counts[rel_type] = 0
@@ -555,7 +598,7 @@ class WordForgeWorker(threading.Thread):
                     "timestamp": time.time(),
                     "event_type": "term_relationships",
                     "term": term,
-                    "new_terms": new_terms_count,
+                    "details": {"new_terms": new_terms_count},
                 }
             )
 
@@ -576,7 +619,14 @@ class WordForgeWorker(threading.Thread):
             # Extract related terms and prioritize them
             related_terms = self._get_related_terms(term)
             for related_term in related_terms:
-                self.queue_manager.prioritize(related_term)
+                # Use getattr to safely call the prioritize method
+                prioritize_method = getattr(self.queue_manager, "prioritize", None)
+                if callable(prioritize_method):
+                    prioritize_method(related_term)
+                else:
+                    self.logger.debug(
+                        f"Cannot prioritize term '{related_term}': QueueManager has no prioritize method"
+                    )
 
     def _get_related_terms(self, term: str) -> List[str]:
         """Get terms related to the given term from our dependency graph."""
@@ -708,6 +758,11 @@ class WordForgeWorker(threading.Thread):
             # Import only if we need it to avoid unnecessary dependencies
             from word_forge.graph.graph_worker import GraphWorker
 
+            # Only create GraphManager if db_manager is not None
+            if self.db_manager is None:
+                self.logger.debug("Cannot start graph worker: db_manager is None")
+                return
+
             graph_worker = GraphWorker(
                 graph_manager=GraphManager(db_manager=self.db_manager)
             )
@@ -726,15 +781,23 @@ class WordForgeWorker(threading.Thread):
         """Try to start an emotion analysis worker if dependencies are available."""
         try:
             # Import only if we need it to avoid unnecessary dependencies
-            from word_forge.emotion.emotion_analyzer import EmotionAnalyzer
             from word_forge.emotion.emotion_worker import EmotionWorker
 
+            # Ensure db_manager is not None before starting worker
+            if self.db_manager is None:
+                self.logger.debug("Cannot start emotion worker: db_manager is None")
+                return
+
+            # We've already checked db_manager is not None, so we can safely assert this for type checking
+            assert (
+                self.db_manager is not None
+            ), "db_manager should not be None at this point"
+
             emotion_worker = EmotionWorker(
-                db_manager=self.db_manager if self.db_manager is not None else None,
-                analyzer=EmotionAnalyzer(
-                    db=self.db_manager if self.db_manager is not None else None
-                ),
-                sleep_interval=5.0,
+                db=self.db_manager,
+                emotion_manager=self.emotion_manager,
+                poll_interval=5.0,
+                batch_size=10,
             )
             emotion_worker.daemon = True
             emotion_worker.start()
@@ -751,13 +814,34 @@ class WordForgeWorker(threading.Thread):
         """Try to start a vector embedding worker if dependencies are available."""
         try:
             # Import only if we need it
-            from word_forge.vector.vector_worker import VectorEmbeddingWorker
+            from word_forge.vectorizer.vector_worker import VectorWorker
 
-            vector_worker = VectorEmbeddingWorker(
-                db=self.db_manager if self.db_manager is not None else None,
-                sleep_interval=3.0,
+            # Ensure db_manager and vector_store are not None before starting worker
+            if self.db_manager is None:
+                self.logger.debug("Cannot start vector worker: db_manager is None")
+                return
+
+            if self.vector_store is None:
+                self.logger.debug("Cannot start vector worker: vector_store is None")
+                return
+
+            if self.embedder is None:
+                self.logger.debug("Cannot start vector worker: embedder is None")
+                return
+
+            # Check if embedder is compatible with the Embedder protocol
+            if not self.embedder:
+                self.logger.debug("Cannot start vector worker: embedder is None")
+                return
+
+            vector_worker = VectorWorker(
+                db=self.db_manager,
+                vector_store=self.vector_store,
+                embedder=self.embedder,  # Now we've verified this is either an Embedder or a string model name
+                poll_interval=5.0,
+                daemon=True,
+                logger=self.logger,
             )
-            vector_worker.daemon = True
             vector_worker.start()
 
             self.auxiliary_workers.append(vector_worker)
@@ -772,14 +856,20 @@ class WordForgeWorker(threading.Thread):
             return
 
         self.logger.info(f"Stopping {len(self.auxiliary_workers)} auxiliary workers")
-        remaining_workers = []
+        remaining_workers: List[threading.Thread] = []
 
         # First try to stop workers gracefully
         for worker in self.auxiliary_workers:
             # Check if worker has stop method
-            if hasattr(worker, "stop"):
-                worker.stop()
-                self.logger.debug(f"Requested stop for {worker.__class__.__name__}")
+            if hasattr(worker, "stop") and callable(getattr(worker, "stop", None)):
+                try:
+                    getattr(worker, "stop")()
+                    self.logger.debug(f"Requested stop for {worker.__class__.__name__}")
+                except Exception as e:
+                    self.logger.debug(
+                        f"Error stopping {worker.__class__.__name__}: {e}"
+                    )
+                    remaining_workers.append(worker)
             else:
                 self.logger.debug(f"No stop method for {worker.__class__.__name__}")
                 # Add to remaining so we can join it
@@ -808,49 +898,6 @@ class WordForgeWorker(threading.Thread):
             self.logger.warning(
                 f"{len(self.auxiliary_workers)} workers could not be stopped gracefully"
             )
-
-
-def create_demo_files(data_dir: Path) -> None:
-    """
-    Create sample dictionary files for demonstration.
-
-    Args:
-        data_dir: Directory to create files in
-    """
-    # Create demo dictionary as JSON
-    demo_dict = {
-        "algorithm": {
-            "definition": "A step-by-step procedure for solving a problem",
-            "part_of_speech": "noun",
-            "examples": ["The sorting algorithm arranges elements in order."],
-        },
-        "data": {
-            "definition": "Facts or information used for analysis or reasoning",
-            "part_of_speech": "noun",
-            "examples": ["The program processes large amounts of data."],
-        },
-    }
-
-    # Create sample thesaurus entries
-    thesaurus_entries = [
-        {"word": "algorithm", "synonyms": ["procedure", "process", "method"]},
-        {"word": "data", "synonyms": ["information", "facts", "figures"]},
-    ]
-
-    # Write sample files
-    with open(data_dir / "openthesaurus.jsonl", "w") as f:
-        for entry in thesaurus_entries:
-            f.write(json.dumps(entry) + "\n")
-
-    with open(data_dir / "odict.json", "w") as f:
-        json.dump(demo_dict, f, indent=2)
-
-    with open(data_dir / "opendict.json", "w") as f:
-        json.dump(demo_dict, f, indent=2)
-
-    with open(data_dir / "thesaurus.jsonl", "w") as f:
-        for entry in thesaurus_entries:
-            f.write(json.dumps(entry) + "\n")
 
 
 def create_progress_bar(current: int, total: int, width: int = 40) -> str:
@@ -941,9 +988,6 @@ def main() -> None:
     data_dir = Path(os.path.join(temp_dir, "data"))
     data_dir.mkdir(exist_ok=True)
 
-    # Create sample dictionary files
-    create_demo_files(data_dir)
-
     # Initialize components
     from word_forge.database.db_manager import DBManager
     from word_forge.parser.parser_refiner import ParserRefiner
@@ -971,17 +1015,19 @@ def main() -> None:
         "system",
     ]
 
-    processed_results = []
+    processed_results: List[ProcessingResult] = []
 
     # Process results callback
     def on_word_processed(result: ProcessingResult) -> None:
         """Callback that receives processing results."""
         processed_results.append(result)
-        if result["success"]:
-            logger.info(f"Processed '{result['term']}' in {result['duration']:.3f}s")
+        if result.get("success", False):
+            logger.info(
+                f"Processed '{result.get('term', '')}' in {result.get('duration', 0.0):.3f}s"
+            )
         else:
             logger.warning(
-                f"Failed to process '{result['term']}': {result.get('error', 'Unknown error')}"
+                f"Failed to process '{result.get('term', '')}': {result.get('error', 'Unknown error')}"
             )
 
     logger.info(f"Seeding queue with {len(seed_words)} initial words...")
@@ -994,6 +1040,7 @@ def main() -> None:
         parser_refiner,
         queue_manager,
         db_manager=db_manager,
+        emotion_manager=EmotionManager(db_manager),
         sleep_interval=0.05,
         logger=logger,
         result_callback=on_word_processed,
@@ -1040,6 +1087,7 @@ def main() -> None:
             # Check for processing milestones
             if (
                 next_milestone_idx < len(milestones)
+                and isinstance(processed, (int, float))
                 and processed >= milestones[next_milestone_idx]
             ):
                 milestone = milestones[next_milestone_idx]
@@ -1065,7 +1113,10 @@ def main() -> None:
             ["Total Runtime", f"{stats['runtime_formatted']}"],
             ["Words Processed", f"{stats['processed_count']}"],
             ["Processing Rate", f"{stats['processing_rate_per_minute']:.1f} words/min"],
-            ["Avg Processing Time", f"{stats['avg_processing_time']*1000:.1f} ms"],
+            [
+                "Avg Processing Time",
+                f"{(float(stats['avg_processing_time']) if isinstance(stats['avg_processing_time'], (int, float)) else 0.0)*1000:.1f} ms",
+            ],
             ["Error Count", f"{stats['error_count']}"],
             ["Queue Items Remaining", f"{stats['queue_size']}"],
             ["Unique Words Seen", f"{stats['total_unique_words']}"],
