@@ -1,5 +1,4 @@
 """
-
 This module provides a comprehensive configuration framework for emotion analysis operations
 in the Word Forge system. It centralizes parameters, constraints, and database schemas
 for processing and storing emotion-related data.
@@ -16,6 +15,9 @@ Features:
 - Categorical emotion classification with keyword-based detection
 - Database schema definitions for persistent emotion storage
 - Environment variable mapping for runtime configuration
+- Dynamic keyword registry with multiple data source support
+- SQL dialect adapters for database portability
+- Self-optimizing emotion detection through performance metrics
 
 Usage examples:
     # Create default configuration
@@ -32,10 +34,21 @@ Usage examples:
         logger.warning(result.message)  # "Arousal value 1.2 is outside valid range (0.0, 1.0)"
 
     # Access SQL templates for database operations
-    db.execute(config.SQL_CREATE_WORD_EMOTION_TABLE)
+    db.execute(config.get_sql_template("create_word_emotion_table"))
 
     # Get keywords associated with an emotion
-    happiness_keywords = config.get_keywords_for_emotion("happiness")
+    happiness_keywords = config.get_keywords_for_emotion(EmotionCategory.HAPPINESS)
+
+    # Load additional keywords from external source
+    config.keyword_registry.load_from_json("custom_emotions.json")
+
+    # Record detection results for optimization
+    metrics = EmotionDetectionMetrics()
+    metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS)  # True positive
+
+    # Optimize weights based on detection performance
+    optimized_weights = metrics.optimize_weights(config)
+    config.per_category_weights.update(optimized_weights)
 
     The emotion system uses a hybrid approach combining:
     - Dimensional model: Valence (positive/negative) and arousal (intensity)
@@ -45,33 +58,13 @@ Usage examples:
 
 Dependencies:
     - word_forge.configs.config_essentials: For EmotionRange and EnvMapping types
-Emotional Configuration module for Word Forge.
-
-This module provides configuration parameters for emotion analysis operations,
-including sentiment analysis settings, emotional classification rules, and
-database schema definitions for storing emotion-related data.
-
-The module contains:
-    - SQL template constants for database operations
-    - EmotionConfig dataclass with configurable parameters
-    - Validation methods for emotional measurements
-    - Property accessors for backward compatibility
-
-Architecture:
-    ┌──────────────────────┐
-    │   EmotionConfig      │
-    └──────────┬───────────┘
-               │
-    ┌──────────┴───────────┐
-    │  Emotion Parameters  │
-    └──────────────────────┘
-    ┌─────┬─────┬──────────┐
-    │ SQL │Range│Classif.  │
-    └─────┴─────┴──────────┘
 """
 
 from dataclasses import dataclass, field
+from enum import Enum, auto
+from math import isclose
 from typing import (
+    Any,
     ClassVar,
     Dict,
     Final,
@@ -81,14 +74,104 @@ from typing import (
     Protocol,
     TypedDict,
     TypeVar,
+    Union,
+    overload,
 )
 
 from word_forge.configs.config_essentials import EmotionRange, EnvMapping
 
-# Type definitions for better structural typing
-EmotionCategory = Literal[
+# Legacy type definition for backward compatibility
+EmotionCategoryLiteral = Literal[
     "happiness", "sadness", "anger", "fear", "surprise", "disgust", "neutral"
 ]
+
+
+# Modern Enum-based implementation
+class EmotionCategory(Enum):
+    """
+    Enumeration of supported emotion categories with associated metadata.
+
+    Each emotion category has a string label, weight, and detection threshold.
+    These values can be used to fine-tune emotion classification algorithms.
+
+    Attributes:
+        label: String representation of the emotion
+        weight: Default weight for this emotion in classification algorithms
+        threshold: Minimum confidence threshold for detection
+    """
+
+    HAPPINESS = ("happiness", 0.8, 0.7)
+    SADNESS = ("sadness", 0.7, 0.6)
+    ANGER = ("anger", 0.8, 0.8)
+    FEAR = ("fear", 0.7, 0.7)
+    SURPRISE = ("surprise", 0.6, 0.5)
+    DISGUST = ("disgust", 0.7, 0.7)
+    NEUTRAL = ("neutral", 0.3, 0.3)
+
+    def __init__(self, label: str, weight: float, threshold: float):
+        self.label = label
+        self.weight = weight  # Category-specific weight
+        self.threshold = threshold  # Detection threshold
+
+    @classmethod
+    def from_label(cls, label: str) -> "EmotionCategory":
+        """
+        Convert string label to enum value.
+
+        Args:
+            label: String representation of the emotion
+
+        Returns:
+            The corresponding EmotionCategory enum value
+
+        Raises:
+            ValueError: If the label doesn't match any known emotion category
+
+        Examples:
+            >>> EmotionCategory.from_label("happiness")
+            EmotionCategory.HAPPINESS
+            >>> EmotionCategory.from_label("unknown")
+            Traceback (most recent call last):
+            ...
+            ValueError: Unknown emotion category: unknown
+        """
+        for emotion in cls:
+            if emotion.label == label:
+                return emotion
+        raise ValueError(f"Unknown emotion category: {label}")
+
+    def __str__(self) -> str:
+        """Return the string label of the emotion category."""
+        return self.label
+
+
+# Type conversion helper for backward compatibility
+EmotionCategoryType = Union[EmotionCategory, EmotionCategoryLiteral]
+
+
+def normalize_emotion_category(category: EmotionCategoryType) -> EmotionCategory:
+    """
+    Convert any emotion category representation to an EmotionCategory enum.
+
+    Handles both string literals and EmotionCategory enum values for
+    backward compatibility.
+
+    Args:
+        category: String label or EmotionCategory enum
+
+    Returns:
+        EmotionCategory enum value
+
+    Raises:
+        ValueError: If the category can't be converted to a valid EmotionCategory
+    """
+    if isinstance(category, EmotionCategory):
+        return category
+    try:
+        return EmotionCategory.from_label(category)
+    except ValueError as e:
+        raise ValueError(f"Invalid emotion category: {category}") from e
+
 
 T = TypeVar("T")  # Generic type for validation results
 
@@ -220,6 +303,443 @@ SQL_GET_MESSAGE_EMOTION: Final[
 """
 
 
+# ==========================================
+# SQL Dialect Support
+# ==========================================
+
+
+class SQLDialect(Enum):
+    """
+    SQL dialect types supported by the system.
+
+    Different database systems use slightly different SQL syntax.
+    This enum enables dialect-specific template adaptations.
+    """
+
+    SQLITE = auto()
+    POSTGRESQL = auto()
+    MYSQL = auto()
+
+
+@dataclass
+class EmotionSQLTemplates:
+    """
+    SQL templates for emotion data operations with dialect support.
+
+    Provides database-agnostic access to SQL templates, automatically
+    adapting the syntax to match the configured dialect.
+
+    Attributes:
+        dialect: The SQL dialect to use for template adaptation
+    """
+
+    dialect: SQLDialect = SQLDialect.SQLITE
+
+    def get_template(self, operation: str) -> str:
+        """
+        Get SQL template for a specific operation with dialect adaptations.
+
+        Args:
+            operation: Name of the SQL operation to retrieve
+
+        Returns:
+            SQL query string adapted to the configured dialect
+
+        Examples:
+            >>> templates = EmotionSQLTemplates(dialect=SQLDialect.POSTGRESQL)
+            >>> sql = templates.get_template("create_word_emotion_table")
+            >>> "SERIAL PRIMARY KEY" in sql  # PostgreSQL syntax
+            True
+        """
+        template = self._get_base_template(operation)
+        return self._adapt_to_dialect(template)
+
+    def _get_base_template(self, operation: str) -> str:
+        """
+        Get the base SQL template for an operation.
+
+        Args:
+            operation: Name of the SQL operation
+
+        Returns:
+            Base SQL template string (SQLite syntax)
+        """
+        templates = {
+            "create_word_emotion_table": SQL_CREATE_WORD_EMOTION_TABLE,
+            "create_message_emotion_table": SQL_CREATE_MESSAGE_EMOTION_TABLE,
+            "insert_word_emotion": SQL_INSERT_WORD_EMOTION,
+            "get_word_emotion": SQL_GET_WORD_EMOTION,
+            "insert_message_emotion": SQL_INSERT_MESSAGE_EMOTION,
+            "get_message_emotion": SQL_GET_MESSAGE_EMOTION,
+        }
+        return templates.get(operation, "")
+
+    def _adapt_to_dialect(self, template: str) -> str:
+        """
+        Adapt SQL template to the configured dialect.
+
+        Args:
+            template: Base SQL template (SQLite syntax)
+
+        Returns:
+            SQL template adapted to the configured dialect
+        """
+        if self.dialect == SQLDialect.SQLITE:
+            return template
+        elif self.dialect == SQLDialect.POSTGRESQL:
+            # Convert SQLite syntax to PostgreSQL
+            return template.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
+        elif self.dialect == SQLDialect.MYSQL:
+            # Convert SQLite syntax to MySQL
+            return template.replace(
+                "INTEGER PRIMARY KEY", "INT AUTO_INCREMENT PRIMARY KEY"
+            )
+        return template
+
+
+# ==========================================
+# Emotion Keyword Registry
+# ==========================================
+
+
+@dataclass
+class EmotionKeywordRegistry:
+    """
+    Registry for managing emotion keywords with dynamic loading capabilities.
+
+    Provides a centralized repository for emotion-related keywords that can be
+    loaded from multiple sources and accessed by emotion category.
+
+    Attributes:
+        _keywords: Dictionary mapping emotion categories to keyword lists
+        _sources: List of data sources that have been loaded
+    """
+
+    _keywords: Dict[EmotionCategory, List[str]] = field(default_factory=dict)
+    _sources: List[str] = field(default_factory=list)
+
+    def load_from_json(self, path: str) -> None:
+        """
+        Load emotion keywords from a JSON file.
+
+        The JSON file should have a structure like:
+        {
+            "happiness": ["joyful", "elated", ...],
+            "sadness": ["miserable", "depressed", ...],
+            ...
+        }
+
+        Args:
+            path: Path to the JSON file
+
+        Raises:
+            FileNotFoundError: If the JSON file doesn't exist
+            json.JSONDecodeError: If the JSON file is invalid
+        """
+        import json
+
+        with open(path, "r") as f:
+            data = json.load(f)
+            self._update_from_dict(data)
+            self._sources.append(path)
+
+    def load_from_database(self, connection: Any, query: str) -> None:
+        """
+        Load emotion keywords from a database.
+
+        Args:
+            connection: Database connection object
+            query: SQL query that returns rows with (emotion, keyword) columns
+
+        Raises:
+            Exception: If a database error occurs
+        """
+        cursor = connection.cursor()
+        cursor.execute(query)
+
+        emotion_keywords: Dict[str, List[str]] = {}
+        for emotion_label, keyword in cursor.fetchall():
+            if emotion_label not in emotion_keywords:
+                emotion_keywords[emotion_label] = []
+            emotion_keywords[emotion_label].append(keyword)
+
+        self._update_from_dict(emotion_keywords)
+        self._sources.append(f"database:{query}")
+
+    @overload
+    def get_keywords(self, emotion: EmotionCategory) -> List[str]: ...
+
+    @overload
+    def get_keywords(self, emotion: EmotionCategoryLiteral) -> List[str]: ...
+
+    def get_keywords(self, emotion: EmotionCategoryType) -> List[str]:
+        """
+        Get keywords for a specific emotion category.
+
+        Args:
+            emotion: Emotion category (enum or string label)
+
+        Returns:
+            List of keywords associated with the emotion
+
+        Examples:
+            >>> registry = EmotionKeywordRegistry()
+            >>> registry.register_keywords(EmotionCategory.HAPPINESS, ["joyful", "elated"])
+            >>> registry.get_keywords(EmotionCategory.HAPPINESS)
+            ['joyful', 'elated']
+            >>> registry.get_keywords("happiness")  # String label also works
+            ['joyful', 'elated']
+        """
+        category = normalize_emotion_category(emotion)
+        return self._keywords.get(category, [])
+
+    @overload
+    def register_keywords(
+        self, emotion: EmotionCategory, keywords: List[str]
+    ) -> None: ...
+
+    @overload
+    def register_keywords(
+        self, emotion: EmotionCategoryLiteral, keywords: List[str]
+    ) -> None: ...
+
+    def register_keywords(
+        self, emotion: EmotionCategoryType, keywords: List[str]
+    ) -> None:
+        """
+        Register new keywords for an emotion category.
+
+        Args:
+            emotion: Emotion category (enum or string label)
+            keywords: List of keywords to associate with the emotion
+
+        Examples:
+            >>> registry = EmotionKeywordRegistry()
+            >>> registry.register_keywords(EmotionCategory.HAPPINESS, ["joyful", "elated"])
+            >>> registry.register_keywords("sadness", ["miserable", "depressed"])
+        """
+        category = normalize_emotion_category(emotion)
+        if category in self._keywords:
+            self._keywords[category].extend(
+                [k for k in keywords if k not in self._keywords[category]]
+            )
+        else:
+            self._keywords[category] = keywords.copy()
+
+    def _update_from_dict(self, data: Dict[str, List[str]]) -> None:
+        """
+        Update registry from a dictionary mapping.
+
+        Args:
+            data: Dictionary mapping emotion labels to keyword lists
+        """
+        for label, keywords in data.items():
+            try:
+                emotion = EmotionCategory.from_label(label)
+                self.register_keywords(emotion, keywords)
+            except ValueError:
+                continue  # Skip unknown emotion categories
+
+    def clear(self) -> None:
+        """Clear all registered keywords and sources."""
+        self._keywords.clear()
+        self._sources.clear()
+
+    def get_sources(self) -> List[str]:
+        """Get list of loaded data sources."""
+        return self._sources.copy()
+
+
+# ==========================================
+# Emotion Detection Metrics
+# ==========================================
+
+
+@dataclass
+class EmotionDetectionMetrics:
+    """
+    Metrics for tracking and optimizing emotion detection performance.
+
+    Records detection outcomes and provides methods for calculating performance
+    metrics and optimizing detection parameters.
+
+    Attributes:
+        total_detections: Total number of emotion detections recorded
+        true_positives: Count of correct detections by emotion category
+        false_positives: Count of incorrect detections by emotion category
+    """
+
+    total_detections: int = 0
+    true_positives: Dict[EmotionCategory, int] = field(
+        default_factory=lambda: {e: 0 for e in EmotionCategory}
+    )
+    false_positives: Dict[EmotionCategory, int] = field(
+        default_factory=lambda: {e: 0 for e in EmotionCategory}
+    )
+    false_negatives: Dict[EmotionCategory, int] = field(
+        default_factory=lambda: {e: 0 for e in EmotionCategory}
+    )
+
+    @overload
+    def record_detection(
+        self, predicted: EmotionCategory, actual: EmotionCategory
+    ) -> None: ...
+
+    @overload
+    def record_detection(
+        self, predicted: EmotionCategoryLiteral, actual: EmotionCategoryLiteral
+    ) -> None: ...
+
+    def record_detection(
+        self, predicted: EmotionCategoryType, actual: EmotionCategoryType
+    ) -> None:
+        """
+        Record a detection result for optimization metrics.
+
+        Args:
+            predicted: Emotion category predicted by the system
+            actual: Actual emotion category (ground truth)
+
+        Examples:
+            >>> metrics = EmotionDetectionMetrics()
+            >>> metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS)
+            >>> metrics.true_positives[EmotionCategory.HAPPINESS]
+            1
+            >>> metrics.record_detection("anger", "fear")  # String labels also work
+            >>> metrics.false_positives[EmotionCategory.ANGER]
+            1
+            >>> metrics.false_negatives[EmotionCategory.FEAR]
+            1
+        """
+        pred_category = normalize_emotion_category(predicted)
+        actual_category = normalize_emotion_category(actual)
+
+        self.total_detections += 1
+        if pred_category == actual_category:
+            self.true_positives[pred_category] = (
+                self.true_positives.get(pred_category, 0) + 1
+            )
+        else:
+            self.false_positives[pred_category] = (
+                self.false_positives.get(pred_category, 0) + 1
+            )
+            self.false_negatives[actual_category] = (
+                self.false_negatives.get(actual_category, 0) + 1
+            )
+
+    def get_precision(self, category: EmotionCategoryType) -> float:
+        """
+        Calculate precision for a specific emotion category.
+
+        Precision = true positives / (true positives + false positives)
+
+        Args:
+            category: Emotion category to calculate precision for
+
+        Returns:
+            Precision value between 0.0 and 1.0
+
+        Examples:
+            >>> metrics = EmotionDetectionMetrics()
+            >>> metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS)
+            >>> metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.SADNESS)
+            >>> metrics.get_precision(EmotionCategory.HAPPINESS)
+            0.5
+        """
+        cat = normalize_emotion_category(category)
+        tp = self.true_positives.get(cat, 0)
+        fp = self.false_positives.get(cat, 0)
+        return tp / (tp + fp) if (tp + fp) > 0 else 0.0
+
+    def get_recall(self, category: EmotionCategoryType) -> float:
+        """
+        Calculate recall for a specific emotion category.
+
+        Recall = true positives / (true positives + false negatives)
+
+        Args:
+            category: Emotion category to calculate recall for
+
+        Returns:
+            Recall value between 0.0 and 1.0
+        """
+        cat = normalize_emotion_category(category)
+        tp = self.true_positives.get(cat, 0)
+        fn = self.false_negatives.get(cat, 0)
+        return tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+    def get_f1_score(self, category: EmotionCategoryType) -> float:
+        """
+        Calculate F1 score for a specific emotion category.
+
+        F1 = 2 * (precision * recall) / (precision + recall)
+
+        Args:
+            category: Emotion category to calculate F1 score for
+
+        Returns:
+            F1 score between 0.0 and 1.0
+        """
+        precision = self.get_precision(category)
+        recall = self.get_recall(category)
+        return (
+            2 * (precision * recall) / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+
+    def optimize_weights(self, config: "EmotionConfig") -> Dict[EmotionCategory, float]:
+        """
+        Recursively optimize category weights based on detection performance.
+
+        Adjusts weights higher for high-precision categories and lower for
+        low-precision categories to improve overall detection accuracy.
+
+        Args:
+            config: Current emotion configuration
+
+        Returns:
+            Dictionary mapping emotion categories to optimized weights
+
+        Examples:
+            >>> metrics = EmotionDetectionMetrics()
+            >>> config = EmotionConfig()
+            >>> # Record some detections...
+            >>> optimized_weights = metrics.optimize_weights(config)
+            >>> config.per_category_weights.update(optimized_weights)
+        """
+        new_weights: Dict[EmotionCategory, float] = {}
+
+        # If we don't have enough data, return current weights
+        if self.total_detections < 10:
+            return {cat: config.get_category_weight(cat) for cat in EmotionCategory}
+
+        # Optimize weights based on precision
+        for category in EmotionCategory:
+            precision = self.get_precision(category)
+            current_weight = config.get_category_weight(category)
+
+            # Adjust weight based on precision
+            if precision < 0.5:
+                # Low precision - decrease weight
+                new_weights[category] = max(0.1, current_weight * 0.9)
+            elif precision > 0.8:
+                # High precision - increase weight
+                new_weights[category] = min(1.0, current_weight * 1.1)
+            else:
+                # Maintain current weight
+                new_weights[category] = current_weight
+
+        return new_weights
+
+    def reset(self) -> None:
+        """Reset all metrics to zero."""
+        self.total_detections = 0
+        self.true_positives = {e: 0 for e in EmotionCategory}
+        self.false_positives = {e: 0 for e in EmotionCategory}
+        self.false_negatives = {e: 0 for e in EmotionCategory}
+
+
 @dataclass
 class EmotionConfig:
     """
@@ -239,6 +759,12 @@ class EmotionConfig:
         emotion_keywords: Dictionary mapping emotion categories to keywords
         min_keyword_confidence: Minimum confidence when no keywords found
         keyword_match_weight: Weight given to keyword matches in classification
+        keyword_registry: Registry for dynamic emotion keyword management
+        sql_dialect: SQL dialect to use for database operations
+        per_category_weights: Category-specific weights for classification
+        enable_caching: Whether to cache emotion analysis results
+        cache_ttl: Time-to-live for cached results in seconds
+        language: Language code for language-specific processing
         ENV_VARS: Mapping of environment variables to config attributes
 
     Examples:
@@ -247,7 +773,9 @@ class EmotionConfig:
         True
         >>> config.is_valid_valence(2.0)  # Out of range
         False
-        >>> config.SQL_GET_WORD_EMOTION  # Access SQL via property
+        >>> config.get_sql_template("get_word_emotion")  # New method
+        'SELECT word_id, valence, arousal, timestamp\\n    FROM word_emotion\\n    WHERE word_id = ?'
+        >>> config.SQL_GET_WORD_EMOTION  # Legacy property still works
         'SELECT word_id, valence, arousal, timestamp\\n    FROM word_emotion\\n    WHERE word_id = ?'
     """
 
@@ -343,6 +871,30 @@ class EmotionConfig:
     keyword_match_weight: float = 0.6
 
     # ==========================================
+    # Enhanced Configuration Options
+    # ==========================================
+
+    #: Registry for dynamic emotion keyword management
+    keyword_registry: EmotionKeywordRegistry = field(
+        default_factory=EmotionKeywordRegistry
+    )
+
+    #: SQL dialect to use for database operations
+    sql_dialect: SQLDialect = SQLDialect.SQLITE
+
+    #: Category-specific weights for classification
+    per_category_weights: Dict[EmotionCategory, float] = field(default_factory=dict)
+
+    #: Whether to cache emotion analysis results
+    enable_caching: bool = True
+
+    #: Time-to-live for cached results in seconds
+    cache_ttl: int = 3600
+
+    #: Language code for language-specific processing
+    language: str = "en"
+
+    # ==========================================
     # Environment Variable Configuration
     # ==========================================
 
@@ -353,6 +905,9 @@ class EmotionConfig:
         "WORD_FORGE_TEXTBLOB_WEIGHT": ("textblob_weight", float),
         "WORD_FORGE_MIN_KEYWORD_CONFIDENCE": ("min_keyword_confidence", float),
         "WORD_FORGE_KEYWORD_MATCH_WEIGHT": ("keyword_match_weight", float),
+        "WORD_FORGE_ENABLE_CACHING": ("enable_caching", bool),
+        "WORD_FORGE_CACHE_TTL": ("cache_ttl", int),
+        "WORD_FORGE_LANGUAGE": ("language", str),
     }
 
     # ==========================================
@@ -555,46 +1110,191 @@ class EmotionConfig:
             is_valid=is_valid, message=message, value=value, range=self.confidence_range
         )
 
-    def is_valid_emotion_category(self, category: str) -> bool:
+    def is_valid_emotion_category_string(self, category: str) -> bool:
         """
-        Check if an emotion category is valid according to configuration.
+        Check if an emotion category string is valid according to configuration.
 
         Validates that the provided category exists in the configured emotion keywords.
 
         Args:
-            category: The emotion category to validate
+            category: The emotion category string to validate
 
         Returns:
             bool: True if the category exists in configuration, False otherwise
 
         Examples:
             >>> config = EmotionConfig()
-            >>> config.is_valid_emotion_category("happiness")
+            >>> config.is_valid_emotion_category_string("happiness")
             True
-            >>> config.is_valid_emotion_category("confusion")  # Not in config
+            >>> config.is_valid_emotion_category_string("confusion")  # Not in config
             False
         """
         return category in self.emotion_keywords
 
-    def get_keywords_for_emotion(self, emotion: EmotionCategory) -> List[str]:
+    @overload
+    def get_keywords_for_emotion(self, emotion: EmotionCategory) -> List[str]: ...
+
+    @overload
+    def get_keywords_for_emotion(
+        self, emotion: EmotionCategoryLiteral
+    ) -> List[str]: ...
+
+    def get_keywords_for_emotion(self, emotion: EmotionCategoryType) -> List[str]:
         """
         Get the list of keywords associated with an emotion category.
 
+        Uses the keyword registry if populated, otherwise falls back to the
+        default emotion_keywords dictionary.
+
         Args:
-            emotion: The emotion category to retrieve keywords for
+            emotion: Emotion category (enum or string label)
 
         Returns:
             List of keywords associated with the emotion
 
         Raises:
-            KeyError: If the emotion category doesn't exist in configuration
+            ValueError: If the emotion category is invalid
 
         Examples:
             >>> config = EmotionConfig()
-            >>> config.get_keywords_for_emotion("happiness")
+            >>> config.get_keywords_for_emotion(EmotionCategory.HAPPINESS)
+            ['happy', 'joy', 'delight', 'pleased', 'glad', 'excited']
+            >>> config.get_keywords_for_emotion("happiness")  # String label also works
             ['happy', 'joy', 'delight', 'pleased', 'glad', 'excited']
         """
-        return self.emotion_keywords[emotion]
+        # Try the registry first
+        category = normalize_emotion_category(emotion)
+        registry_keywords = self.keyword_registry.get_keywords(category)
+        if registry_keywords:
+            return registry_keywords
+
+        # Fall back to the default dictionary
+        if isinstance(emotion, EmotionCategory):
+            emotion_label = emotion.label
+        else:
+            emotion_label = emotion
+
+        return self.emotion_keywords.get(emotion_label, [])
+
+    # ==========================================
+    # Enhanced Configuration Methods
+    # ==========================================
+
+    def validate_configuration(self) -> List[str]:
+        """
+        Validate the entire configuration for consistency and correctness.
+
+        Performs comprehensive checks on all configuration parameters to ensure
+        they form a valid, coherent configuration.
+
+        Returns:
+            List of validation issues (empty if configuration is valid)
+
+        Examples:
+            >>> config = EmotionConfig(vader_weight=0.8, textblob_weight=0.8)
+            >>> issues = config.validate_configuration()
+            >>> len(issues) > 0  # Configuration has issues
+            True
+            >>> "weights should sum to 1.0" in issues[0]
+            True
+        """
+        issues: List[str] = []
+
+        # Check weight normalization
+        vader_tb_sum = self.vader_weight + self.textblob_weight
+        if not isclose(vader_tb_sum, 1.0, abs_tol=0.01):
+            issues.append(
+                f"Vader and TextBlob weights should sum to 1.0, got {vader_tb_sum}"
+            )
+
+        # Check range validations
+        for name, range_val in [
+            ("valence", self.valence_range),
+            ("arousal", self.arousal_range),
+            ("confidence", self.confidence_range),
+        ]:
+            min_val, max_val = range_val
+            if min_val >= max_val:
+                issues.append(
+                    f"{name.capitalize()} range is invalid: {min_val} >= {max_val}"
+                )
+
+        # Check per-category weights
+        for category in EmotionCategory:
+            if category not in self.per_category_weights:
+                continue  # Using default weight is fine
+            weight = self.per_category_weights[category]
+            if not 0.0 <= weight <= 1.0:
+                issues.append(
+                    f"Invalid weight {weight} for {category.label}, must be between 0.0 and 1.0"
+                )
+
+        return issues
+
+    def get_category_weight(self, category: EmotionCategoryType) -> float:
+        """
+        Get the weight for a specific emotion category, with fallback to default.
+
+        Args:
+            category: Emotion category (enum or string label)
+
+        Returns:
+            Weight value for the category
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> config.per_category_weights[EmotionCategory.HAPPINESS] = 0.9
+            >>> config.get_category_weight(EmotionCategory.HAPPINESS)
+            0.9
+            >>> config.get_category_weight("anger")  # Falls back to default
+            0.6
+        """
+        cat = normalize_emotion_category(category)
+        return self.per_category_weights.get(cat, self.keyword_match_weight)
+
+    def get_sql_template(self, operation: str) -> str:
+        """
+        Get SQL template for a specific operation with dialect support.
+
+        Args:
+            operation: Name of the SQL operation to retrieve
+
+        Returns:
+            SQL query string adapted to the configured dialect
+
+        Examples:
+            >>> config = EmotionConfig(sql_dialect=SQLDialect.POSTGRESQL)
+            >>> sql = config.get_sql_template("create_word_emotion_table")
+            >>> "SERIAL PRIMARY KEY" in sql  # PostgreSQL syntax
+            True
+        """
+        templates = EmotionSQLTemplates(dialect=self.sql_dialect)
+        return templates.get_template(operation)
+
+    def is_valid_emotion_category(self, category: EmotionCategoryType) -> bool:
+        """
+        Check if an emotion category is valid according to configuration.
+
+        Args:
+            category: Emotion category to validate (enum or string label)
+
+        Returns:
+            True if the category is valid, False otherwise
+
+        Examples:
+            >>> config = EmotionConfig()
+            >>> config.is_valid_emotion_category(EmotionCategory.HAPPINESS)
+            True
+            >>> config.is_valid_emotion_category("happiness")  # String label also works
+            True
+            >>> config.is_valid_emotion_category("confusion")  # Not in config
+            False
+        """
+        try:
+            normalize_emotion_category(category)
+            return True
+        except ValueError:
+            return False
 
     # ==========================================
     # SQL Template Properties
@@ -663,12 +1363,20 @@ class EmotionConfig:
 
 
 __all__ = [
-    # Main class
+    # Main classes
     "EmotionConfig",
+    "EmotionKeywordRegistry",
+    "EmotionDetectionMetrics",
+    # Enums
+    "EmotionCategory",
+    "SQLDialect",
     # Type definitions
     "EmotionValidationResult",
-    "EmotionCategory",
+    "EmotionCategoryLiteral",
     "EmotionKeywordsDict",
+    "VaderSentimentScores",
+    # Helper functions
+    "normalize_emotion_category",
     # SQL Constants (for backward compatibility)
     "SQL_CREATE_WORD_EMOTION_TABLE",
     "SQL_CREATE_MESSAGE_EMOTION_TABLE",
