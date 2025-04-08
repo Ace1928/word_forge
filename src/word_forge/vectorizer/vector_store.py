@@ -45,7 +45,7 @@ from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
 from word_forge.config import config
-from word_forge.database.db_manager import DatabaseError, DBManager, WordEntryDict
+from word_forge.database.database_manager import DatabaseError, DBManager, WordEntryDict
 from word_forge.emotion.emotion_manager import EmotionManager
 
 # Type definitions for clarity and constraint

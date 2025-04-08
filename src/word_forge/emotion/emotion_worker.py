@@ -22,7 +22,7 @@ from typing import (
 )
 
 from word_forge.config import config
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.emotion.emotion_processor import RecursiveEmotionProcessor
 from word_forge.emotion.emotion_types import EmotionDimension
@@ -851,7 +851,7 @@ class EmotionWorker(threading.Thread):
 
 def main() -> None:
     """Demonstrate EmotionWorker initialization and operation."""
-    from word_forge.database.db_manager import DBManager
+    from word_forge.database.database_manager import DBManager
     from word_forge.emotion.emotion_manager import EmotionManager
 
     # Initialize dependencies with a configured file path

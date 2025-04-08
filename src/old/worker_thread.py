@@ -12,7 +12,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
 
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.graph.graph_manager import GraphManager
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import EmptyQueueError, QueueManager
@@ -948,7 +948,7 @@ def main() -> None:
     create_demo_files(data_dir)
 
     # Initialize components
-    from word_forge.database.db_manager import DBManager
+    from word_forge.database.database_manager import DBManager
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager
 

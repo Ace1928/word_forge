@@ -40,8 +40,8 @@ import numpy as np
 # Import pyvis with a type ignore comment to fix the missing stub issue
 from pyvis.network import Network  # type: ignore
 
-from word_forge.database import db_manager as database_manager  # File/Module
-from word_forge.database.db_manager import DBManager  # Class/Instance
+from word_forge.database import database_manager as database_manager  # File/Module
+from word_forge.database.database_manager import DBManager  # Class/Instance
 from word_forge.exceptions import (
     GraphDimensionError,
     GraphError,

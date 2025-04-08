@@ -46,7 +46,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.vectorizer.vector_store import VectorStore
 
 

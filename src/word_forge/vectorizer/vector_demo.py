@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union, cast
 
-from word_forge.database.db_manager import DBManager, WordEntryDict
+from word_forge.database.database_manager import DBManager, WordEntryDict
 from word_forge.vectorizer.vector_store import (
     SearchResultDict,
     StorageType,

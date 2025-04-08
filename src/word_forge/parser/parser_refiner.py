@@ -9,7 +9,7 @@ import nltk  # type: ignore
 from nltk.corpus import wordnet as wn  # type: ignore
 
 from word_forge.configs.config_essentials import LexicalDataset
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset
 from word_forge.queue.queue_manager import QueueManager

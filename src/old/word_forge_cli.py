@@ -10,7 +10,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from word_forge.database.db_manager import DBManager, WordEntryDict
+from word_forge.database.database_manager import DBManager, WordEntryDict
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager

@@ -42,7 +42,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
 from textblob import TextBlob  # type: ignore
 
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_config import (
     EmotionCategory,
     EmotionCategoryType,

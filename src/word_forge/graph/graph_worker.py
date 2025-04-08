@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Protocol, TypedDict, final
 
 from word_forge.config import config
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.graph.graph_manager import GraphManager
 
 

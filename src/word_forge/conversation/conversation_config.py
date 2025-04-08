@@ -21,7 +21,7 @@ Architecture:
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cached_property
-from typing import ClassVar, Dict, List, Set
+from typing import Any, ClassVar, Dict, List, Set
 
 from word_forge.configs.config_essentials import (
     ConversationExportFormat,
@@ -141,7 +141,7 @@ class ConversationConfig:
         """
         return timedelta(days=self.auto_archive_days)
 
-    def validate_metadata(self, metadata: Dict[str, any]) -> bool:
+    def validate_metadata(self, metadata: Dict[str, Any]) -> bool:
         """
         Validate if provided metadata contains all required fields.
 
@@ -153,7 +153,7 @@ class ConversationConfig:
         """
         return all(field in metadata for field in self.required_metadata)
 
-    def get_missing_fields(self, metadata: Dict[str, any]) -> Set[str]:
+    def get_missing_fields(self, metadata: Dict[str, Any]) -> Set[str]:
         """
         Get required fields missing from provided metadata.
 

@@ -3,7 +3,7 @@ import time
 from contextlib import contextmanager
 from typing import List, Optional, TypedDict, cast
 
-from word_forge.database.db_manager import (  # type:ignore[import]
+from word_forge.database.database_manager import (  # type:ignore[import]
     DatabaseError,
     DBManager,
 )

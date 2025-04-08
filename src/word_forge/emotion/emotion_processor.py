@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, final
 
-from word_forge.database.db_manager import DBManager
+from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.emotion.emotion_types import (
     EmotionalConcept,
