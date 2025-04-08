@@ -7,7 +7,7 @@ import time
 import traceback
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional, Protocol, TypedDict, final
+from typing import Any, Dict, Optional, Protocol, TypedDict, final
 
 from word_forge.config import config
 from word_forge.database.database_manager import DBManager
@@ -75,9 +75,12 @@ class GraphWorkerInterface(Protocol):
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def get_status(self) -> WorkerStatus: ...
+    def get_metrics(self) -> Dict[str, Any]: ...  # Added get_metrics
     def is_alive(self) -> bool: ...
     def pause(self) -> None: ...  # Added for completeness
     def resume(self) -> None: ...  # Added for completeness
+    def restart(self) -> None: ...  # Added restart method
+    def run(self) -> None: ...
 
 
 @final
@@ -157,6 +160,45 @@ class GraphWorker(threading.Thread):
             self._pause_flag = False
             self._current_state = WorkerState.RUNNING
         self.logger.info("GraphWorker resumed")
+
+    def restart(self) -> None:
+        """
+        Restart the worker thread gracefully.
+
+        Stops the current thread if running, waits for it to terminate,
+        resets internal state, and starts a new thread.
+        """
+        self.logger.info("GraphWorker restarting...")
+
+        # Stop current thread if running
+        was_running = not self._stop_flag
+        self.stop()
+
+        # Wait for thread to terminate with timeout
+        if self.is_alive():
+            self.logger.info("Waiting for worker thread to terminate...")
+            self.join(timeout=5.0)
+
+            # If thread is still alive after timeout, warn but continue
+            if self.is_alive():
+                self.logger.warning(
+                    "Worker thread did not terminate cleanly, forcing restart"
+                )
+
+        # Reset control flags and state
+        self._stop_flag = False
+        self._pause_flag = False
+        self._last_update = None
+        self._start_time = None
+        self._update_count = 0
+        self._error_count = 0
+        self._last_error = None
+        self._current_state = WorkerState.STOPPED
+
+        # Only restart if it was running before
+        if was_running:
+            self.start()
+            self.logger.info("GraphWorker restarted")
 
     def run(self) -> None:
         """
@@ -373,6 +415,21 @@ class GraphWorker(threading.Thread):
             }
 
             return status
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get performance metrics for the graph worker.
+
+        Returns:
+            Dictionary containing metrics like update count and error count.
+        """
+        with self._status_lock:
+            return {
+                "update_count": self._update_count,
+                "error_count": self._error_count,
+                "last_update": self._last_update,
+                "last_error": self._last_error,
+            }
 
 
 def main() -> None:

@@ -156,11 +156,13 @@ class ConversationWorkerInterface(Protocol):
     def pause(self) -> None: ...
     def resume(self) -> None: ...
     def get_status(self) -> ConversationWorkerStatus: ...
+    def get_metrics(self) -> Dict[str, Any]: ...  # Added get_metrics
     def is_alive(self) -> bool: ...
     def process_task(self, task: ConversationTask) -> bool: ...
     def submit_message(
         self, conversation_id: int, message: str, speaker: str
     ) -> Optional[str]: ...
+    def run(self) -> None: ...
 
 
 @dataclass
@@ -958,6 +960,15 @@ class ConversationWorker(Thread):
         metrics_dict = self.metrics.get_metrics_dict()
 
         return self.state_tracker.to_dict(queue_size, metrics_dict)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get current worker performance metrics.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing performance metrics.
+        """
+        return self.metrics.get_metrics_dict()
 
     def process_task(self, task: ConversationTask) -> bool:
         """

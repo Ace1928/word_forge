@@ -97,6 +97,7 @@ class EmotionWorkerInterface(Protocol):
     def pause(self) -> None: ...  # Added pause method
     def resume(self) -> None: ...  # Added resume method
     def get_status(self) -> EmotionWorkerStatus: ...
+    def get_metrics(self) -> Dict[str, Any]: ...  # Added get_metrics
     def is_alive(self) -> bool: ...
 
 
@@ -573,6 +574,16 @@ class EmotionWorker(threading.Thread):
             - next_poll: Timestamp of next scheduled database poll
         """
         return self._state.to_dict(self.is_alive(), self._stop_flag)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get detailed worker performance metrics.
+
+        Returns:
+            Dictionary containing comprehensive metrics and statistics
+        """
+        # Reuse existing performance stats method
+        return self.get_performance_stats()
 
     def get_performance_stats(self) -> Dict[str, Any]:
         """
