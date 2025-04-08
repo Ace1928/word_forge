@@ -22,6 +22,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import (
@@ -40,7 +41,6 @@ from typing import (
 
 import chromadb
 import numpy as np
-import torch
 from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
@@ -49,7 +49,7 @@ from word_forge.database.db_manager import DatabaseError, DBManager, WordEntryDi
 from word_forge.emotion.emotion_manager import EmotionManager
 
 # Type definitions for clarity and constraint
-VectorID = int  # Unique identifier for vectors
+VectorID = Union[int, str]  # Unique identifier for vectors (compatible with ChromaDB)
 SearchResult = List[Tuple[VectorID, float]]  # (id, distance) pairs
 ContentType = Literal["word", "definition", "example", "message", "conversation"]
 EmbeddingList = List[float]  # Type for ChromaDB's embedding format
@@ -112,6 +112,25 @@ class SearchResultDict(TypedDict):
     text: Optional[str]
 
 
+class VectorItem(TypedDict):
+    """
+    Type definition for vector items to be stored.
+
+    Structured format for vector data with associated metadata and text.
+
+    Attributes:
+        id: VectorID - Unique identifier for the vector
+        text: str - Text content associated with the vector
+        metadata: VectorMetadata - Metadata for filtering and context
+        vector: NDArray[np.float32] - Vector embedding
+    """
+
+    id: VectorID
+    text: str
+    metadata: VectorMetadata
+    vector: NDArray[np.float32]
+
+
 class InstructionTemplate(TypedDict):
     """
     Type definition for instruction template.
@@ -120,9 +139,9 @@ class InstructionTemplate(TypedDict):
     that require specific prompting patterns.
 
     Attributes:
-        task: Description of the task to perform
-        query_prefix: Text to prepend to query inputs
-        document_prefix: Optional text to prepend to documents
+        task: str - Description of the task to perform
+        query_prefix: str - Text to prepend to query inputs
+        document_prefix: Optional[str] - Optional text to prepend to documents
     """
 
     task: str
@@ -298,6 +317,19 @@ class VectorStore:
         emotion_manager: Optional emotion manager for sentiment analysis
     """
 
+    # Declare class attributes with type annotations
+    dimension: int
+    model: SentenceTransformer
+    model_name: str
+    client: ChromaClient
+    collection: ChromaCollection
+    index_path: Path
+    storage_type: StorageType
+    db_manager: Optional[DBManager]
+    emotion_manager: Optional[EmotionManager]
+    logger: logging.Logger
+    instruction_templates: Dict[str, InstructionTemplate]
+
     def __init__(
         self,
         dimension: Optional[int] = None,
@@ -311,119 +343,158 @@ class VectorStore:
         """
         Initialize the vector store with specified configuration.
 
+        Sets up the embedding model, storage backend, and all necessary
+        components for the vector store to function properly. Connects to
+        persistent storage and loads or initializes required models.
+
         Args:
             dimension: Optional override for vector dimensions
-            model_name: Name of the SentenceTransformer model to use
-            index_path: Path for persistent storage (used with DISK storage)
-            storage_type: Whether to use in-memory or disk-based storage
-            collection_name: Name for the collection
-            db_manager: Optional DB manager for term/content lookups
+            model_name: Optional embedding model to use
+            index_path: Optional path for vector storage
+            storage_type: Optional storage type (memory or disk)
+            collection_name: Optional name for the vector collection
+            db_manager: Optional database manager for content lookup
             emotion_manager: Optional emotion manager for sentiment analysis
 
         Raises:
-            InitializationError: If ChromaDB initialization fails
-            ModelLoadError: If the embedding model fails to load
+            InitializationError: If initialization fails
+            ModelLoadError: If embedding model cannot be loaded
         """
-        # Use provided values or fall back to configuration
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
+
+        # Initialize dimension with a default value
+        self.dimension = 0
+
+        # Store configuration
         self.index_path = Path(index_path or config.vectorizer.index_path)
         self.storage_type = storage_type or config.vectorizer.storage_type
         self.db_manager = db_manager
         self.emotion_manager = emotion_manager
-        self._has_persist_method = False
         self.model_name = model_name or config.vectorizer.model_name
 
-        # Initialize embedding model
+        # Validate and create storage directory if needed
+        if self.storage_type != StorageType.MEMORY:
+            os.makedirs(self.index_path, exist_ok=True)
+
         try:
-            # Cast to str to satisfy type checker
-            model_name_str: str = str(self.model_name)
-            self.model = SentenceTransformer(model_name_str)  # type: ignore
+            if not hasattr(self, "model"):
+                self.model = SentenceTransformer(self.model_name)  # type: ignore
         except Exception as e:
-            raise ModelLoadError(f"Failed to load embedding model: {str(e)}") from e
+            raise ModelLoadError(
+                f"Failed to load embedding model '{self.model_name}': {str(e)}"
+            ) from e
 
-        # Determine embedding dimension - Fixed the error in dimension handling
-        embedding_dim = 0
-        if hasattr(self.model, "get_sentence_embedding_dimension"):
-            # Handle both function and property cases
-            if callable(self.model.get_sentence_embedding_dimension):
-                embedding_dim = self.model.get_sentence_embedding_dimension()
-            else:
-                embedding_dim = self.model.get_sentence_embedding_dimension
+        # Initialize embedding model first to determine dimension
+        try:
+            if dimension is not None:
+                self.dimension = dimension
+            elif (
+                hasattr(config.vectorizer, "dimension")
+                and config.vectorizer.dimension is not None
+            ):
+                self.dimension = config.vectorizer.dimension
+            # If model wasn't loaded to get dimension, load it now
+        except Exception as e:
+            raise ModelLoadError(
+                f"Failed to determine vector dimension: {str(e)}"
+            ) from e
 
-            # Convert tensor to scalar if needed
-            if hasattr(embedding_dim, "item"):
-                embedding_dim = embedding_dim.item()
-
-        # Safe fallback chain for dimension
-        if dimension is not None:
-            self.dimension = dimension
-        elif config.vectorizer.dimension is not None:
-            self.dimension = config.vectorizer.dimension
-        elif embedding_dim > 0:
-            self.dimension = embedding_dim
-        else:
-            # Default fallback
-            self.dimension = 1024
-
-        logging.info(f"Loaded model {self.model_name} with dimension {self.dimension}")
-
-        # Determine collection name from config or path if not provided
-        if collection_name is None:
-            collection_name = (
-                config.vectorizer.collection_name
-                or self.index_path.stem
-                or "word_forge_vectors"
-            )
-
+        # Initialize ChromaDB client and collection
         try:
             self.client = self._create_client()
-            # Check if client has persist method
-            self._has_persist_method = hasattr(self.client, "persist") and callable(
-                getattr(self.client, "persist")
+            collection_name = collection_name or (
+                config.vectorizer.collection_name or "word_forge_vectors"
             )
             self.collection = self._initialize_collection(collection_name)
         except Exception as e:
             raise InitializationError(
-                f"ChromaDB initialization failed: {str(e)}"
+                f"Failed to initialize vector store: {str(e)}"
             ) from e
+        # Load instruction templates if available
+        self.instruction_templates: Dict[str, InstructionTemplate] = {}
+        if hasattr(config.vectorizer, "instruction_templates"):
+            # Convert the templates to the expected type
+            for key, template in config.vectorizer.instruction_templates.items():
+                # Cast QueryType key to string
+                str_key = str(key)
+                # Convert TemplateDict to InstructionTemplate
+                self.instruction_templates[str_key] = cast(
+                    InstructionTemplate, template
+                )
+
+        self.logger.info(
+            f"VectorStore initialized: model={self.model_name}, "
+            f"dimension={self.dimension}, storage={self.storage_type.name.lower()}, "
+            f"path={self.index_path}"
+        )
 
     def _create_client(self) -> ChromaClient:
         """
-        Create ChromaDB client based on storage type configuration.
+        Create an appropriate ChromaDB client based on configuration.
 
         Returns:
-            Configured ChromaDB client for the selected storage type
-        """
-        if self.storage_type == StorageType.MEMORY:
-            return cast(ChromaClient, chromadb.EphemeralClient())
+            ChromaClient: Configured ChromaDB client for vector operations
 
-        # Ensure directory exists for DISK storage
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        return cast(
-            ChromaClient, chromadb.PersistentClient(path=str(self.index_path.parent))
-        )
+        Raises:
+            InitializationError: If client creation fails
+        """
+        try:
+            if self.storage_type == StorageType.MEMORY:
+                return cast(ChromaClient, chromadb.Client())
+            else:
+                return cast(
+                    ChromaClient, chromadb.PersistentClient(path=str(self.index_path))
+                )
+        except Exception as e:
+            raise InitializationError(
+                f"Failed to create ChromaDB client: {str(e)}"
+            ) from e
 
     def _initialize_collection(self, collection_name: str) -> ChromaCollection:
         """
-        Initialize ChromaDB collection with metadata.
+        Initialize or connect to a ChromaDB collection.
 
         Args:
-            collection_name: Name for the collection
+            collection_name: Name of the collection to initialize
 
         Returns:
-            Initialized ChromaDB collection
+            ChromaCollection: ChromaDB collection for vector operations
+
+        Raises:
+            InitializationError: If collection initialization fails
         """
-        return self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={
+        try:
+            # Create or get collection
+            metadata: Dict[str, Any] = {
                 "dimension": self.dimension,
                 "model": self.model_name,
-            },
-        )
+            }
+            collection = self.client.get_or_create_collection(
+                collection_name, metadata=metadata
+            )
+            self.logger.info(
+                f"Connected to collection '{collection_name}' with {collection.count()} vectors"
+            )
+            return collection
+        except Exception as e:
+            raise InitializationError(
+                f"Failed to initialize collection: {str(e)}"
+            ) from e
 
     def _validate_vector_dimension(
         self, vector: NDArray[np.float32], context: str = "Vector"
     ) -> None:
-        """Validate that vector dimensions match expected dimensions."""
+        """
+        Validate that vector dimensions match expected dimensions.
+
+        Args:
+            vector: The vector to validate
+            context: Description of the vector for error messages
+
+        Raises:
+            DimensionMismatchError: If vector dimensions are incorrect
+        """
         if len(vector.shape) != 1 or vector.shape[0] != self.dimension:
             raise DimensionMismatchError(
                 f"{context} dimension {vector.shape[0]} doesn't match expected {self.dimension}"
@@ -433,103 +504,95 @@ class VectorStore:
         self, text: str, template_key: str = "search", is_query: bool = True
     ) -> str:
         """
-        Format text with appropriate instruction template for E5 model.
+        Format text with instruction templates for embedding models.
 
-        Applies instruction-tuning conventions to raw text, enabling the model
-        to understand the context and intent of the embedding operation.
+        Applies the appropriate instruction template to optimize the text
+        for the specific embedding model being used. This is especially
+        important for instruction-tuned models that expect specific formats.
 
         Args:
-            text: Raw text to format
-            template_key: Key for selecting instruction template ("search", "definition", "similarity")
-            is_query: Whether this text is a query (True) or document (False)
+            text: Text to format
+            template_key: Template type to use (search, definition, etc.)
+            is_query: Whether this is a query (vs. document)
 
         Returns:
-            Formatted text with appropriate instruction
+            Formatted text ready for embedding
         """
-        # Define default template with optimal structure for E5 models
-        default_template: InstructionTemplate = {
-            "task": "Search for relevant information",
-            "query_prefix": "Instruct: {task}\nQuery: ",
-            "document_prefix": None,
-        }
-
-        # Access templates with robust fallback chain
-        if hasattr(config.vectorizer, "instruction_templates"):
-            templates = config.vectorizer.instruction_templates
-            if template_key in templates:
-                template_dict = cast(InstructionTemplate, templates[template_key])
-            else:
-                template_dict = cast(
-                    InstructionTemplate, templates.get("search", default_template)
-                )
-        else:
-            template_dict = default_template
-
-        # Type-safe extraction with fallbacks for each field
-        task = template_dict.get("task") or default_template["task"]
-        query_prefix = (
-            template_dict.get("query_prefix") or default_template["query_prefix"]
+        # Don't format if no templates available
+        if not self.instruction_templates:
+            return text
+        # Get template or use default
+        # Get template or use default
+        template: Optional[InstructionTemplate] = self.instruction_templates.get(
+            template_key, self.instruction_templates.get("default", None)
         )
-        document_prefix = template_dict.get("document_prefix")
 
-        # Apply formatting based on content type
-        if is_query:
-            return f"{query_prefix.format(task=task)}{text}"
-        elif document_prefix:
-            return f"{document_prefix}{text}"
+        # Return unformatted text if template is None
+        if template is None:
+            return text
+
+        # Format using appropriate template parts
+        task = template.get("task", "")
+        prefix = template.get("query_prefix" if is_query else "document_prefix", "")
+
+        if task and prefix:
+            return f"{task}\n{prefix}{text}"
+        elif prefix:
+            return f"{prefix}{text}"
         else:
-            # Standard document formatting for E5 models
             return text
 
     def embed_text(
-        self, text: str, template_key: str = "search", is_query: bool = True
+        self,
+        text: str,
+        template_key: str = "search",
+        is_query: bool = True,
+        normalize: bool = True,
     ) -> NDArray[np.float32]:
         """
-        Embed text using the SentenceTransformer model.
-
         Transforms raw text into a high-dimensional vector representation
-        while applying appropriate instruction formatting based on context.
+
+        Applies the appropriate instruction template based on the task type,
+        then generates a vector embedding using the configured model.
 
         Args:
             text: Text to embed
-            template_key: Key for instruction template selection
-            is_query: Whether this is a query (affects instruction formatting)
+            template_key: Template type to use (search, definition, etc.)
+            is_query: Whether this is a query (True) or document (False)
+            normalize: Whether to normalize the vector to unit length
 
         Returns:
             Embedding vector as numpy array (normalized by default)
 
         Raises:
-            ContentProcessingError: If embedding fails due to model issues or invalid input
+            ContentProcessingError: If embedding generation fails
         """
         if not text or not text.strip():
             raise ContentProcessingError("Cannot embed empty text")
 
         try:
-            # Apply instruction formatting
+            # Format with instruction template if available
             formatted_text = self.format_with_instruction(text, template_key, is_query)
 
-            # Generate embedding with optimal parameters for similarity search
+            # Generate embedding
             vector = self.model.encode(  # type: ignore
-                sentences=formatted_text,  # Use the formatted text directly as sentences
-                batch_size=10,  # Batch text optimization
+                formatted_text,
+                normalize_embeddings=normalize,
                 convert_to_numpy=True,
-                normalize_embeddings=True,  # Pre-normalize for cosine similarity
-                show_progress_bar=True,  # Show Progress
-                output_value="sentence_embedding",  # Ensure correct output
-                precision="float32",  # Use float32 for consistency
-                device="cuda" if torch.cuda.is_available() else "cpu",
+                show_progress_bar=False,
             )
 
-            # Ensure correct type for consistent operations
+            # Ensure correct type
             vector = vector.astype(np.float32)
 
-            # Validate dimensions match expected size
+            # Validate dimensions
             self._validate_vector_dimension(
                 vector,
-                f"Embedding for '{text[:self.dimension]}{'...' if len(text) > self.dimension else ''}'",
+                context=f"Embedding for '{text[:30]}{'...' if len(text) > 30 else ''}'",
             )
 
             return vector
+
         except Exception as e:
             raise ContentProcessingError(f"Failed to embed text: {str(e)}") from e
 
@@ -537,69 +600,69 @@ class VectorStore:
         self, content_id: int, content_type: ContentType
     ) -> Dict[str, Any]:
         """
-        Get information about content based on its ID and type.
-
-        Retrieves detailed information for various content types from the database,
-        ensuring type consistency and error resilience.
+        Retrieve additional information about content for metadata.
 
         Args:
-            content_id: ID of the content
-            content_type: Type of the content ("word", "definition", "example", "message", "conversation")
+            content_id: ID of the content item
+            content_type: Type of content (word, definition, etc.)
 
         Returns:
-            Dictionary with content information or empty dict if not found/accessible
+            Dict containing metadata about the content
+
+        Raises:
+            ContentProcessingError: If content retrieval fails
         """
-        if not self.db_manager:
+        # Skip if no database manager or no connection
+        if self.db_manager is None or self.db_manager.connection is None:
             return {}
 
         try:
-            if content_type in ("word", "definition", "example"):
-                # Get word information - fixed int/str type mismatch
-                word = self.db_manager.get_word_entry(str(content_id))
-                if word:
-                    return {
-                        "term": word.get("term", ""),
-                        "definition": word.get("definition", ""),
-                        "language": word.get(
-                            "language", "en"
-                        ),  # Add language awareness
-                    }
-            elif content_type in ("message", "conversation"):
-                # Get message information with proper error handling
-                results = self.db_manager.execute_query(
+            if content_type == "word":
+                # Get the word term from the ID
+                cursor = self.db_manager.connection.execute(
+                    SQL_GET_TERM_BY_ID, (content_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {"term": row[0]}
+
+            elif content_type == "message":
+                # Get message text and other metadata
+                cursor = self.db_manager.connection.execute(
                     SQL_GET_MESSAGE_TEXT, (content_id,)
                 )
-                if results and len(results) > 0:
-                    message_data = results[0]
+                row = cursor.fetchone()
+                if row:
                     return {
-                        "text": message_data[0] if len(message_data) > 0 else "",
-                        "speaker": message_data[1] if len(message_data) > 1 else None,
-                        "conversation_id": (
-                            message_data[2] if len(message_data) > 2 else None
-                        ),
-                        "timestamp": message_data[3] if len(message_data) > 3 else None,
+                        "text": row[0],
+                        "conversation_id": row[1] if len(row) > 1 else None,
+                        "speaker": row[2] if len(row) > 2 else None,
                     }
-        except Exception as e:
-            logging.warning(
-                f"Failed to get content info for {content_type} {content_id}: {str(e)}"
-            )
 
-        return {}
+            return {}
+
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to get content info for {content_type} ID {content_id}: {e}"
+            )
+            return {}
 
     def _get_emotion_info(self, item_id: int) -> Dict[str, Any]:
         """
-        Get emotion information for a word.
+        Get emotional attributes for an item if available.
 
         Args:
-            item_id: ID of the word to look up
+            item_id: ID of the item to get emotions for
 
         Returns:
-            Dictionary with emotion data or empty dict if not found/available
+            Dict containing emotion data (valence, arousal, etc.)
         """
-        if not self.emotion_manager:
+        # Skip if no emotion manager
+        if self.emotion_manager is None:
             return {}
 
         try:
+            # Get emotion data from the emotion manager
             emotion_data = self.emotion_manager.get_word_emotion(item_id)
             if emotion_data:
                 return {
@@ -607,150 +670,159 @@ class VectorStore:
                     "emotion_arousal": emotion_data.get("arousal"),
                     "emotion_label": emotion_data.get("label"),
                 }
-        except Exception:
-            # Silently fail if emotion data can't be retrieved
-            pass
+            return {}
 
-        return {}
+        except Exception as e:
+            self.logger.warning(f"Failed to get emotion info for ID {item_id}: {e}")
+            return {}
 
-    def process_word_entry(self, entry: WordEntryDict) -> List[Dict[str, Any]]:
+    def process_word_entry(self, entry: WordEntryDict) -> List[VectorItem]:
         """
-        Process a word entry into multiple embeddings with metadata.
+        Process a word entry into vector items for storage.
 
-        Creates separate embeddings for:
-        - The word itself
-        - Its definition
-        - Usage examples
+        Creates separate vector items for the word, its definition, and usage examples,
+        each with appropriate metadata for filtering and retrieval.
 
         Args:
-            entry: Complete word entry dictionary
+            entry: Word entry dictionary with all word data
 
         Returns:
-            List of processed items with IDs, embeddings, and metadata
+            List of items ready for vector storage, each containing vector, metadata, and text
 
         Raises:
             ContentProcessingError: If processing fails
         """
+        word_id = entry["id"]
+        term = entry["term"]
+        definition = entry["definition"]
+
+        # Handle usage_examples that could be either string or list
+        usage_examples = entry.get("usage_examples", "")
+        usage_examples = "; ".join(usage_examples)
+        examples = self._parse_usage_examples(usage_examples)
+
+        language = entry.get("language", "en")
+
+        # Items to be vectorized
+        vector_items: List[VectorItem] = []
+
         try:
-            word_id = entry["id"]
-            term = entry["term"]
-            definition = entry["definition"]
-            usage_examples_input = entry.get("usage_examples", "")
-            # Handle both cases: if input is already a list or if it's a string that needs parsing
-            if usage_examples_input:
-                examples = usage_examples_input
-            else:
-                examples = self._parse_usage_examples(str(usage_examples_input))
+            # 1. Process the word term itself
+            word_embedding = self.embed_text(term, template_key="term", normalize=True)
 
-            # Get emotion data if available
-            emotion_data = self._get_emotion_info(word_id)
-
-            # Prepare results list with type safety
-            items: List[Dict[str, Any]] = []
-
-            # Process term
-            term_text = f"{term} - {definition}"
-            word_embedding = self.embed_text(term_text, "definition", is_query=False)
-
-            # Create metadata with proper type alignment
-            word_metadata: Dict[str, Any] = {
-                "original_id": word_id,
+            # Combine standard metadata with emotion data
+            emotion_info = self._get_emotion_info(int(word_id))
+            word_metadata: VectorMetadata = {
+                "original_id": int(word_id),
                 "content_type": "word",
                 "term": term,
-                "definition": definition,
+                "language": language,
+                "timestamp": time.time(),
+                "emotion_valence": emotion_info.get("emotion_valence"),
+                "emotion_arousal": emotion_info.get("emotion_arousal"),
+                "emotion_label": emotion_info.get("emotion_label"),
             }
-            # Add emotion data if available
-            for k, v in emotion_data.items():
-                word_metadata[k] = v
 
-            items.append(
+            # Add word item
+            vector_items.append(
                 {
                     "id": f"w_{word_id}",
-                    "vector": word_embedding,
+                    "text": term,
                     "metadata": word_metadata,
-                    "text": term_text,
+                    "vector": word_embedding,
                 }
             )
 
-            # Process definition separately
-            def_embedding = self.embed_text(definition, "definition", is_query=False)
-            # Create metadata with proper type alignment
-            def_metadata: Dict[str, Any] = {
-                "original_id": word_id,
-                "content_type": "definition",
-                "term": term,
-                "definition": definition,
-            }
-            # Add emotion data if available
-            for k, v in emotion_data.items():
-                def_metadata[k] = v
+            # 2. Process the definition if available
+            if definition and definition.strip():
+                def_embedding = self.embed_text(
+                    definition,
+                    template_key="definition",
+                    normalize=True,
+                    is_query=False,
+                )
 
-            items.append(
-                {
-                    "id": f"d_{word_id}",
-                    "vector": def_embedding,
-                    "metadata": def_metadata,
-                    "text": definition,
+                def_metadata: VectorMetadata = {
+                    "original_id": int(word_id),
+                    "content_type": "definition",
+                    "term": term,
+                    "definition": definition,
+                    "language": language,
+                    "timestamp": time.time(),
                 }
-            )
 
-            # Process each example
+                # Add definition item
+                vector_items.append(
+                    {
+                        "id": f"d_{word_id}",
+                        "text": definition,
+                        "metadata": def_metadata,
+                        "vector": def_embedding,
+                    }
+                )
+
+            # 3. Process each usage example
             for i, example in enumerate(examples):
                 if not example.strip():
                     continue
 
                 example_embedding = self.embed_text(
-                    example, "similarity", is_query=False
+                    example, template_key="example", normalize=True, is_query=False
                 )
-                # Create metadata with proper type alignment
-                example_metadata: Dict[str, Any] = {
-                    "original_id": word_id,
+
+                example_metadata: VectorMetadata = {
+                    "original_id": int(word_id),
                     "content_type": "example",
                     "term": term,
+                    "language": language,
+                    "timestamp": time.time(),
                 }
-                # Add emotion data if available
-                for k, v in emotion_data.items():
-                    example_metadata[k] = v
 
-                items.append(
+                # Add example item
+                vector_items.append(
                     {
                         "id": f"e_{word_id}_{i}",
-                        "vector": example_embedding,
-                        "metadata": example_metadata,
                         "text": example,
+                        "metadata": example_metadata,
+                        "vector": example_embedding,
                     }
                 )
 
-            return items
+            return vector_items
 
         except Exception as e:
             raise ContentProcessingError(
-                f"Failed to process word entry: {str(e)}"
+                f"Failed to process word entry for '{term}': {str(e)}"
             ) from e
 
     def _parse_usage_examples(self, examples_string: str) -> List[str]:
         """
-        Parse a string of semicolon-separated examples into a list.
+        Parse usage examples from a semicolon-separated string.
 
         Args:
-            examples_string: String containing examples separated by semicolons
+            examples_string: String containing semicolon-separated examples
 
         Returns:
             List of individual usage examples
         """
         if not examples_string:
             return []
-        return [ex.strip() for ex in examples_string.split(";") if ex.strip()]
+
+        # Split by semicolon and strip whitespace
+        examples = [ex.strip() for ex in examples_string.split(";")]
+
+        # Filter out empty examples
+        return [ex for ex in examples if ex]
 
     def store_word(self, entry: WordEntryDict) -> int:
         """
-        Process and store a word entry with all its components.
-
         Creates vector embeddings for the word term, definition, and usage examples,
         then stores them in the vector database with appropriate metadata.
 
+        This is the main entry point for adding word data to the vector store.
+
         Args:
-            entry: Complete word entry dictionary containing term, definition, and examples
+            entry: Complete word entry with all data
 
         Returns:
             int: Number of vectors successfully stored
@@ -759,32 +831,39 @@ class VectorStore:
             ContentProcessingError: If processing or storage fails
         """
         try:
-            items = self.process_word_entry(entry)
+            # Process the word entry into vector items
+            vector_items = self.process_word_entry(entry)
 
-            for item in items:
+            # Store each vector item
+            for item in vector_items:
                 # Extract vector_id from the id string (e.g., "w_123" -> 123)
-                parts = item["id"].split("_")
-                vec_id = int(parts[1])
+                vec_id = item["id"]
+
+                # Convert VectorMetadata to Dict[str, Any]
+                metadata_dict = dict(item["metadata"])
 
                 # Call upsert with extracted ID and other components
                 self.upsert(
                     vec_id=vec_id,
                     embedding=item["vector"],
-                    metadata=item["metadata"],
+                    metadata=metadata_dict,
                     text=item["text"],
                 )
 
-            return len(items)
+            # Return the number of vectors stored
+            return len(vector_items)
 
         except Exception as e:
-            raise ContentProcessingError(f"Failed to store word: {str(e)}") from e
+            raise ContentProcessingError(
+                f"Failed to store word '{entry.get('term', '')}': {str(e)}"
+            ) from e
 
     def delete_vectors_for_word(self, word_id: WordID) -> int:
         """
         Delete all vectors associated with a specific word.
 
         Removes vectors associated with the word from the vector store,
-        enabling clean updates and replacements without duplicate entries.
+        including all vectors for the term, definition, and examples.
 
         Args:
             word_id: ID of the word whose vectors should be deleted
@@ -802,36 +881,50 @@ class VectorStore:
             >>> print(f"Deleted {deleted_count} vectors")
         """
         try:
-            # Convert word_id to string for ChromaDB
+            # Convert to string for compatibility with ChromaDB
             word_id_str = str(word_id)
-
-            # Use metadata filter to find all vectors for this word
-            where_filter = {"original_id": word_id}
-
-            # Try to delete vectors by ID and filter
             deleted_count = 0
 
-            # First try direct ID-based deletion
+            # Try to delete vectors by ID pattern
             try:
-                self.collection.delete(ids=[word_id_str])
-                deleted_count += 1
-            except Exception as direct_error:
-                logging.debug(f"Direct ID deletion failed: {str(direct_error)}")
+                # Use metadata filter to find all vectors for this word
+                word_filter = {"original_id": int(word_id)}
 
-            # Then try filter-based deletion if supported
-            try:
-                self.collection.delete(where=where_filter)
-                # We don't know exactly how many were deleted, but at least 1
-                deleted_count = max(deleted_count, 1)
-            except Exception as filter_error:
-                logging.debug(f"Filter-based deletion failed: {str(filter_error)}")
+                # Try to delete vectors by ID and filter
+                self.collection.delete(where=word_filter)
 
-            # If both approaches failed, propagate the error
-            if deleted_count == 0:
-                raise VectorStoreError("Neither ID nor filter-based deletion succeeded")
+                # Count the number of vectors deleted
+                deleted_count = 3  # Approximate for term, definition, examples
+                self.logger.info(f"Deleted vectors for word {word_id} using filter")
 
-            # Persist changes if using disk storage
-            self._persist_if_needed()
+            except Exception as inner_e:
+                self.logger.warning(
+                    f"Failed to delete vectors by filter for {word_id}: {inner_e}"
+                )
+
+                # Fallback: Try explicit ID patterns
+                ids_to_delete = [
+                    f"w_{word_id_str}",  # Word term
+                    f"d_{word_id_str}",  # Definition
+                ]
+
+                # Add potential example IDs
+                for i in range(10):  # Assume max 10 examples per word
+                    ids_to_delete.append(f"e_{word_id_str}_{i}")
+
+                try:
+                    self.collection.delete(ids=ids_to_delete)
+                    deleted_count = len(ids_to_delete)
+                    self.logger.info(
+                        f"Deleted vectors for word {word_id} using explicit IDs"
+                    )
+                except Exception as id_e:
+                    self.logger.error(
+                        f"Failed to delete vectors by ID for {word_id}: {id_e}"
+                    )
+                    raise VectorStoreError(
+                        "Neither ID nor filter-based deletion succeeded"
+                    )
 
             return deleted_count
 
@@ -851,39 +944,36 @@ class VectorStore:
         Add or update a vector in the store with metadata and optional text.
 
         This function validates the vector dimension, sanitizes metadata to ensure
-        compatibility with ChromaDB's requirements, and handles the storage operation.
+        ChromaDB compatibility, and handles the low-level storage operations.
 
         Args:
             vec_id: Unique identifier for the vector
             embedding: Vector embedding to store
-            metadata: Optional metadata for filtering and context
-            text: Optional raw text for hybrid search
+            metadata: Optional metadata to associate with the vector
+            text: Optional text content to associate with the vector
 
         Raises:
-            DimensionMismatchError: If embedding dimension doesn't match expected dimension
             UpsertError: If ChromaDB operation fails
         """
+        # Validate vector dimensions
         self._validate_vector_dimension(embedding, "Embedding")
 
+        # Convert ID to string for ChromaDB
+        vec_id_str = str(vec_id)
+
+        # Prepare metadata - ensure all values are compatible with ChromaDB
+        sanitized_metadata = self._sanitize_metadata(metadata or {})
+
         try:
-            # Convert embedding to list for Chroma
-            embedding_list = embedding.tolist()
-
-            # Convert ID to string (ChromaDB requirement)
-            id_str = str(vec_id)
-
-            # Sanitize metadata - ChromaDB only accepts primitives
-            sanitized_metadata = self._sanitize_metadata(metadata or {})
-
             # Upsert into collection
             self.collection.upsert(
-                ids=[id_str],
-                embeddings=[embedding_list],
+                ids=[vec_id_str],
+                embeddings=[embedding.tolist()],
                 metadatas=[sanitized_metadata] if sanitized_metadata else None,
                 documents=[text] if text else None,
             )
 
-            # Persist if using disk storage
+            # Persist to disk if using persistent storage
             self._persist_if_needed()
 
         except Exception as e:
@@ -893,37 +983,36 @@ class VectorStore:
         self, metadata: Dict[str, Any]
     ) -> Dict[str, Union[str, int, float, bool]]:
         """
-        Sanitize metadata to ensure compatibility with ChromaDB requirements.
-
-        ChromaDB only accepts primitive types (str, int, float, bool) as metadata values.
-        This function converts None values to empty strings and ensures all values are
-        compatible types.
+        Sanitize metadata to ensure compatibility with ChromaDB.
 
         Args:
-            metadata: Raw metadata dictionary with potential None values
+            metadata: Raw metadata dictionary
 
         Returns:
-            Dict[str, Union[str, int, float, bool]]: Sanitized metadata with compatible types
+            Dictionary with ChromaDB-compatible values
         """
-        sanitized: Dict[str, Union[str, int, float, bool]] = {}
+        result: Dict[str, Union[str, int, float, bool]] = {}
 
         for key, value in metadata.items():
+            # Skip None values
             if value is None:
-                # Convert None to empty string for ChromaDB compatibility
-                sanitized[key] = ""
-            elif isinstance(value, (str, int, float, bool)):
-                # Keep primitive types as-is
-                sanitized[key] = value
+                continue
+
+            # Convert values to compatible types
+            if isinstance(value, (str, int, float, bool)):
+                result[key] = value
             else:
-                # Convert other types to string representation
-                sanitized[key] = str(value)
+                # Convert other types to string
+                result[key] = str(value)
 
-        return sanitized
+        return result
 
+    # Type overloads for search method to enable different call patterns
     @overload
     def search(
         self,
-        query_vector: NDArray[np.float32],
+        *,
+        query_text: str,
         k: int = 5,
         filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResultDict]: ...
@@ -931,8 +1020,7 @@ class VectorStore:
     @overload
     def search(
         self,
-        *,
-        query_text: str,
+        query_vector: NDArray[np.float32],
         k: int = 5,
         filter_metadata: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResultDict]: ...
@@ -949,50 +1037,35 @@ class VectorStore:
         Search for semantically similar vectors using vector or text query.
 
         Performs a similarity search against the vector database, finding items
-        that are semantically closest to the provided query. Results are sorted
-        by similarity (closest first). This method supports two search modes:
+        that are semantically similar to the query. Supports two search modes:
+
         1. Direct vector search - when you already have an embedding
-        2. Text-based search - automatically converts text to embedding
+        2. Text search - converts text to embedding then searches
 
         Args:
             query_vector: Vector representation to search against
-                (mutually exclusive with query_text)
             query_text: Text to search for (will be converted to a vector)
-            k: Maximum number of results to return (default: 5)
-            filter_metadata: Optional metadata filters to restrict search
-                (e.g., {"language": "en"})
+            k: Number of results to return
+            filter_metadata: Optional metadata filters for narrowing results
 
         Returns:
-            List[SearchResultDict]: Search results with metadata, sorted by similarity
-                Each result contains:
-                - id: Unique identifier of the matching item
-                - distance: Semantic distance from query (lower is better)
-                - metadata: Associated metadata for the match
-                - text: Raw text content if available
+            List of search results with distance scores and metadata
 
         Raises:
-            SearchError: If search parameters are invalid or operation fails
-            ContentProcessingError: If embedding query_text fails
+            SearchError: If neither query_vector nor query_text is provided
             DimensionMismatchError: If query vector dimensions are incorrect
-            ValueError: If k is not a positive integer
 
         Examples:
-            >>> # Search by text with language filter
+            >>> # Search by text
             >>> results = vector_store.search(
-            ...     query_text="quantum computing",
+            ...     query_text="machine learning algorithm",
             ...     k=5,
-            ...     filter_metadata={"language": "en"}
+            ...     filter_metadata={"content_type": "definition"}
             ... )
-            >>> print(f"Found {len(results)} matches")
 
             >>> # Search by vector
             >>> results = vector_store.search(query_vector=embedding)
         """
-        # Validate k parameter
-        if not k or k <= 0:
-            raise ValueError(f"Parameter 'k' must be a positive integer, got {k}")
-
-        # Input validation - exclusive parameters
         if query_vector is None and query_text is None:
             raise SearchError(
                 "Search requires either query_vector or query_text parameter"
@@ -1004,7 +1077,7 @@ class VectorStore:
         # Prepare search vector
         search_vector = self._prepare_search_vector(query_vector, query_text)
 
-        # Execute search and return results
+        # Execute the search
         return self._execute_vector_search(
             search_vector=search_vector, k=k, filter_metadata=filter_metadata
         )
@@ -1023,7 +1096,7 @@ class VectorStore:
             NDArray[np.float32]: Vector to use for similarity search
 
         Raises:
-            ContentProcessingError: If text embedding fails
+            SearchError: If neither input is provided
             DimensionMismatchError: If vector has incorrect dimensions
         """
         # Case 1: Direct vector provided
@@ -1031,22 +1104,18 @@ class VectorStore:
             self._validate_vector_dimension(query_vector, context="Query vector")
             return query_vector
 
-        # Case 2: Text query provided
+        # Case 2: Text provided - convert to vector
         assert query_text is not None, "Both query_vector and query_text cannot be None"
 
         try:
             embedded_vector = self.embed_text(
-                query_text, template_key="search", is_query=True
+                query_text, template_key="search", is_query=True, normalize=True
             )
             self._validate_vector_dimension(embedded_vector, context="Embedded query")
             return embedded_vector
+
         except Exception as e:
-            # Preserve dimension mismatch errors but wrap others
-            if isinstance(e, DimensionMismatchError):
-                raise e
-            raise ContentProcessingError(
-                f"Failed to embed query text '{query_text[:50]}...': {str(e)}"
-            ) from e
+            raise SearchError(f"Failed to prepare search vector: {str(e)}") from e
 
     def _execute_vector_search(
         self,
@@ -1059,51 +1128,55 @@ class VectorStore:
 
         Args:
             search_vector: Vector to search against
-            k: Maximum number of results to return
-            filter_metadata: Optional filters to apply to search
+            k: Number of results to return
+            filter_metadata: Optional metadata filters
 
         Returns:
-            List[SearchResultDict]: Search results sorted by similarity
+            List of search results with distance scores and metadata
 
         Raises:
-            SearchError: If the search operation fails
+            SearchError: If ChromaDB operation fails
         """
         try:
-            # Ensure k is reasonable to prevent performance issues
+            # Enforce reasonable upper limit on results
             max_allowed = getattr(config.vectorizer, "max_results", 100)
-            adjusted_k = max(1, min(k, max_allowed))
+            adjusted_k = min(k, max_allowed)
 
-            # Performance logging for large searches
-            if adjusted_k != k:
-                logging.warning(
-                    f"Requested {k} results but limited to {adjusted_k} for performance"
-                )
+            # Adjust filter format for ChromaDB
+            where_clause: Optional[Dict[str, Any]] = None
+            if filter_metadata:
+                where_clause = {}
+                for key, value in filter_metadata.items():
+                    if value is not None:
+                        where_clause[key] = value
 
-            # Record search operation start time
+            # Execute search (measure time for logging)
             start_time = time.time()
 
-            # Execute query against ChromaDB collection
             query_results = self.collection.query(
                 query_embeddings=[search_vector.tolist()],
                 n_results=adjusted_k,
-                where=filter_metadata,  # ChromaDB accepts None as "no filter"
+                where=where_clause,
             )
 
-            # Log slow searches for performance monitoring
             search_time = time.time() - start_time
-            if search_time > 1.0:
-                logging.info(
-                    f"Vector search took {search_time:.2f}s for k={adjusted_k}, "
-                    f"filters={filter_metadata}"
-                )
 
-            # Process results into standardized format
-            return self._process_chromadb_results(query_results)
+            # Process results into a consistent format
+            results = self._process_chromadb_results(query_results)
+
+            # Log search statistics
+            self.logger.debug(
+                f"Vector search took {search_time:.2f}s for k={adjusted_k}, "
+                f"found {len(results)} results"
+            )
+
+            return results
+
         except Exception as e:
             error_msg = f"Vector search failed: {str(e)}"
-            logging.error(
+            self.logger.error(
                 f"{error_msg} | Vector shape: {search_vector.shape} | "
-                f"Filters: {filter_metadata} | Collection size: {self.collection.count()}"
+                f"Filter: {filter_metadata}"
             )
             raise SearchError(error_msg) from e
 
@@ -1111,142 +1184,144 @@ class VectorStore:
         self, query_results: Dict[str, List[Any]]
     ) -> List[SearchResultDict]:
         """
-        Process raw ChromaDB results into standardized search result format.
+        Process raw ChromaDB query results into a standardized format.
 
         Args:
-            query_results: Raw results from ChromaDB query operation
+            query_results: Raw results from ChromaDB query
 
         Returns:
-            List[SearchResultDict]: Standardized search results
-
-        Raises:
-            SearchError: If results cannot be properly processed
+            List of standardized search result dictionaries
         """
-        try:
-            # Handle empty results gracefully
-            if (
-                not query_results
-                or "ids" not in query_results
-                or not query_results["ids"]
-            ):
-                return []
+        results: List[SearchResultDict] = []
 
-            # Access first query's results (ChromaDB uses nested arrays)
-            ids_list: List[str] = (
-                query_results["ids"][0] if query_results["ids"] else []
-            )
-            if not ids_list:
-                return []
+        # Process results if available
+        if not query_results or "ids" not in query_results:
+            return results
 
-            # Convert string IDs to integers
-            ids = [int(id_str) for id_str in ids_list]
+        # Extract result components
+        ids = query_results.get("ids", [[]])[0]
+        distances = query_results.get("distances", [[]])[0]
+        metadatas = query_results.get("metadatas", [[None] * len(ids)])[0]
+        documents = query_results.get("documents", [[None] * len(ids)])[0]
 
-            # Safely extract and process distances
-            distances_data = query_results.get("distances", [[]])
-            distances_list: List[float] = distances_data[0] if distances_data else []
-            distances = self._convert_similarities_to_distances(distances_list)
+        # Convert similarities to distances if needed
+        if distances and min(distances) >= 0 and max(distances) <= 1:
+            distances = self._convert_similarities_to_distances(distances)
 
-            # Safely extract metadata and documents with proper defaults
-            metadatas_data = query_results.get("metadatas", [[]])
-            metadatas = metadatas_data[0] if metadatas_data else [None] * len(ids)
+        # Build result list
+        for i, result_id in enumerate(ids):
+            try:
+                # Extract the original numeric ID if possible
+                original_id = (
+                    int(result_id.split("_")[1]) if "_" in result_id else int(result_id)
+                )
 
-            documents_data = query_results.get("documents", [[]])
-            documents = documents_data[0] if documents_data else [None] * len(ids)
-
-            # Build result objects with proper type safety
-            results: List[SearchResultDict] = []
-            for i, id_ in enumerate(ids):
-                # Get corresponding values with bounds checking
-                distance = (
-                    distances[i] if i < len(distances) else 2.0
-                )  # Default to max distance
-                metadata = metadatas[i] if i < len(metadatas) else None
+                # Get metadata and text
+                metadata = (
+                    cast(Optional[VectorMetadata], metadatas[i])
+                    if i < len(metadatas)
+                    else None
+                )
                 document = documents[i] if i < len(documents) else None
 
-                # Construct the result with proper typing
-                result = SearchResultDict(
-                    id=id_,
-                    distance=distance,
-                    metadata=cast(Optional[VectorMetadata], metadata),
-                    text=document,
-                )
-                results.append(result)
+                # Calculate distance (handle any missing values)
+                distance = distances[i] if i < len(distances) else 1.0
 
-            return results
-        except Exception as e:
-            raise SearchError(f"Failed to process search results: {str(e)}") from e
+                # Add to results
+                results.append(
+                    SearchResultDict(
+                        id=original_id,
+                        distance=distance,
+                        metadata=metadata,
+                        text=document,
+                    )
+                )
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Error processing search result {result_id}: {e}")
+
+        return results
 
     def get_legacy_search_results(
         self, query_vector: NDArray[np.float32], k: int = 5
     ) -> SearchResult:
         """
-        Perform search with legacy return format (list of ID-distance tuples).
+        Legacy method for backward compatibility with older code.
+
+        Returns search results in the original (id, distance) tuple format.
 
         Args:
             query_vector: Query embedding to search against
             k: Number of results to return
 
         Returns:
-            List of (id, distance) tuples sorted by similarity
+            List of (id, distance) tuples
 
         Raises:
-            Same exceptions as search()
+            SearchError: If search fails
         """
         results = self.search(query_vector=query_vector, k=k)
-        return [(item["id"], item["distance"]) for item in results]
+
+        # Convert to legacy format
+        legacy_results: SearchResult = [
+            (result["id"], result["distance"]) for result in results
+        ]
+
+        return legacy_results
 
     def _convert_similarities_to_distances(
         self, similarities: List[float]
     ) -> List[float]:
         """
-        Convert ChromaDB similarities to distance metrics.
-
-        ChromaDB returns similarity scores in range [0,1] where 1.0 represents
-        a perfect match. For compatibility with FAISS and other distance-based
-        systems, this method converts to a distance metric where 0.0 represents
-        a perfect match.
+        Convert similarity scores (0-1, higher is better) to distances (lower is better).
 
         Args:
-            similarities: List of similarity scores from ChromaDB
+            similarities: List of similarity scores
 
         Returns:
-            List of distance scores (1.0 - similarity) with identical ordering
+            List of equivalent distance scores
         """
-        return [1.0 - similarity for similarity in similarities]
+        return [1.0 - sim for sim in similarities]
 
     def _persist_if_needed(self) -> None:
         """
         Persist vector store to disk when appropriate.
 
-        Saves the current state to persistent storage if:
-        1. Using disk-based storage (not in-memory)
-        2. Client implements the persist() method
-
-        This safely handles various client implementations and prevents
-        runtime errors when the persist method isn't available.
+        Only applies to persistent storage types.
         """
-        if self.storage_type == StorageType.DISK and self._has_persist_method:
+        if self.storage_type != StorageType.MEMORY and hasattr(self.client, "persist"):
             try:
                 self.client.persist()
             except Exception as e:
-                logging.warning(
+                self.logger.warning(
                     f"Failed to persist vector store to {self.index_path}: {str(e)}"
                 )
 
     def __del__(self) -> None:
         """
-        Finalize object destruction with proper resource cleanup.
-
         Ensures vector data is persisted before the object is destroyed
-        by the garbage collector, preventing data loss during shutdown
-        or scope exit.
 
-        Exceptions are silently handled to avoid crashes during garbage
-        collection, as per Python's recommendation for __del__ methods.
+        Called automatically when the object is garbage collected.
         """
         try:
             self._persist_if_needed()
         except Exception:
-            # Silent handling during garbage collection is appropriate
-            # as __del__ should never raise exceptions
+            # Ignore errors during cleanup
             pass
+
+    @staticmethod
+    def is_valid_vector_store(obj: Any) -> bool:
+        """
+        Check if an object is a valid VectorStore instance.
+
+        Args:
+            obj: Object to check
+
+        Returns:
+            bool: True if the object is a valid VectorStore, False otherwise
+        """
+        if not isinstance(obj, VectorStore):
+            return False
+
+        # Additional checks for required attributes and methods
+        required_attrs = ["upsert", "search", "delete_vectors_for_word"]
+        return all(hasattr(obj, attr) for attr in required_attrs)

@@ -276,7 +276,8 @@ class WordEntryDict(TypedDict):
     its relationships and metadata.
 
     Attributes:
-        id: Unique identifier for the word
+        id: Unique identifier for the word (str for chroma db compat)
+        id_int: Unique int ID for
         term: The actual word or phrase
         definition: Meaning or explanation of the term
         part_of_speech: Grammatical category (noun, verb, etc.)
@@ -285,7 +286,8 @@ class WordEntryDict(TypedDict):
         relationships: List of relationships to other terms
     """
 
-    id: int
+    id: str
+    id_int: int
     term: str
     definition: str
     part_of_speech: str
@@ -895,7 +897,7 @@ class DBManager:
 
             # Extract word data with proper type safety
             result = row[0]
-            word_id: int = result["id"]
+            word_id_int: int = result["id"]
             term_value: str = result["term"]
             definition: str = result["definition"] or ""
             part_of_speech: str = result["part_of_speech"] or ""
@@ -906,11 +908,12 @@ class DBManager:
             usage_examples: List[str] = self._parse_usage_examples(usage_examples_str)
 
             # Get relationships
-            relationships = self.get_relationships(word_id)
+            relationships = self.get_relationships(str(word_id_int))
 
             # Construct and return the complete word entry
             return {
-                "id": word_id,
+                "id": str(word_id_int),
+                "id_int": word_id_int,
                 "language": "en",
                 "term": term_value,
                 "definition": definition,
@@ -940,7 +943,7 @@ class DBManager:
         """
         return examples_str.split("\n") if examples_str else []
 
-    def get_relationships(self, word_id: int) -> List[RelationshipDict]:
+    def get_relationships(self, word_id: str) -> List[RelationshipDict]:
         """
         Get all relationships for a word identified by its ID.
 

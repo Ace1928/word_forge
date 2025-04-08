@@ -483,43 +483,36 @@ class VectorWorker(threading.Thread):
 
     def _process_words(self, words: List[Word]) -> None:
         """
-        Generate and store embeddings for all words.
+        Process a batch of words into vector embeddings.
+
+        Generates embeddings for each word and stores them in the vector store.
 
         Args:
-            words: List of Word objects to process
+            words: List of words to process
         """
-        self.logger.info(f"Processing {len(words)} words")
-
         for word in words:
+            # Prepare embedding text
+            text = self._prepare_embedding_text(word)
+
             try:
-                # Combine word data into a single text for embedding
-                text = self._prepare_embedding_text(word)
+                # Generate embedding
+                vector = self.embedder.embed(text)
 
-                # Generate embedding vector
-                try:
-                    vector = self.embedder.embed(text)
-                except Exception as e:
-                    self.logger.error(
-                        f"Embedding failed for word {word.term} (ID: {word.id}): {str(e)}"
-                    )
-                    self.stats.record_result(word.id, ProcessingResult.EMBEDDING_ERROR)
-                    continue
+                # Store embedding
+                self.vector_store.upsert(word.id, vector)
+                self.stats.record_result(word.id, ProcessingResult.SUCCESS)
 
-                # Store embedding in vector store
-                try:
-                    self.vector_store.upsert(word.id, vector)
-                    self.stats.record_result(word.id, ProcessingResult.SUCCESS)
-                except Exception as e:
-                    self.logger.error(
-                        f"Vector storage failed for word {word.term} (ID: {word.id}): {str(e)}"
-                    )
-                    self.stats.record_result(word.id, ProcessingResult.STORAGE_ERROR)
-
-            except Exception as e:
+            except EmbeddingError as e:
                 self.logger.error(
-                    f"Unexpected error processing word {word.term} (ID: {word.id}): {str(e)}"
+                    f"Embedding failed for word {word.term} (ID: {word.id}): {str(e)}"
                 )
-                # Continue with next word despite errors
+                self.stats.record_result(word.id, ProcessingResult.EMBEDDING_ERROR)
+            except Exception as e:
+                error_msg = f"Vector storage failed for word {word.term} (ID: {word.id}): {str(e)}"
+                if "object has no attribute 'upsert'" in str(e):
+                    error_msg += f" (vector_store has type {type(self.vector_store).__name__}, should be VectorStore)"
+                self.logger.error(error_msg)
+                self.stats.record_result(word.id, ProcessingResult.STORAGE_ERROR)
 
     def _prepare_embedding_text(self, word: Word) -> str:
         """

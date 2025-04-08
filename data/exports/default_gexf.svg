@@ -21,65 +21,65 @@
       <node id="1" label="1">
         <attvalues>
           <attvalue for="0" value="algorithm" />
-          <attvalue for="1" value="-0.05482190102338791" />
-          <attvalue for="2" value="0.028531230986118317" />
-          <attvalue for="3" value="-0.29746294021606445" />
+          <attvalue for="1" value="0.20015503466129303" />
+          <attvalue for="2" value="0.05912330001592636" />
+          <attvalue for="3" value="0.17544116079807281" />
         </attvalues>
       </node>
       <node id="521" label="521">
         <attvalues>
           <attvalue for="0" value="process" />
-          <attvalue for="1" value="0.009443460032343864" />
-          <attvalue for="2" value="0.045309022068977356" />
-          <attvalue for="3" value="-0.1450338065624237" />
+          <attvalue for="1" value="0.07464434206485748" />
+          <attvalue for="2" value="-0.011483115144073963" />
+          <attvalue for="3" value="0.06522756814956665" />
         </attvalues>
       </node>
       <node id="11" label="11">
         <attvalues>
           <attvalue for="0" value="algorithmic rule" />
-          <attvalue for="1" value="-0.0741780549287796" />
-          <attvalue for="2" value="0.02406959980726242" />
-          <attvalue for="3" value="-0.3514290452003479" />
+          <attvalue for="1" value="0.2418394535779953" />
+          <attvalue for="2" value="0.07194509357213974" />
+          <attvalue for="3" value="0.2101110965013504" />
         </attvalues>
       </node>
       <node id="12" label="12">
         <attvalues>
           <attvalue for="0" value="algorithmic program" />
-          <attvalue for="1" value="-0.06942983716726303" />
-          <attvalue for="2" value="0.02648615650832653" />
-          <attvalue for="3" value="-0.35317930579185486" />
+          <attvalue for="1" value="0.24274082481861115" />
+          <attvalue for="2" value="0.07777559757232666" />
+          <attvalue for="3" value="0.20607462525367737" />
         </attvalues>
       </node>
       <node id="853" label="853">
         <attvalues>
           <attvalue for="0" value="recursion" />
-          <attvalue for="1" value="-0.08559724688529968" />
-          <attvalue for="2" value="0.023399263620376587" />
-          <attvalue for="3" value="-0.39379802346229553" />
+          <attvalue for="1" value="0.27761903405189514" />
+          <attvalue for="2" value="0.09223750978708267" />
+          <attvalue for="3" value="0.2323363721370697" />
         </attvalues>
       </node>
       <node id="730" label="730">
         <attvalues>
           <attvalue for="0" value="procedure" />
-          <attvalue for="1" value="-0.019053321331739426" />
-          <attvalue for="2" value="0.03828573226928711" />
-          <attvalue for="3" value="-0.19812113046646118" />
+          <attvalue for="1" value="0.11135133355855942" />
+          <attvalue for="2" value="0.01617344282567501" />
+          <attvalue for="3" value="0.11404024809598923" />
         </attvalues>
       </node>
       <node id="859" label="859">
         <attvalues>
           <attvalue for="0" value="function" />
-          <attvalue for="1" value="0.0011278648162260652" />
-          <attvalue for="2" value="0.0344398058950901" />
-          <attvalue for="3" value="-0.09200456738471985" />
+          <attvalue for="1" value="0.02703685313463211" />
+          <attvalue for="2" value="-0.010101347230374813" />
+          <attvalue for="3" value="0.06304716318845749" />
         </attvalues>
       </node>
       <node id="509" label="509">
         <attvalues>
           <attvalue for="0" value="operation" />
-          <attvalue for="1" value="0.009480638429522514" />
-          <attvalue for="2" value="0.05793753266334534" />
-          <attvalue for="3" value="-0.19369904696941376" />
+          <attvalue for="1" value="0.10269947350025177" />
+          <attvalue for="2" value="-0.009184983558952808" />
+          <attvalue for="3" value="0.1324937343597412" />
         </attvalues>
       </node>
     </nodes>

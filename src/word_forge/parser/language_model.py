@@ -84,7 +84,9 @@ class ModelState:
     def generate_text(
         cls,
         prompt: str,
-        max_new_tokens: Optional[int] = None,
+        max_new_tokens: Optional[
+            int
+        ] = 64,  # using 64 during testing to ensure reasonable performance time
         temperature: float = 0.7,
         num_beams: int = 3,
     ) -> Optional[str]:

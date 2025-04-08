@@ -300,7 +300,8 @@ class VectorDemo:
 
                 # Create word entry dict
                 self.words[word_id] = {
-                    "id": word_id,
+                    "id": str(word_id),
+                    "id_int": int(word_id),
                     "term": term,
                     "definition": definition,
                     "usage_examples": usage_examples,
@@ -433,9 +434,10 @@ class VectorDemo:
                 term, definition, examples_str, language
             )
 
-            # Create word entry
+            # Create word entry with explicit string ID
             word: WordEntryDict = {
-                "id": word_id,
+                "id": str(word_id),
+                "id_int": word_id,
                 "term": term,
                 "definition": definition,
                 "usage_examples": examples_str.split("; ") if examples_str else [],
@@ -535,26 +537,6 @@ class VectorDemo:
         examples_str: str,
         language: str,
     ) -> WordID:
-        """
-        Update an existing word in the database and vector store.
-
-        Updates the definition and usage examples of an existing word
-        and regenerates its vector embeddings.
-
-        Args:
-            word_id: ID of the existing word
-            term: The word or phrase
-            definition: The updated meaning or explanation
-            examples_str: Formatted usage examples string
-            language: Language code
-
-        Returns:
-            ID of the updated word
-
-        Raises:
-            QueryError: If database update fails
-            WordStorageError: If vector update fails
-        """
         try:
             # Update database
             with self.db_manager.transaction() as conn:
@@ -567,9 +549,12 @@ class VectorDemo:
                     (definition, examples_str, word_id),
                 )
 
-            # Update word entry
+            # Update word entry with string ID for vector store compatibility
+            chroma_id = str(word_id)
+            # Create word entry dict
             word: WordEntryDict = {
-                "id": word_id,
+                "id": chroma_id,  # chroma_compatible ID
+                "id_int": word_id,  # Original integer ID
                 "term": term,
                 "definition": definition,
                 "usage_examples": examples_str.split("; ") if examples_str else [],
@@ -579,7 +564,7 @@ class VectorDemo:
                 "relationships": [],  # Required by WordEntryDict
             }
 
-            # Update in-memory storage
+            # Update in-memory storage (using original integer ID)
             self.words[word_id] = word
 
             # Delete old vectors and add new ones
@@ -850,7 +835,8 @@ class VectorDemo:
 
                 # Create word entry dict
                 word: WordEntryDict = {
-                    "id": word_id,
+                    "id": str(word_id),
+                    "id_int": word_id,  # Original integer ID
                     "term": term,
                     "definition": definition,
                     "usage_examples": (
