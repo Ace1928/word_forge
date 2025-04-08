@@ -30,7 +30,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Protocol, TypedDict, cast, final
+from typing import (
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    TypedDict,
+    Union,
+    cast,
+    final,
+)
 
 import numpy as np
 import torch
@@ -305,7 +315,7 @@ class VectorWorker(threading.Thread):
         self,
         db: DBManager,
         vector_store: VectorStore,
-        embedder: Embedder,
+        embedder: Union[Embedder, str],  # Accept either embedder or model name
         poll_interval: Optional[float] = None,
         daemon: bool = True,
         logger: Optional[logging.Logger] = None,
@@ -316,7 +326,7 @@ class VectorWorker(threading.Thread):
         Args:
             db: Database manager providing access to word data
             vector_store: Vector store for saving embeddings
-            embedder: Text embedding generator
+            embedder: Text embedding generator or model name string
             poll_interval: Time in seconds between database polling cycles (defaults to 10.0)
             daemon: Whether to run as a daemon thread
             logger: Optional logger for error reporting
@@ -324,7 +334,21 @@ class VectorWorker(threading.Thread):
         super().__init__(daemon=daemon)
         self.db = db
         self.vector_store = vector_store
-        self.embedder = embedder
+
+        # Convert string model name to embedder if needed
+        if isinstance(embedder, str):
+            try:
+                self.embedder = TransformerEmbedder(model_name=embedder)
+                if logger:
+                    logger.info(f"Created TransformerEmbedder with model '{embedder}'")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to initialize transformer embedder: {e}")
+                    logger.info("Falling back to SimpleEmbedder")
+                self.embedder = SimpleEmbedder()
+        else:
+            self.embedder = embedder
+
         self.poll_interval = poll_interval or 10.0
 
         self._stop_flag = False

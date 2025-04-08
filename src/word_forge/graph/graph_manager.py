@@ -40,7 +40,8 @@ import numpy as np
 # Import pyvis with a type ignore comment to fix the missing stub issue
 from pyvis.network import Network  # type: ignore
 
-from word_forge.database.db_manager import DBManager
+from word_forge.database import db_manager as database_manager  # File/Module
+from word_forge.database.db_manager import DBManager  # Class/Instance
 from word_forge.exceptions import (
     GraphDimensionError,
     GraphError,
@@ -112,7 +113,9 @@ class GraphManager:
             db_manager: Database manager providing access to word data
         """
         self.db_manager = db_manager
-        self.g: nx.Graph = nx.Graph()  # Add proper type annotation
+        self.g: nx.Graph = (
+            nx.Graph()
+        )  # Explicitly specify the type for proper type checking
         self._term_to_id: Dict[str, int] = {}
         self._dimensions: int = 2  # Default is 2D for backward compatibility
         self._positions: Dict[int, Tuple[float, ...]] = {}
@@ -156,7 +159,10 @@ class GraphManager:
             ```
         """
         if dims not in (2, 3):
-            raise GraphDimensionError("Graph dimensions must be either 2 or 3")
+            raise GraphDimensionError(
+                "Graph dimensions must be either 2 or 3",
+                ValueError(f"Invalid dimension: {dims}"),
+            )
         self._dimensions = dims
 
     @contextmanager
@@ -229,7 +235,7 @@ class GraphManager:
 
         # Add nodes and build term->id mapping
         for word_id, term in words:
-            self.g.add_node(node_for_adding=word_id, term=term)
+            self.g.add_node(word_id, term=term)
             if term:  # Ensure term is not None or empty
                 self._term_to_id[term.lower()] = word_id
                 self.g.nodes[word_id]["id"] = word_id
@@ -597,7 +603,9 @@ class GraphManager:
         """
         try:
             # Get nodes without positions (new nodes)
-            nodes_without_pos = [n for n in self.g.nodes() if n not in self._positions]
+            nodes_without_pos: List[int] = [
+                int(n) for n in self.g.nodes() if n not in self._positions
+            ]
 
             if not nodes_without_pos:
                 return
@@ -620,8 +628,11 @@ class GraphManager:
                 dim=self._dimensions,
             )
 
-            # Update positions
-            self._positions = pos
+            # Update positions - convert numpy arrays to tuples to match type annotation
+            self._positions = {
+                node: tuple(float(p) for p in position)
+                for node, position in pos.items()
+            }
 
             # Update node attributes with new positions
             for node_id, position in pos.items():
@@ -648,7 +659,8 @@ class GraphManager:
             nodes_without_pos: List of node IDs that need positioning
         """
         for node in nodes_without_pos:
-            neighbors = list(self.g.neighbors(node))
+            # Explicitly type the neighbors list to satisfy type checker
+            neighbors: List[int] = list(self.g.neighbors(node))
 
             if not neighbors:
                 # No neighbors, place randomly
@@ -769,10 +781,13 @@ class GraphManager:
                     pos = word_data.get("part_of_speech", "")
 
                     if term:
-                        cursor.execute(SQL_INSERT_SAMPLE_WORD, (term, definition, pos))
+                        cursor.execute(
+                            database_manager.SQL_INSERT_SAMPLE_WORD,
+                            (term, definition, pos),
+                        )
 
                 # Get the inserted word IDs
-                cursor.execute(SQL_FETCH_ALL_WORDS)
+                cursor.execute(database_manager.SQL_FETCH_ALL_WORDS)
                 words = cursor.fetchall()
 
                 # Create a mapping of term to ID
@@ -2712,12 +2727,12 @@ class GraphManager:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
                 # Check if words table exists
-                cursor.execute(SQL_CHECK_WORDS_TABLE)
+                cursor.execute(database_manager.SQL_CHECK_WORDS_TABLE)
                 if not cursor.fetchone():
                     return False
 
                 # Check if relationships table exists
-                cursor.execute(SQL_CHECK_RELATIONSHIPS_TABLE)
+                cursor.execute(database_manager.SQL_CHECK_RELATIONSHIPS_TABLE)
                 if not cursor.fetchone():
                     return False
 

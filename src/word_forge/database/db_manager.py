@@ -374,6 +374,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
 ON relationships(word_id, related_term, relationship_type)
 """
 
+SQL_CHECK_WORDS_TABLE = (
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
+)
+
 # SQL query constants for data operations
 SQL_INSERT_OR_UPDATE_WORD = """
 INSERT INTO words (term, definition, part_of_speech, usage_examples, last_refreshed)
@@ -409,6 +413,10 @@ SELECT id FROM words WHERE term = ?
 
 SQL_GET_ALL_WORDS = """
 SELECT id, term, definition, usage_examples FROM words
+"""
+
+SQL_CHECK_RELATIONSHIPS_TABLE = """
+SELECT name FROM sqlite_master WHERE type='table' AND name='relationships'
 """
 
 # SQL statements for database setup and schema validation

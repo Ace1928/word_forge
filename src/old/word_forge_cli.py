@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from word_forge.database.db_manager import DBManager, WordEntryDict
+from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.parser.parser_refiner import ParserRefiner
+from word_forge.queue.queue_manager import QueueManager
 from word_forge.worker.worker_thread import (
     ProcessingResult,
     WordForgeWorker,
@@ -154,7 +156,8 @@ class WordForgeCLI:
         """Initialize the core components of WordForge."""
         self.db_manager = DBManager(db_path)
         self.parser_refiner = ParserRefiner()
-        self.queue_manager = self.parser_refiner.queue_manager
+        self.queue_manager = QueueManager()
+        self.emotion_manager = EmotionManager(self.db_manager)
         self.logger.info(f"Initialized with database: {db_path}")
         self.logger.info(f"Data directory: {data_dir}")
 
@@ -183,6 +186,7 @@ class WordForgeCLI:
                 parser_refiner=self.parser_refiner,
                 queue_manager=self.queue_manager,
                 db_manager=self.db_manager,
+                emotion_manager=self.emotion_manager,
                 result_callback=self._on_word_processed,
                 logger=self.logger,
             )
@@ -219,13 +223,8 @@ class WordForgeCLI:
             result: Processing result object from worker
         """
         try:
-            # Guard clause for null results
-            if result is None:
-                self.logger.warning("Received null processing result")
-                return
-
             # Handle different ProcessingResult types (dict-like or object-like)
-            if isinstance(result, dict):
+            if result:
                 term = result.get("term", "")
                 success = result.get("success", False)
             else:
