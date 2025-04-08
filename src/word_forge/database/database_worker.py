@@ -841,15 +841,19 @@ class DatabaseWorker(threading.Thread):
         self.logger.debug(f"Error traceback: {traceback.format_exc()}")
 
     def stop(self) -> None:
-        """
-        Signal the worker thread to stop after the current operation.
-
-        Sets the internal stop flag that will be detected at the next loop
-        iteration. The worker thread will terminate after completing any
-        in-progress database operations.
-        """
+        """Signal the worker to stop and wait for any current operation to complete."""
         self.logger.info("Database worker stopping...")
-        self._stop_flag = True
+
+        with self._status_lock:
+            self._stop_flag = True
+            self._current_state = DBWorkerState.STOPPED
+
+            # Cancel any pending operations
+            with self._operation_lock:
+                self._pending_operations.clear()
+
+            # Add a more aggressive interrupt flag
+            self._immediate_stop = True
 
     def restart(self) -> None:
         """

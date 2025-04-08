@@ -29,11 +29,12 @@ Key Responsibilities:
 
 from __future__ import annotations
 
+import _thread
 import logging
 import threading
 import time
 import types
-from typing import Any, Dict, List, Optional, Protocol, Union, final
+from typing import Any, Dict, Optional, Protocol, Union, final
 
 # Import worker types - use Protocols for loose coupling
 from word_forge.conversation.conversation_worker import (
@@ -271,44 +272,48 @@ class WorkerManager:
                 return
 
             self._running = False
+            active_threads = []
+
             if self.logger:
                 self.logger.info("Stopping all registered workers...")
 
-            threads_to_join: List[threading.Thread] = []
-            for name in list(self._workers.keys()):
+            # Define explicit type annotation for active_threads
+            active_threads: list[threading.Thread] = []
+
+            # Stop each worker
+            for name, worker in self._workers.items():
                 try:
-                    thread = self.stop_worker(name, wait=False)
-                    if thread:
-                        threads_to_join.append(thread)
-                except WorkerControlError as e:
+                    worker.stop()
                     if self.logger:
-                        self.logger.error(f"Failed to stop worker '{name}': {e}")
+                        self.logger.info(f"Stopped worker '{name}'")
+
+                    thread = self._worker_threads.get(name)
+                    if thread and thread.is_alive():
+                        active_threads.append(thread)
                 except Exception as e:
                     if self.logger:
-                        self.logger.error(
-                            f"Unexpected error stopping worker '{name}': {e}",
-                            exc_info=True,
-                        )
+                        self.logger.error(f"Error stopping worker '{name}': {e}")
 
-            if wait and threads_to_join:
+            # Wait for threads to terminate
+            if wait and active_threads:
                 if self.logger:
                     self.logger.info(
-                        f"Waiting for {len(threads_to_join)} worker threads to terminate..."
+                        f"Waiting for {len(active_threads)} worker threads to terminate..."
                     )
-                for thread in threads_to_join:
-                    try:
-                        thread.join(timeout=timeout)
-                        if thread.is_alive():
-                            if self.logger:
-                                self.logger.warning(
-                                    f"Worker thread {thread.name} did not terminate within timeout."
-                                )
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.error(
-                                f"Error joining thread {thread.name}: {e}"
-                            )
-                if self.logger:
+
+                # Join threads with individual timeouts
+                for thread in active_threads:
+                    thread.join(timeout=timeout)
+
+                # Check and warn for non-terminated threads
+                non_terminated = [t for t in active_threads if t.is_alive()]
+                for thread in non_terminated:
+                    if self.logger:
+                        self.logger.warning(
+                            f"Worker thread {thread.name} did not terminate within timeout."
+                        )
+
+                if self.logger and not non_terminated:
                     self.logger.info("All workers stopped.")
 
     def pause_all(self) -> None:
@@ -494,37 +499,13 @@ class WorkerManager:
         with self._lock:
             for name, worker in self._workers.items():
                 try:
-                    # Ensure get_status exists and is callable
-                    if hasattr(worker, "get_status") and callable(worker.get_status):
-                        status = worker.get_status()
-                        # Basic validation of returned status
-                        if "running" in status and "state" in status:
-                            statuses[name] = status
-                        else:
-                            if self.logger:
-                                self.logger.warning(
-                                    f"Worker '{name}' returned invalid status format."
-                                )
-                            statuses[name] = {
-                                "running": worker.is_alive(),
-                                "state": "unknown",
-                                "error": "Invalid status format",
-                            }
-                    else:
-                        # Fallback status if get_status is missing
-                        if self.logger:
-                            self.logger.warning(
-                                f"Worker '{name}' does not have a get_status method."
-                            )
-                        statuses[name] = {
-                            "running": worker.is_alive(),
-                            "state": "unknown",
-                            "error": "No status method",
-                        }
+                    # Handle potential worker errors or deadlocks
+                    status = worker.get_status()
+                    statuses[name] = status
                 except Exception as e:
                     if self.logger:
                         self.logger.error(
-                            f"Failed to get status for worker '{name}': {e}"
+                            f"Error getting status for worker '{name}': {e}"
                         )
                     statuses[name] = {
                         "running": False,
@@ -716,12 +697,28 @@ def worker_manager_demo():
             time.sleep(7)  # Run for another 7 seconds
 
         print("\nWorker Manager stopped.")
-        final_status = manager.get_status()
-        print("\n--- Final Status ---")
-        for name, stat in final_status.items():
-            print(
-                f"Worker '{name}': State={stat.get('state', 'unknown')}, Running={stat.get('running', False)}"
-            )
+
+        # Add a failsafe timeout for status retrieval
+        try:
+
+            with threading.RLock():
+                # Prevent hanging on status retrieval
+                timer = threading.Timer(5.0, lambda: _thread.interrupt_main())
+                timer.daemon = True
+                timer.start()
+
+                try:
+                    final_status = manager.get_status()
+                    print("\n--- Final Status ---")
+                    for name, stat in final_status.items():
+                        print(
+                            f"Worker '{name}': State={stat.get('state', 'unknown')}, "
+                            f"Running={stat.get('running', False)}"
+                        )
+                finally:
+                    timer.cancel()
+        except KeyboardInterrupt:
+            print("\n--- Final status retrieval timed out ---")
 
     except ImportError as e:
         print(f"\nDEMO SKIPPED: Missing dependency - {e}")

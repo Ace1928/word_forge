@@ -23,6 +23,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import queue
 import random
 import sys
 import time
@@ -47,7 +48,7 @@ from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.parser.parser_refiner import ParserRefiner
-from word_forge.queue.queue_manager import QueueManager
+from word_forge.queue.queue_manager import QueueManager, Result  # Import Result
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -215,33 +216,63 @@ class ProcessingMetrics:
             self.error_types[error_type] = self.error_types.get(error_type, 0) + 1
 
     def get_avg_processing_time(self) -> Optional[float]:
-        """Calculate the average processing time."""
-        with self._lock:
-            if not self.processing_times:
+        """Calculate the average processing time with timeout protection."""
+        try:
+            # Use a timeout to prevent deadlocks during shutdown
+            if not self._lock.acquire(timeout=0.5):
                 return None
-            return sum(self.processing_times) / len(self.processing_times)
+
+            try:
+                if not self.processing_times:
+                    return None
+                return sum(self.processing_times) / len(self.processing_times)
+            finally:
+                self._lock.release()
+        except Exception:
+            # Safely handle any exceptions during shutdown
+            return None
 
     def get_metrics_dict(self) -> Dict[str, Any]:
         """Return a dictionary of all metrics."""
-        with self._lock:
-            return {
-                "processed_count": self.processed_count,
-                "success_count": self.success_count,
-                "error_count": self.error_count,
-                "timeout_count": self.timeout_count,
-                "deferred_count": self.deferred_count,
-                "invalid_count": self.invalid_count,
-                "avg_processing_time_ms": (
-                    round(avg_time * 1000, 2)
-                    if (avg_time := self.get_avg_processing_time()) is not None
-                    else None
-                ),
-                "task_type_distribution": dict(self.task_types),
-                "error_type_distribution": dict(self.error_types),
-                "success_rate": (
-                    round(self.success_count / max(1, self.processed_count) * 100, 2)
-                ),
-            }
+        try:
+            # Use a timeout to prevent deadlocks
+            if not self._lock.acquire(timeout=1.0):
+                # Return minimal metrics if we can't acquire the lock
+                return {
+                    "processed_count": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                    "success_rate": 0,
+                    "error": "Metrics lock acquisition timed out",
+                }
+
+            try:
+                # Calculate average processing time outside the lock
+                avg_time = None
+                if self.processing_times:
+                    avg_time = sum(self.processing_times) / len(self.processing_times)
+
+                return {
+                    "processed_count": self.processed_count,
+                    "success_count": self.success_count,
+                    "error_count": self.error_count,
+                    "timeout_count": self.timeout_count,
+                    "deferred_count": self.deferred_count,
+                    "invalid_count": self.invalid_count,
+                    "avg_processing_time_ms": (
+                        round(avg_time * 1000, 2) if avg_time is not None else None
+                    ),
+                    "task_type_distribution": dict(self.task_types),
+                    "error_type_distribution": dict(self.error_types),
+                    "success_rate": round(
+                        self.success_count / max(1, self.processed_count) * 100, 2
+                    ),
+                }
+            finally:
+                self._lock.release()
+        except Exception as e:
+            # Return error metrics if something goes wrong
+            return {"error": f"Failed to get metrics: {str(e)}", "processed_count": 0}
 
 
 class StateTracker:
@@ -681,57 +712,67 @@ class ConversationWorker(Thread):
         return processed
 
     def _process_queue_batch(self) -> int:
-        """
-        Process a batch of tasks from the queue.
-
-        Returns:
-            int: Number of tasks processed from the main queue
-        """
-        processed = 0
+        """Process a batch of tasks from the queue."""
+        processed_count = 0
 
         for _ in range(self.batch_size):
-            if self._stop_event.is_set() or self._pause_event.is_set():
-                break
-
             try:
-                task = self.queue_manager.dequeue()
-                if not task:
-                    break  # Queue is empty
+                # Get a task result from the queue
+                dequeue_result: Result[Union[ConversationTask, str, Dict[str, Any]]] = (
+                    self.queue_manager.dequeue(block=False)
+                )
 
-                # Convert to task format if needed
-                if isinstance(task, str):
-                    task_data: ConversationTask = {
-                        "task_id": f"task_{int(time.time() * 1000)}_{random.randint(1000, 9999)}",
-                        "message": task,
-                        "speaker": "system",
-                        "timestamp": time.time(),
-                        "priority": 1,
-                        "context": {},
-                    }
-                elif isinstance(task, dict):
-                    task_data = cast(ConversationTask, task)
+                if dequeue_result.is_success:
+                    task_item = dequeue_result.unwrap()
+
+                    # Handle different types of queue items
+                    if isinstance(task_item, dict) and "task_id" in task_item:
+                        # This is a valid ConversationTask
+                        task = cast(ConversationTask, task_item)
+                        self._process_task(task)
+                        processed_count += 1
+                    elif isinstance(task_item, str):
+                        # Handle string tasks by converting to simple task format
+                        simple_task: ConversationTask = {
+                            "task_id": f"auto_{int(time.time())}",
+                            "conversation_id": None,
+                            "message": task_item,
+                            "speaker": "user",
+                            "timestamp": time.time(),
+                            "priority": 1,
+                            "context": {},
+                        }
+                        self._process_task(simple_task)
+                        processed_count += 1
+                    else:
+                        # Skip invalid task types with more informative logging
+                        task_type = type(task_item).__name__
+                        if self.logger:
+                            self.logger.warning(
+                                f"Invalid task type received: {task_type}. Expected ConversationTask. "
+                                f"Item: {str(task_item)[:100]}... (truncated)"
+                            )
                 else:
-                    if self.logger:
-                        self.logger.warning(f"Invalid task type: {type(task)}")
-                    continue
+                    # Handle error from dequeue_result
+                    error = dequeue_result.error
+                    if error is not None and error.error_code != "EMPTY_QUEUE":
+                        if self.logger:
+                            self.logger.error(f"Error dequeuing task: {error.message}")
+                        self.state_tracker.record_error(
+                            f"Dequeue error: {error.message}"
+                        )
 
-                # Process the task
-                result = self._process_task(task_data)
-                processed += 1
-
-                # Handle failed tasks for retry
-                if result not in (TaskResult.SUCCESS, TaskResult.INVALID):
-                    task_id = task_data.get("task_id", str(id(task_data)))
-                    self._retry_queue[task_id] = (task_data, 1)
-
+            except queue.Empty:
+                # No more tasks in queue
+                break
             except Exception as e:
                 if self.logger:
                     self.logger.error(
-                        f"Error processing queue: {str(e)}", exc_info=True
+                        f"Error processing queue batch: {e}", exc_info=True
                     )
-                # Continue processing other tasks
+                self.state_tracker.record_error(str(e))
 
-        return processed
+        return processed_count
 
     def _process_task(self, task: ConversationTask) -> TaskResult:
         """

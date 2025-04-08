@@ -364,7 +364,12 @@ class GraphWorker(threading.Thread):
 
     def _save_graph(self) -> None:
         """Save the graph to a file."""
-        self.graph_manager.save_to_gexf(self.output_path)
+        # Check if the graph has nodes before attempting to save
+        if self.graph_manager.get_node_count() > 0:
+            self.graph_manager.save_to_gexf(self.output_path)
+            self.logger.debug(f"Graph saved to {self.output_path}")
+        else:
+            self.logger.debug("Skipping save for empty graph.")
 
     def _generate_visualization(self) -> None:
         """Generate graph visualization if the graph has nodes."""
