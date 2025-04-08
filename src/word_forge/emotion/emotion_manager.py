@@ -8,7 +8,7 @@ a hybrid analysis architecture that combines:
 - Multi-method sentiment fusion: TextBlob, VADER, and optional LLM integration
 - Recursive emotional processing: Meta-emotions and emotional relationships
 - Contextual analysis: Domain, cultural, and situational emotional adjustments
-- Persistent storage: Sqlite-backed emotion data with efficient retrieval
+- Persistent storage: Database-agnostic emotion data with efficient retrieval
 
 Core capabilities:
 1. Text sentiment measurement with configurable analyzer weights
@@ -16,6 +16,8 @@ Core capabilities:
 3. Word-level emotion association tracking
 4. Recursive emotional relationship analysis
 5. Custom emotional context creation and management
+6. Runtime optimization through performance metrics
+7. Dialect-independent database operations
 
 This system progressively enhances emotional understanding based on available
 analyzers, providing graceful degradation when advanced components like
@@ -38,7 +40,13 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
 from textblob import TextBlob  # type: ignore
 
 from word_forge.database.db_manager import DBManager
-from word_forge.emotion.emotion_config import EmotionConfig
+from word_forge.emotion.emotion_config import (
+    EmotionCategory,
+    EmotionCategoryType,
+    EmotionConfig,
+    EmotionDetectionMetrics,
+    normalize_emotion_category,
+)
 from word_forge.emotion.emotion_types import (
     EmotionalContext,
     EmotionAnalysisDict,
@@ -53,6 +61,16 @@ from word_forge.parser.language_model import ModelState as LLMInterface
 
 VADER_AVAILABLE = True
 LLM_AVAILABLE = True
+
+# Set of positive emotion categories for efficient categorization
+POSITIVE_EMOTIONS = {EmotionCategory.HAPPINESS, EmotionCategory.SURPRISE}
+# Set of negative emotion categories for efficient categorization
+NEGATIVE_EMOTIONS = {
+    EmotionCategory.SADNESS,
+    EmotionCategory.ANGER,
+    EmotionCategory.FEAR,
+    EmotionCategory.DISGUST,
+}
 
 
 class EmotionError(Exception):
@@ -87,7 +105,7 @@ class EmotionManager:
     - Word emotions: valence (positive/negative) and arousal levels
     - Message emotions: categorical emotion labels with confidence scores
 
-    All emotional data is persistent and stored in SQLite tables.
+    All emotional data is persistent and stored in database tables.
 
     The emotion analysis uses a hybrid approach combining TextBlob, VADER
     (when available), and optional LLM integration for more accurate and
@@ -99,10 +117,10 @@ class EmotionManager:
     Attributes:
         db_manager: Database manager providing connection to storage
         config: Configuration for emotion analysis parameters
+        metrics: Detection metrics for runtime performance optimization
         VALENCE_RANGE: Valid range for valence values (-1.0 to 1.0 by default)
         AROUSAL_RANGE: Valid range for arousal values (0.0 to 1.0 by default)
         CONFIDENCE_RANGE: Valid range for confidence values (0.0 to 1.0 by default)
-        EMOTION_KEYWORDS: Dictionary mapping emotion categories to keywords
         vader_weight: Weight given to VADER in hybrid analysis
         textblob_weight: Weight given to TextBlob in hybrid analysis
         llm_weight: Weight given to LLM analysis when available
@@ -130,6 +148,10 @@ class EmotionManager:
 
         # Create config instance
         self.config = EmotionConfig()
+
+        # Add metrics for runtime optimization
+        self.metrics = EmotionDetectionMetrics()
+
         self._create_tables()
 
         # Initialize sentiment analyzers and LLM if available
@@ -148,6 +170,10 @@ class EmotionManager:
 
         # Initialize recursive emotion processor lazily
         self._recursive_processor = None
+
+        # Track detection counts for optimization
+        self._detection_count = 0
+        self._optimization_frequency = 100  # Optimize after this many detections
 
     @property
     def recursive_processor(self):
@@ -236,7 +262,8 @@ class EmotionManager:
         - message_emotion: Links messages to categorical emotion labels
 
         Table schemas are defined in the EmotionConfig class to ensure
-        consistency across system components.
+        consistency across system components. Uses dialect-specific SQL
+        based on the configuration.
 
         Raises:
             EmotionError: If there's an issue creating the emotion tables
@@ -244,8 +271,13 @@ class EmotionManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(self.config.SQL_CREATE_WORD_EMOTION_TABLE)
-                cursor.execute(self.config.SQL_CREATE_MESSAGE_EMOTION_TABLE)
+                # Use dialect-specific SQL templates
+                cursor.execute(
+                    self.config.get_sql_template("create_word_emotion_table")
+                )
+                cursor.execute(
+                    self.config.get_sql_template("create_message_emotion_table")
+                )
                 conn.commit()
         except sqlite3.Error as e:
             raise EmotionError(
@@ -283,7 +315,7 @@ class EmotionManager:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    self.config.SQL_INSERT_WORD_EMOTION,
+                    self.config.get_sql_template("insert_word_emotion"),
                     (word_id, valence, arousal, time.time()),
                 )
                 conn.commit()
@@ -319,7 +351,9 @@ class EmotionManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(self.config.SQL_GET_WORD_EMOTION, (word_id,))
+                cursor.execute(
+                    self.config.get_sql_template("get_word_emotion"), (word_id,)
+                )
                 row = cursor.fetchone()
 
                 if row:
@@ -332,7 +366,7 @@ class EmotionManager:
 
     @lru_cache(maxsize=256)
     def set_message_emotion(
-        self, message_id: int, label: str, confidence: float = 1.0
+        self, message_id: int, emotion: EmotionCategoryType, confidence: float = 1.0
     ) -> None:
         """Tag a message with an emotion label.
 
@@ -341,7 +375,7 @@ class EmotionManager:
 
         Args:
             message_id: Database ID of the target message
-            label: Emotional category name (e.g., 'happy', 'sad')
+            emotion: Emotional category (enum or string label)
             confidence: Certainty level of the emotion (0.0 to 1.0)
 
         Raises:
@@ -350,9 +384,16 @@ class EmotionManager:
         Example:
             ```python
             # Tag message as expressing anger with high confidence
-            emotion_manager.set_message_emotion(1042, "anger", 0.85)
+            emotion_manager.set_message_emotion(1042, EmotionCategory.ANGER, 0.85)
+            # String labels still work for backward compatibility
+            emotion_manager.set_message_emotion(1043, "happiness", 0.92)
             ```
         """
+        # Normalize emotion category to ensure consistency
+        emotion_cat = normalize_emotion_category(emotion)
+        # Use the label for storage
+        label = emotion_cat.label
+
         confidence = max(
             self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence)
         )
@@ -361,7 +402,7 @@ class EmotionManager:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    self.config.SQL_INSERT_MESSAGE_EMOTION,
+                    self.config.get_sql_template("insert_message_emotion"),
                     (message_id, label, confidence, time.time()),
                 )
                 conn.commit()
@@ -396,7 +437,9 @@ class EmotionManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(self.config.SQL_GET_MESSAGE_EMOTION, (message_id,))
+                cursor.execute(
+                    self.config.get_sql_template("get_message_emotion"), (message_id,)
+                )
                 row = cursor.fetchone()
 
                 if row:
@@ -552,6 +595,7 @@ Return the analysis as a JSON object with these fields:
             )
             print(f"Valence: {valence:.2f}, Arousal: {arousal:.2f}")
             # Might output: Valence: 0.82, Arousal: 0.75
+            ```
         """
 
         # Define type for TextBlob sentiment
@@ -633,11 +677,12 @@ Return the analysis as a JSON object with these fields:
 
         return valence, arousal
 
-    def _count_keyword_occurrences(self, text: str) -> Dict[str, int]:
+    def _count_keyword_occurrences(self, text: str) -> Dict[EmotionCategory, int]:
         """Count emotion keyword occurrences in a text.
 
         Searches for emotion-specific keywords defined in the configuration,
-        using case-insensitive matching to maximize detection.
+        using case-insensitive matching to maximize detection. Uses the
+        keyword registry for dynamic keyword management.
 
         Args:
             text: Text to analyze for emotion keywords
@@ -650,18 +695,19 @@ Return the analysis as a JSON object with these fields:
             counts = emotion_manager._count_keyword_occurrences(
                 "I'm feeling happy and excited today!"
             )
-            # Might return: {'happiness': 2, 'anger': 0, 'sadness': 0, ...}
+            # Might return: {EmotionCategory.HAPPINESS: 2, EmotionCategory.ANGER: 0, ...}
             ```
         """
         text_lower = text.lower()
-        result: Dict[str, int] = {}
-        for emotion, keywords in self.EMOTION_KEYWORDS.items():
-            if isinstance(keywords, list):
-                # Cast keywords to List[str] for type checking
-                str_keywords: List[str] = cast(List[str], keywords)
-                result[emotion] = sum(text_lower.count(word) for word in str_keywords)
-            else:
-                result[emotion] = 0
+        result: Dict[EmotionCategory, int] = {}
+
+        # Count occurrences for each emotion category
+        for category in EmotionCategory:
+            # Get keywords from registry or config
+            keywords = self.config.get_keywords_for_emotion(category)
+            # Count keyword occurrences
+            result[category] = sum(text_lower.count(word) for word in keywords)
+
         return result
 
     def classify_emotion(self, text: str) -> Tuple[str, float]:
@@ -693,9 +739,14 @@ Return the analysis as a JSON object with these fields:
                 if emotion_dims and "primary_emotion" in emotion_dims:
                     primary = str(emotion_dims["primary_emotion"])
                     confidence = emotion_dims.get("confidence", 0.7)
-                    # Map to our standard emotion categories if needed
-                    if primary in self.EMOTION_KEYWORDS:
-                        return primary, min(confidence, 1.0)
+
+                    # Try to map to our standard emotion categories
+                    try:
+                        emotion_cat = EmotionCategory.from_label(primary)
+                        return emotion_cat.label, min(confidence, 1.0)
+                    except ValueError:
+                        # If direct mapping fails, continue with regular classification
+                        pass
             except Exception:
                 # Continue with regular classification if LLM fails
                 pass
@@ -703,57 +754,97 @@ Return the analysis as a JSON object with these fields:
         # Get valence for sentiment direction
         valence, _ = self.analyze_text_emotion(text)
 
-        # Count keyword occurrences for each emotion
+        # Count keyword occurrences for each emotion category
         keyword_counts = self._count_keyword_occurrences(text)
 
-        # Combine keyword counts with valence for better classification
-        if abs(valence) < 0.2:
-            # Near-neutral sentiment - rely more on keywords or default to neutral
-            emotion = max(keyword_counts.items(), key=lambda x: x[1])[0]
-            if keyword_counts[emotion] == 0:
-                emotion = "neutral"
-        else:
-            # Strong sentiment - choose between positive or negative emotions
-            if valence > 0:
-                positive_emotions = ["happiness", "surprise"]
-                candidates = {e: keyword_counts[e] for e in positive_emotions}
-                emotion = max(candidates.items(), key=lambda x: x[1])[0]
-                if candidates[emotion] == 0:
-                    emotion = "happiness"  # Default positive
+        # Identify the category with the most keyword matches
+        top_category = max(keyword_counts.items(), key=lambda x: x[1])[0]
+        top_count = keyword_counts[top_category]
+
+        # If no keywords found, determine category based on valence
+        if top_count == 0:
+            if valence > 0.3:
+                # Positive valence - choose happiness
+                top_category = EmotionCategory.HAPPINESS
+            elif valence < -0.3:
+                # Negative valence - choose sadness
+                top_category = EmotionCategory.SADNESS
             else:
-                negative_emotions = ["sadness", "anger", "fear", "disgust"]
-                candidates = {e: keyword_counts[e] for e in negative_emotions}
-                emotion = max(candidates.items(), key=lambda x: x[1])[0]
-                if candidates[emotion] == 0:
-                    emotion = "sadness"  # Default negative
+                # Neutral valence - choose neutral
+                top_category = EmotionCategory.NEUTRAL
+        else:
+            # Check if valence agrees with the emotion's typical valence
+            is_positive = top_category in POSITIVE_EMOTIONS
+            is_negative = top_category in NEGATIVE_EMOTIONS
+
+            if (is_positive and valence < -0.3) or (is_negative and valence > 0.3):
+                # Significant disagreement between keyword and valence
+                # Choose based more on valence than keywords
+                if valence > 0.3:
+                    candidates = {c: keyword_counts[c] for c in POSITIVE_EMOTIONS}
+                    if any(candidates.values()):
+                        # Choose positive emotion with highest keyword count
+                        top_category = max(candidates.items(), key=lambda x: x[1])[0]
+                    else:
+                        # Default to happiness
+                        top_category = EmotionCategory.HAPPINESS
+                elif valence < -0.3:
+                    candidates = {c: keyword_counts[c] for c in NEGATIVE_EMOTIONS}
+                    if any(candidates.values()):
+                        # Choose negative emotion with highest keyword count
+                        top_category = max(candidates.items(), key=lambda x: x[1])[0]
+                    else:
+                        # Default to sadness
+                        top_category = EmotionCategory.SADNESS
 
         # Calculate confidence based on keyword strength and valence agreement
-        keyword_strength = (
-            min(keyword_counts[emotion] / 3, 1.0)
-            if keyword_counts[emotion] > 0
-            else self.config.min_keyword_confidence
-        )
-        confidence = 0.4 + (self.config.keyword_match_weight * keyword_strength)
+        # Start with the minimum confidence baseline
+        confidence = self.config.min_keyword_confidence
 
-        # Increase confidence if valence strongly agrees with emotion polarity
-        emotion_is_positive = emotion in ["happiness", "surprise"]
-        valence_matches_emotion = (valence > 0.3 and emotion_is_positive) or (
-            valence < -0.3 and not emotion_is_positive
+        # Add confidence based on keyword matches (if any)
+        if top_count > 0:
+            # Use category-specific threshold if available
+            keyword_weight = self.config.get_category_weight(top_category)
+            keyword_confidence = min(top_count / 3, 1.0) * keyword_weight
+            confidence = max(confidence, keyword_confidence)
+
+        # Boost confidence if valence strongly agrees with emotion type
+        is_positive_emotion = top_category in POSITIVE_EMOTIONS
+        is_negative_emotion = top_category in NEGATIVE_EMOTIONS
+
+        valence_matches_emotion = (valence > 0.3 and is_positive_emotion) or (
+            valence < -0.3 and is_negative_emotion
         )
+
         if valence_matches_emotion:
             confidence = min(confidence + 0.15, 1.0)
 
-        return emotion, confidence
+        # Use category-specific threshold to potentially adjust confidence
+        threshold = top_category.threshold
+        if confidence < threshold:
+            confidence = (confidence + threshold) / 2  # Blend for smoother transitions
 
-    def process_message(self, message_id: int, text: str) -> EmotionAnalysisDict:
+        # Ensure confidence is in valid range
+        confidence = max(min(confidence, 1.0), 0.0)
+
+        return top_category.label, confidence
+
+    def process_message(
+        self,
+        message_id: int,
+        text: str,
+        ground_truth: Optional[EmotionCategoryType] = None,
+    ) -> EmotionAnalysisDict:
         """Process a message to identify and store its emotional content.
 
         Performs emotion classification on the message text and stores
         the results in the database for later retrieval and analysis.
+        Optionally tracks performance metrics if ground truth is provided.
 
         Args:
             message_id: Database ID of the message
             text: Message text to analyze
+            ground_truth: Optional known emotion for performance tracking
 
         Returns:
             Dictionary containing the identified emotion data
@@ -768,15 +859,111 @@ Return the analysis as a JSON object with these fields:
             )
             print(f"Detected emotion: {result['emotion_label']}")
             print(f"Confidence: {result['confidence']}")
+
+            # With ground truth for performance tracking
+            result = emotion_manager.process_message(
+                1043, "I'm so excited!", EmotionCategory.HAPPINESS
+            )
             ```
         """
         # Classify the emotion in the text
         emotion_label, confidence = self.classify_emotion(text)
 
+        # Convert string emotion label to EmotionCategory for internal use
+        try:
+            predicted_emotion = EmotionCategory.from_label(emotion_label)
+        except ValueError:
+            # Fallback if label doesn't match any category
+            predicted_emotion = EmotionCategory.NEUTRAL
+            emotion_label = predicted_emotion.label
+
         # Store the emotion data
-        self.set_message_emotion(message_id, emotion_label, confidence)
+        self.set_message_emotion(message_id, predicted_emotion, confidence)
+
+        # Track metrics if ground truth is provided
+        if ground_truth is not None:
+            try:
+                actual_emotion = normalize_emotion_category(ground_truth)
+                # Record detection for performance tracking
+                self.metrics.record_detection(predicted_emotion, actual_emotion)
+
+                # Increment detection count
+                self._detection_count += 1
+
+                # Periodically optimize weights if enough data
+                if self._detection_count % self._optimization_frequency == 0:
+                    optimized_weights = self.metrics.optimize_weights(self.config)
+                    self.config.per_category_weights.update(optimized_weights)
+            except ValueError:
+                # Skip metrics if ground truth is invalid
+                pass
 
         return {"emotion_label": emotion_label, "confidence": confidence}
+
+    def get_metrics_report(self) -> Dict[str, Any]:
+        """Get a report of emotion detection performance metrics.
+
+        Summarizes the performance of emotion detection across categories,
+        useful for monitoring system accuracy and identifying areas for
+        improvement.
+
+        Returns:
+            Dictionary with performance metrics for each emotion category
+
+        Example:
+            ```python
+            report = emotion_manager.get_metrics_report()
+            print(f"Overall accuracy: {report['overall_accuracy']:.2f}")
+            for category, metrics in report['categories'].items():
+                print(f"{category}: precision={metrics['precision']:.2f}, "
+                      f"recall={metrics['recall']:.2f}, f1={metrics['f1']:.2f}")
+            ```
+        """
+        # Skip report if no detections recorded
+        if self.metrics.total_detections == 0:
+            return {"total_detections": 0, "overall_accuracy": 0.0, "categories": {}}
+
+        # Calculate metrics for each category
+        category_metrics = {}
+        total_precision = 0.0
+        total_recall = 0.0
+        total_f1 = 0.0
+
+        for category in EmotionCategory:
+            precision = self.metrics.get_precision(category)
+            recall = self.metrics.get_recall(category)
+            f1 = self.metrics.get_f1_score(category)
+
+            category_metrics[category.label] = {
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "true_positives": self.metrics.true_positives.get(category, 0),
+                "false_positives": self.metrics.false_positives.get(category, 0),
+                "false_negatives": self.metrics.false_negatives.get(category, 0),
+            }
+
+            total_precision += precision
+            total_recall += recall
+            total_f1 += f1
+
+        # Calculate overall metrics
+        category_count = len(EmotionCategory)
+
+        return {
+            "total_detections": self.metrics.total_detections,
+            "overall_accuracy": (
+                sum(self.metrics.true_positives.values())
+                / self.metrics.total_detections
+                if self.metrics.total_detections > 0
+                else 0.0
+            ),
+            "avg_precision": total_precision / category_count,
+            "avg_recall": total_recall / category_count,
+            "avg_f1": total_f1 / category_count,
+            "categories": category_metrics,
+            "optimization_count": self._detection_count // self._optimization_frequency,
+        }
 
     def analyze_term_recursively(
         self, term: str, context: Optional[Union[str, EmotionalContext]] = None
@@ -1316,22 +1503,42 @@ def main() -> None:
 
     # Example: Analyze and track emotions for messages
     messages = [
-        (100, "I'm so happy today! Everything is going GREAT!"),
-        (101, "I feel sad and disappointed about the results."),
-        (102, "This product is amazing and exceeds expectations."),
-        (103, "I'm furious about the terrible customer service."),
-        (104, "Just received the package, it looks fine."),
-        (105, "OMG this is AWESOME!!! 😊 I love it so much!"),
+        (
+            100,
+            "I'm so happy today! Everything is going GREAT!",
+            EmotionCategory.HAPPINESS,
+        ),
+        (
+            101,
+            "I feel sad and disappointed about the results.",
+            EmotionCategory.SADNESS,
+        ),
+        (
+            102,
+            "This product is amazing and exceeds expectations.",
+            EmotionCategory.HAPPINESS,
+        ),
+        (
+            103,
+            "I'm furious about the terrible customer service.",
+            EmotionCategory.ANGER,
+        ),
+        (104, "Just received the package, it looks fine.", EmotionCategory.NEUTRAL),
+        (
+            105,
+            "OMG this is AWESOME!!! 😊 I love it so much!",
+            EmotionCategory.HAPPINESS,
+        ),
     ]
 
     print("\nMessage Emotion Analysis:")
     print("-" * 60)
-    for message_id, text in messages:
+    for message_id, text, ground_truth in messages:
         # Analyze raw emotional dimensions
         valence, arousal = emotion_mgr.analyze_text_emotion(text)
 
-        # Classify into emotion category
-        emotion_data = emotion_mgr.process_message(message_id, text)
+        # Classify into emotion category with ground truth for metrics
+        emotion_data = emotion_mgr.process_message(message_id, text, ground_truth)
 
         # Retrieve stored data to verify
         stored_emotion = emotion_mgr.get_message_emotion(message_id)
@@ -1342,7 +1549,30 @@ def main() -> None:
             f"Classified as: {emotion_data['emotion_label']} (confidence: {emotion_data['confidence']:.2f})"
         )
         print(f"Stored data: {stored_emotion}")
+        print(f"Ground truth: {ground_truth.label}")
         print("-" * 60)
+
+    # Display metrics report
+    metrics_report = emotion_mgr.get_metrics_report()
+    print("\nEmotion Detection Metrics:")
+    print("-" * 60)
+    print(f"Total detections: {metrics_report['total_detections']}")
+    print(f"Overall accuracy: {metrics_report['overall_accuracy']:.2f}")
+    print(f"Average precision: {metrics_report['avg_precision']:.2f}")
+    print(f"Average recall: {metrics_report['avg_recall']:.2f}")
+    print(f"Average F1 score: {metrics_report['avg_f1']:.2f}")
+    print(f"Optimization rounds: {metrics_report['optimization_count']}")
+
+    print("\nCategory-specific metrics:")
+    for category, metrics in metrics_report["categories"].items():
+        print(f"  {category}:")
+        print(f"    Precision: {metrics['precision']:.2f}")
+        print(f"    Recall: {metrics['recall']:.2f}")
+        print(f"    F1 score: {metrics['f1']:.2f}")
+        print(
+            f"    TP/FP/FN: {metrics['true_positives']}/{metrics['false_positives']}/{metrics['false_negatives']}"
+        )
+    print("-" * 60)
 
     # Demonstrate emotional relationships
     print("\nEmotional Relationship Analysis:")
