@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import enum
 import math
 from dataclasses import dataclass, field
@@ -810,6 +811,22 @@ class EmotionalConcept:
         # Combine both scores (primary emotions matter more)
         return primary_coherence * 0.7 + meta_coherence * 0.3
 
+    def add_secondary_emotion(self, label: str, emotion: EmotionVector) -> None:
+        """Add a secondary emotional association.
+
+        Records an additional emotional association with a label, allowing
+        for multiple emotional dimensions to be represented for this concept.
+
+        Args:
+            label: Descriptive name for this secondary emotion
+            emotion: The vector representing the secondary emotional state
+        """
+        self.secondary_emotions.append((label, emotion))
+        # Ensure the secondary emotion is normalized
+        normalized_emotion = emotion.normalized()
+        # Update the secondary emotion with the normalized version
+        self.secondary_emotions[-1] = (label, normalized_emotion)
+
     def as_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation for serialization.
 
@@ -964,3 +981,33 @@ class EmotionFactory(Protocol):
     def create_composite(
         self, emotions: List[Tuple[EmotionVector, float]]
     ) -> EmotionVector: ...
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# EMOTION ERROR HANDLING
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class EmotionError(Exception):
+    """Exception raised for errors in the emotion analysis subsystem.
+
+    Used for all emotion-related errors to provide a consistent interface
+    with contextual information about what went wrong during emotional
+    processing operations.
+
+    Attributes:
+        message: Explanation of the error
+        timestamp: When the error occurred
+        context: Additional contextual information about the error
+    """
+
+    def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize an emotion error with detailed context.
+
+        Args:
+            message: Descriptive error message
+            context: Optional dictionary of contextual information
+        """
+        self.timestamp = datetime.datetime.now().isoformat()
+        self.context = context or {}
+        super().__init__(message)

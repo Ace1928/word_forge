@@ -28,7 +28,10 @@ operations while maintaining backward compatibility with earlier emotion
 analysis implementations.
 """
 
-import datetime
+import json
+
+# Initialize logger for the class
+import logging
 import random
 import sqlite3
 import time
@@ -50,15 +53,17 @@ from word_forge.emotion.emotion_config import (
 from word_forge.emotion.emotion_types import (
     EmotionalContext,
     EmotionAnalysisDict,
+    EmotionError,
     FullEmotionAnalysisDict,
     MessageEmotionDict,
     VaderSentimentScores,
     WordEmotionDict,
 )
 
-# Optional LLM integration if available
+# LLM Interface
 from word_forge.parser.language_model import ModelState as LLMInterface
 
+logger = logging.getLogger(__name__)
 VADER_AVAILABLE = True
 LLM_AVAILABLE = True
 
@@ -71,31 +76,6 @@ NEGATIVE_EMOTIONS = {
     EmotionCategory.FEAR,
     EmotionCategory.DISGUST,
 }
-
-
-class EmotionError(Exception):
-    """Exception raised for errors in the emotion analysis subsystem.
-
-    Used for all emotion-related errors to provide a consistent interface
-    with contextual information about what went wrong during emotional
-    processing operations.
-
-    Attributes:
-        message: Explanation of the error
-        timestamp: When the error occurred
-        context: Additional contextual information about the error
-    """
-
-    def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
-        """Initialize an emotion error with detailed context.
-
-        Args:
-            message: Descriptive error message
-            context: Optional dictionary of contextual information
-        """
-        self.timestamp = datetime.datetime.now().isoformat()
-        self.context = context or {}
-        super().__init__(message)
 
 
 class EmotionManager:
@@ -214,8 +194,8 @@ class EmotionManager:
             try:
                 self.llm_interface = LLMInterface()
             except Exception as e:
-                print(
-                    f"Warning: LLM initialization failed (continuing without LLM): {e}"
+                logger.warning(
+                    f"LLM initialization failed (continuing without LLM): {e}"
                 )
 
     def init_analysis_tools(self) -> None:
@@ -286,6 +266,14 @@ class EmotionManager:
             ) from e
 
     @lru_cache(maxsize=256)
+    def _clamp_emotional_values(
+        self, valence: float, arousal: float
+    ) -> Tuple[float, float]:
+        """Clamp valence and arousal values to their valid ranges."""
+        valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
+        arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
+        return valence, arousal
+
     def set_word_emotion(self, word_id: int, valence: float, arousal: float) -> None:
         """Store or update emotional values for a word.
 
@@ -308,8 +296,7 @@ class EmotionManager:
             emotion_manager.set_word_emotion(word_id, 0.8, 0.6)
             ```
         """
-        valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
-        arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
+        valence, arousal = self._clamp_emotional_values(valence, arousal)
 
         try:
             with self._db_connection() as conn:
@@ -523,16 +510,17 @@ Return the analysis as a JSON object with these fields:
 
             # Process response into dict format - handle both string and dict responses
             response: Dict[str, Any] = {}
-            if isinstance(response_raw, dict):
-                response = cast(Dict[str, Any], response_raw)
-            elif isinstance(response_raw, str):
-                import json
-
-                try:
+            try:
+                if response_raw is not None:
                     response = cast(Dict[str, Any], json.loads(response_raw))
-                except json.JSONDecodeError:
-                    # If not valid JSON, create minimal response
-                    response = {}
+            except json.JSONDecodeError as decode_error:
+                # Log the invalid JSON input for debugging
+                logger.error(
+                    f"Invalid JSON response: {response_raw}. Error: {decode_error}"
+                )
+
+            # If not valid JSON, create minimal response
+            response = {}
 
             # Extract the core emotional dimensions with safe type handling
             valence_raw: Any = response.get("valence", 0.0)
@@ -672,8 +660,7 @@ Return the analysis as a JSON object with these fields:
             arousal = sum(val for val, _ in arousal_factors) / len(arousal_factors)
 
         # Ensure values are within bounds
-        arousal = min(arousal, 1.0)
-        valence = max(min(valence, 1.0), -1.0)
+        valence, arousal = self._clamp_emotional_values(valence, arousal)
 
         return valence, arousal
 
@@ -1121,6 +1108,7 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
                 # Extract numeric value from result
                 if result is not None:
                     try:
+                        # Ensure result is a string before processing
                         strength = float(result.strip())
                         # Ensure proper range
                         strength = max(0.0, min(1.0, strength))
@@ -1130,8 +1118,8 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
                             1 - self.llm_weight
                         )
                     except (ValueError, TypeError):
-                        # Fall back to recursive processor if parsing fails
-                        pass
+                        # If conversion fails, fall back to base strength
+                        return base_strength
             except Exception:
                 # Fall back to recursive processor if LLM fails
                 pass

@@ -1,7 +1,8 @@
 import hashlib
 import re
 import sqlite3
-from typing import Dict, List, Optional, Tuple, final
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, List, Optional, Tuple, final
 
 from word_forge.database.db_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
@@ -10,6 +11,15 @@ from word_forge.emotion.emotion_types import (
     EmotionalContext,
     EmotionDimension,
     EmotionVector,
+)
+from word_forge.emotion.hooks import (
+    add_arousal_meta_emotion,
+    add_clarity_meta_emotion,
+    add_complexity_meta_emotion,
+    add_congruence_meta_emotion,
+    add_contextual_variations,
+    add_intensity_gradation,
+    add_temporal_sequence,
 )
 
 
@@ -37,6 +47,19 @@ class RecursiveEmotionProcessor:
         self._cache: Dict[str, EmotionalConcept] = {}
         self._processing_depth = 0
         self._max_recursion = 3
+        # We'll properly type this in _initialize_nlp when spaCy is imported
+        self._reference_docs = {}  # Store spaCy doc objects
+        # Add vector cache
+        self._vector_cache: Dict[str, Any] = {}
+
+        # Initialize hook registries
+        self.meta_emotion_hooks: List[Callable[[EmotionalConcept], None]] = []
+        self.pattern_hooks: List[Callable[[EmotionalConcept], None]] = []
+
+        # Hooks and Meta Emotion Hooks
+
+        # Register built-in hooks
+        self._register_default_hooks()
 
         # Initialize NLP components if available
         self._initialize_nlp()
@@ -46,13 +69,29 @@ class RecursiveEmotionProcessor:
         try:
             import spacy
 
-            # Use the larger model for better semantic analysis
-            self.nlp = spacy.load("en_core_web_lg")
+            # Use the smaller model for resource optimised semantic analysis
+            self.nlp = spacy.load("en_core_web_sm")
         except (ImportError, OSError):
             print(
-                "Warning: spaCy 'en_core_web_lg' model not available. Using fallback methods."
+                "Warning: spaCy 'en_core_web_sm' model not available. Using fallback methods."
             )
             self.nlp = None
+
+    @contextmanager
+    def _recursive_scope(self):
+        """Context manager for tracking recursion depth.
+
+        Ensures processing depth is properly incremented and decremented,
+        even if exceptions occur during processing.
+
+        Yields:
+            None: Control returns to the calling context
+        """
+        self._processing_depth += 1
+        try:
+            yield
+        finally:
+            self._processing_depth -= 1
 
     def process_term(
         self, term: str, context: Optional[EmotionalContext] = None
@@ -68,9 +107,10 @@ class RecursiveEmotionProcessor:
             Complete emotional concept with primary, secondary and meta emotions
         """
         # Check cache first
-        if term in self._cache:
+        cache_key = self._get_cache_key(term, context)
+        if cache_key in self._cache:
             # If we have context but cached version doesn't, apply context
-            cached = self._cache[term]
+            cached = self._cache[cache_key]
             if context:
                 # Create a copy with context applied
                 new_primary = context.apply_to_vector(cached.primary_emotion)
@@ -87,46 +127,45 @@ class RecursiveEmotionProcessor:
             return cached
 
         # Prevent excessive recursion
-        self._processing_depth += 1
-        if self._processing_depth > self._max_recursion:
-            self._processing_depth -= 1
-            # Return simplified emotion when recursion limit reached
-            return self._create_fallback_concept(term)
+        with self._recursive_scope():
+            if self._processing_depth > self._max_recursion:
+                # Return simplified emotion when recursion limit reached
+                return self._create_fallback_concept(term)
 
-        try:
-            # Get word ID from database
-            word_id = self._get_word_id(term)
-            if not word_id:
-                # Handle unknown words by creating a new entry
-                word_id = self._create_new_word_entry(term)
+            try:
+                # Get word ID from database
+                word_id = self._get_word_id(term)
+                if not word_id:
+                    # Handle unknown words by creating a new entry
+                    word_id = self._create_new_word_entry(term)
 
-            # Get base emotional vector
-            emotion_vector = self._extract_base_emotion(word_id, term)
+                # Get base emotional vector
+                emotion_vector = self._extract_base_emotion(word_id, term)
 
-            # Apply contextual factors if provided
-            if context:
-                emotion_vector = context.apply_to_vector(emotion_vector)
+                # Apply contextual factors if provided
+                if context:
+                    emotion_vector = context.apply_to_vector(emotion_vector)
 
-            # Create the emotional concept
-            concept = EmotionalConcept(
-                term=term, word_id=word_id, primary_emotion=emotion_vector
-            )
+                # Create the emotional concept
+                concept = EmotionalConcept(
+                    term=term, word_id=word_id, primary_emotion=emotion_vector
+                )
 
-            # Add secondary emotions based on relationships
-            self._add_secondary_emotions(concept)
+                # Add secondary emotions based on relationships
+                self._add_secondary_emotions(concept)
 
-            # Add meta-emotions (emotions about emotions)
-            self._add_meta_emotions(concept)
+                # Add meta-emotions (emotions about emotions)
+                self._add_meta_emotions(concept)
 
-            # Add emotional patterns
-            self._add_emotional_patterns(concept)
+                # Add emotional patterns
+                self._add_emotional_patterns(concept)
 
-            # Cache the result
-            self._cache[term] = concept
-            return concept
+                # Cache the result
+                self._cache[cache_key] = concept
+                return concept
 
-        finally:
-            self._processing_depth -= 1
+            finally:
+                self._processing_depth -= 1
 
     def analyze_relationship(
         self, term1: str, term2: str, relationship_type: str
@@ -344,7 +383,17 @@ class RecursiveEmotionProcessor:
             return EmotionVector(dimensions=dimensions)
         else:
             # Generate new emotion vector
-            return self._generate_emotion_for_term(term)
+            vector = self._generate_emotion_for_term(term)
+
+            # Feedback loop: store high-confidence vectors back to the database
+            if vector.confidence >= 0.7 and word_id > 0:
+                self.emotion_manager.set_word_emotion(
+                    word_id,
+                    vector.dimensions.get(EmotionDimension.VALENCE, 0.0),
+                    vector.dimensions.get(EmotionDimension.AROUSAL, 0.0),
+                )
+
+            return vector
 
     def _generate_emotion_for_term(self, term: str) -> EmotionVector:
         """Generate emotion vector based on term properties."""
@@ -368,7 +417,6 @@ class RecursiveEmotionProcessor:
 
         # Process the term with spaCy
         doc = self.nlp(term)
-
         # Reference emotion words for comparison
         reference_emotions = {
             "happy": (EmotionDimension.VALENCE, 0.8),
@@ -391,10 +439,27 @@ class RecursiveEmotionProcessor:
             "past": (EmotionDimension.TEMPORAL, -0.7),
         }
 
+        # Update type hint for reference_docs to use proper spaCy Doc type
+        try:
+            from spacy.tokens import Doc
+
+            self._reference_docs: Dict[str, Doc] = {}
+        except ImportError:
+            self._reference_docs = {}
+
+        # Pre-process reference words once
+        if not self._reference_docs:
+            for ref_word in reference_emotions:
+                self._reference_docs[ref_word] = self.nlp(ref_word)
+                self._reference_docs[ref_word] = self.nlp(ref_word)
+
         # Calculate emotional dimensions based on similarity to reference words
         dimensions: Dict[EmotionDimension, float] = {}
         for ref_word, (dimension, ref_value) in reference_emotions.items():
-            ref_doc = self.nlp(ref_word)
+            # Access the spaCy Doc object for the reference word
+            ref_doc = self._reference_docs.get(ref_word)
+            if not ref_doc:
+                continue
 
             # Calculate similarity
             similarity = max(0, min(1, doc.similarity(ref_doc)))
@@ -410,9 +475,8 @@ class RecursiveEmotionProcessor:
                 else:
                     dimensions[dimension] -= similarity * abs(ref_value)
 
-        # Normalize values to [-1, 1] range
-        for dim in dimensions:
-            dimensions[dim] = max(-1.0, min(1.0, dimensions[dim]))
+        # Normalize values using the helper method
+        dimensions = self._normalize_dimensions(dimensions)
 
         # Ensure primary dimensions are present
         for dim in EmotionDimension.primary_dimensions():
@@ -476,12 +540,14 @@ class RecursiveEmotionProcessor:
 
         dominance = dominance_base + ((hash_val // 10000) % 100) / 100 - 0.5
 
-        # Create dimensions dictionary
+        # Create dimensions dictionary with normalized values
         dimensions = {
-            EmotionDimension.VALENCE: max(-1.0, min(1.0, valence)),
-            EmotionDimension.AROUSAL: max(-1.0, min(1.0, arousal)),
-            EmotionDimension.DOMINANCE: max(-1.0, min(1.0, dominance)),
+            EmotionDimension.VALENCE: valence,
+            EmotionDimension.AROUSAL: arousal,
+            EmotionDimension.DOMINANCE: dominance,
         }
+
+        dimensions = self._normalize_dimensions(dimensions)
 
         # Return with lower confidence as this is generated
         return EmotionVector(dimensions=dimensions, confidence=0.7)
@@ -862,18 +928,23 @@ class RecursiveEmotionProcessor:
             return []
 
         # Use spaCy to find similar words
-        doc = self.nlp(term)
-
-        # Get word vector
-        if not doc or not doc.vector.any():
+        term_vector = self._get_vector(term)
+        if term_vector is None:
             return []
 
         # Find similar words in vocabulary
         result: List[Tuple[str, str, float]] = []
         seen: set[str] = set()
 
+        # Check if we have a cached result
+        cache_key = f"similar_to_{term}"
+        if cache_key in self._vector_cache:
+            return self._vector_cache[cache_key]
+
         # Find synonyms using vector similarity
         similar_terms: List[Tuple[str, float]] = []
+        # Process the term with spaCy to get a document object
+        doc = self.nlp(term)
         if doc.has_vector:
             # Get words from vocabulary that have vectors
             for word in self.nlp.vocab:
@@ -992,3 +1063,134 @@ class RecursiveEmotionProcessor:
 
         # Component should be largely contained within composite
         return min(1.0, matching_dims / max(1, component_dims) * 0.8)
+
+    def _normalize_dimensions(
+        self, dimensions: Dict[EmotionDimension, float]
+    ) -> Dict[EmotionDimension, float]:
+        """Normalize dimension values to ensure they remain in valid range.
+
+        Args:
+            dimensions: Dictionary mapping emotional dimensions to values
+
+        Returns:
+            Dictionary with all values normalized to [-1.0, 1.0] range
+        """
+        return {dim: max(-1.0, min(1.0, val)) for dim, val in dimensions.items()}
+
+    def _get_cache_key(
+        self, term: str, context: Optional[EmotionalContext] = None
+    ) -> str:
+        """Generate a cache key for a term and optional context.
+
+        Args:
+            term: The word or phrase to process
+            context: Optional emotional context to consider
+
+        Returns:
+            String key that uniquely identifies the term+context combination
+        """
+        if not context:
+            return term
+
+        # Create a hash of the context's dimension adjustments
+        ctx_factors: List[Tuple[str, float]] = []
+        if context.domain_specific:
+            ctx_factors.extend(
+                [(str(k), float(v)) for k, v in sorted(context.domain_specific.items())]
+            )
+        if context.cultural_factors:
+            ctx_factors.extend(
+                [
+                    (str(k), float(v))
+                    for k, v in sorted(context.cultural_factors.items())
+                ]
+            )
+        if context.situational_factors:
+            ctx_factors.extend(
+                [
+                    (str(k), float(v))
+                    for k, v in sorted(context.situational_factors.items())
+                ]
+            )
+        if context.temporal_factors:
+            ctx_factors.extend(
+                [
+                    (str(k), float(v))
+                    for k, v in sorted(context.temporal_factors.items())
+                ]
+            )
+
+        # Generate a deterministic hash of context factors
+        ctx_hash = hashlib.md5(str(ctx_factors).encode()).hexdigest()[:8]
+        return f"{term}::{ctx_hash}"
+
+    def _get_vector(self, term: str) -> Optional[Any]:
+        """Get cached or fresh word vector.
+
+        Args:
+            term: Word to get vector for
+
+        Returns:
+            Word vector or None if not available
+        """
+        if term in self._vector_cache:
+            return self._vector_cache[term]
+
+        if not self.nlp:
+            return None
+
+        try:
+            doc = self.nlp(term)
+            if doc.has_vector:
+                self._vector_cache[term] = doc.vector
+                return doc.vector
+        except Exception as e:
+            print(f"Error getting vector for '{term}': {e}")
+
+        return None
+
+    def register_meta_emotion_hook(
+        self, hook: Callable[[EmotionalConcept], None]
+    ) -> None:
+        """Register a new meta-emotion generation hook.
+
+        Args:
+            hook: Function that adds meta-emotions to a concept
+        """
+        self.meta_emotion_hooks.append(hook)
+
+    def register_pattern_hook(self, hook: Callable[[EmotionalConcept], None]) -> None:
+        """Register a new emotional pattern generation hook.
+
+        Args:
+            hook: Function that adds emotional patterns to a concept
+        """
+        self.pattern_hooks.append(hook)
+
+    def _register_default_hooks(self) -> None:
+        """Register the built-in emotion processing hooks."""
+        # Register meta-emotion hooks
+        self.register_meta_emotion_hook(add_clarity_meta_emotion)
+        self.register_meta_emotion_hook(add_arousal_meta_emotion)
+        self.register_meta_emotion_hook(add_complexity_meta_emotion)
+        self.register_meta_emotion_hook(add_congruence_meta_emotion)
+
+        # Register pattern hooks
+        self.register_pattern_hook(add_temporal_sequence)
+        self.register_pattern_hook(add_intensity_gradation)
+        self.register_pattern_hook(add_contextual_variations)
+
+        # Special case: secondary emotions hook needs access to related terms
+        # We'll need to create a closure that provides this functionality
+        def secondary_emotions_with_db(concept: EmotionalConcept) -> None:
+            related_terms = self._get_related_terms(concept.word_id)
+            # Process related terms similar to _add_secondary_emotions
+            for rel_type, rel_term, rel_strength in related_terms:
+                if rel_strength > 0.5:  # Only use strong relationships
+                    related_concept = self.process_term(rel_term)
+                    if related_concept:
+                        concept.add_secondary_emotion(
+                            f"{rel_type}_{rel_term}", related_concept.primary_emotion
+                        )
+
+        self.register_pattern_hook(secondary_emotions_with_db)
