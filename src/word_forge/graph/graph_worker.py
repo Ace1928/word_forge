@@ -234,7 +234,7 @@ class GraphWorker(threading.Thread):
             self._update_count += 1
             self._current_state = WorkerState.RUNNING
             self._last_error = None  # Clear error state after successful update
-            self._error_backoff = self.update_interval  # Reset backoff
+            self._error_backoff = self.poll_interval  # Reset backoff
 
         self.logger.debug(
             f"Graph updated and saved to {self.output_path} (update #{self._update_count})"

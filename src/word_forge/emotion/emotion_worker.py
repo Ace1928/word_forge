@@ -855,8 +855,7 @@ def main() -> None:
     from word_forge.emotion.emotion_manager import EmotionManager
 
     # Initialize dependencies with a configured file path
-    db_path = config.database.db_path
-    db = DBManager(db_path)
+    db = DBManager()
     emotion_manager = EmotionManager(db)
 
     # Initialize recursive processor if available (for demonstration)
@@ -866,10 +865,10 @@ def main() -> None:
             from word_forge.emotion.emotion_processor import RecursiveEmotionProcessor
 
             processor = RecursiveEmotionProcessor(db, emotion_manager)
-            print("Using RecursiveEmotionProcessor for enhanced emotional intelligence")
-        except Exception as e:
-            print(f"Could not initialize RecursiveEmotionProcessor: {e}")
-            print("Falling back to random emotion assignment")
+            print("Recursive emotion processor initialized with LLM capabilities")
+        except ImportError as e:
+            print(f"Could not initialize RecursiveEmotionProcessor: {str(e)}")
+            print("Using fallback emotion processing methods")
 
     # Seed the database with some sample words if needed
     sample_words = [

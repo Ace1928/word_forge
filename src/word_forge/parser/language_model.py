@@ -26,6 +26,7 @@ class ModelState:
     _initialized = False
     tokenizer: Optional[Union[PreTrainedTokenizer, PreTrainedTokenizerFast]] = None
     model: Optional[PreTrainedModel] = None
+    model_name: str = "qwen/qwen2.5-0.5b-instruct"
     _model_name: str = "qwen/qwen2.5-0.5b-instruct"
     _device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _inference_failures: int = 0
@@ -83,7 +84,7 @@ class ModelState:
     def generate_text(
         cls,
         prompt: str,
-        max_new_tokens: int = 50,
+        max_new_tokens: Optional[int] = None,
         temperature: float = 0.7,
         num_beams: int = 3,
     ) -> Optional[str]:
@@ -92,7 +93,7 @@ class ModelState:
 
         Args:
             prompt: Input text to generate from
-            max_new_tokens: Maximum number of tokens to generate
+            max_new_tokens: Maximum number of tokens to generate (None for model's maximum capacity)
             temperature: Sampling temperature
             num_beams: Number of beams for beam search
 
@@ -128,11 +129,23 @@ class ModelState:
 
             # Configure generation parameters
             gen_kwargs: Dict[str, Any] = {
-                "max_new_tokens": max_new_tokens,
                 "temperature": temperature,
                 "num_beams": num_beams,
-                "do_sample": temperature > 0.1,
             }
+            # Use model's max length if max_new_tokens is None
+            if max_new_tokens is None:
+                if hasattr(cls.model.config, "max_position_embeddings"):  # type: ignore
+                    # Account for context length by subtracting input length
+                    input_length = input_ids.shape[1]
+                    model_max_length = getattr(
+                        cls.model.config, "max_position_embeddings", 2048  # type: ignore
+                    )
+                    gen_kwargs["max_new_tokens"] = model_max_length - input_length
+                else:
+                    # Fallback to a reasonable default if max length not specified
+                    gen_kwargs["max_new_tokens"] = 1024
+            else:
+                gen_kwargs["max_new_tokens"] = max_new_tokens
 
             # Set pad_token_id if eos_token_id exists and is usable
             if (
@@ -184,7 +197,7 @@ class ModelState:
     def query(
         self,
         prompt: str,
-        max_new_tokens: int = 512,
+        max_new_tokens: Optional[int] = 256,
         temperature: float = 0.7,
         num_beams: int = 3,
     ) -> Optional[str]:
@@ -206,7 +219,10 @@ class ModelState:
 def main():
     # Example usage
     model_state = ModelState()
-    generated_text = model_state.generate_text("Once upon a time")
+    generated_text = model_state.generate_text(
+        "Create an absolutely unhinged finish to this, keep it brief: Once upon a time",
+        max_new_tokens=128,
+    )
     print(generated_text)
 
 

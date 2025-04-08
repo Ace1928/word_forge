@@ -1,8 +1,10 @@
 import hashlib
+import json
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, List, Optional, Tuple, final
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, final
 
 from word_forge.database.db_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
@@ -21,6 +23,9 @@ from word_forge.emotion.hooks import (
     add_intensity_gradation,
     add_temporal_sequence,
 )
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 
 @final
@@ -396,17 +401,89 @@ class RecursiveEmotionProcessor:
             return vector
 
     def _generate_emotion_for_term(self, term: str) -> EmotionVector:
-        """Generate emotion vector based on term properties."""
-        # Try using spaCy with word vectors if available
-        if self.nlp is not None:
-            try:
-                return self._generate_vector_based_emotion(term)
-            except Exception as e:
-                print(f"Error generating vector-based emotion for '{term}': {e}")
-                # Fall back to heuristic method
+        """
+        Generate emotion for a term using optimal available method.
 
-        # Fallback: heuristic approach based on term patterns
-        return self._generate_heuristic_emotion(term)
+        Implements a cascading strategy with graceful degradation:
+        1. Vector-based generation (highest accuracy)
+        2. LLM-based generation (high contextual understanding)
+        3. Heuristic generation (fallback reliability)
+        """
+        # Try vector-based generation first
+        vector_emotion = self._generate_vector_based_emotion(term)
+
+        # Try LLM-based generation as second option
+        llm_emotion = self._generate_llm_based_emotion(term)
+
+        # Fall back to heuristic generation
+        heuristic_emotion = self._generate_heuristic_emotion(term)
+
+        # Integrate results of all emotion generation approaches with dynamic weighting
+        emotions: List[EmotionVector] = []
+        confidences: List[float] = []
+
+        # Collect available emotions with their confidence values
+        if vector_emotion and vector_emotion.confidence > 0:
+            emotions.append(vector_emotion)
+            confidences.append(vector_emotion.confidence)
+
+        if llm_emotion and llm_emotion.confidence > 0:
+            emotions.append(llm_emotion)
+            confidences.append(llm_emotion.confidence)
+
+        if heuristic_emotion and heuristic_emotion.confidence > 0:
+            emotions.append(heuristic_emotion)
+            confidences.append(heuristic_emotion.confidence)
+
+        # Exit early if no valid emotions were generated
+        if not emotions:
+            return self._create_default_emotion(term)
+
+        # Create a merged emotion vector with intelligent dimension integration
+        merged_dimensions: Dict[EmotionDimension, float] = {}
+        total_confidence = sum(confidences)
+
+        # Normalize confidences to form weights
+        weights = [float(conf) / total_confidence for conf in confidences]
+
+        # Gather all dimensions from all vectors
+        all_dimensions: Set[EmotionDimension] = set()
+        for emotion in emotions:
+            all_dimensions.update(emotion.dimensions.keys())
+
+        # Calculate weighted values for each dimension
+        for dimension in all_dimensions:
+            # Weighted sum of dimension values from each source
+            dimension_values: List[float] = []
+            dimension_weights: List[float] = []
+
+            for emotion, weight in zip(emotions, weights):
+                if dimension in emotion.dimensions:
+                    dimension_values.append(emotion.dimensions[dimension])
+                    dimension_weights.append(weight)
+
+            if dimension_weights:
+                # Normalize dimension-specific weights
+                dimension_weight_sum = sum(dimension_weights)
+                normalized_weights = [
+                    float(w) / dimension_weight_sum for w in dimension_weights
+                ]
+
+                # Calculate weighted dimension value
+                merged_dimensions[dimension] = sum(
+                    float(v) * float(w)
+                    for v, w in zip(dimension_values, normalized_weights)
+                )
+
+        # Calculate overall confidence as weighted average plus a synergy bonus
+        # for having multiple sources agree
+        base_confidence = sum(float(c) * float(w) for c, w in zip(confidences, weights))
+        source_count_bonus = 0.05 * (
+            len(emotions) - 1
+        )  # Slight bonus for multiple sources
+        merged_confidence = min(0.95, base_confidence + source_count_bonus)
+
+        return EmotionVector(dimensions=merged_dimensions, confidence=merged_confidence)
 
     def _generate_vector_based_emotion(self, term: str) -> EmotionVector:
         """Generate emotion using word vectors and reference terms."""
@@ -484,6 +561,90 @@ class RecursiveEmotionProcessor:
                 dimensions[dim] = 0.0
 
         return EmotionVector(dimensions=dimensions, confidence=0.75)
+
+    def _generate_llm_based_emotion(self, term: str) -> Optional[EmotionVector]:
+        """
+        Generate emotion vector using LLM for semantic understanding.
+
+        Leverages the language model to analyze emotional dimensions
+        of the term with advanced linguistic understanding.
+
+        Args:
+            term: Term to analyze emotionally
+
+        Returns:
+            Emotion vector or None if LLM analysis fails
+        """
+        try:
+            # Verify LLM availability in emotion manager
+            if (
+                not hasattr(self.emotion_manager, "llm_interface")
+                or self.emotion_manager.llm_interface is None
+            ):
+                return None
+
+            # Construct a structured prompt for emotional analysis
+            prompt = f"""Analyze the emotional connotations of the word '{term}'.
+
+    Provide numerical values in this format:
+    {{
+      "valence": [value between -1.0 and 1.0, negative is unpleasant, positive is pleasant],
+      "arousal": [value between 0.0 and 1.0, where 0 is calm, 1 is excited],
+      "dominance": [value between 0.0 and 1.0, where 0 is submissive, 1 is dominant]
+    }}"""
+
+            # Generate analysis with controlled parameters
+            response = self.emotion_manager.llm_interface.generate_text(
+                prompt,
+                max_new_tokens=100,
+                temperature=0.1,  # Low temperature for consistent results
+            )
+
+            if not response:
+                return None
+
+            # Extract JSON from response
+            json_match = re.search(r"{.*}", response, re.DOTALL)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group(0))
+                    # Extract and validate values
+                    valence = max(-1.0, min(1.0, float(data.get("valence", 0))))
+                    arousal = max(0.0, min(1.0, float(data.get("arousal", 0.5))))
+                    dominance = max(0.0, min(1.0, float(data.get("dominance", 0.5))))
+
+                    # Construct emotion vector
+                    dimensions = {
+                        EmotionDimension.VALENCE: valence,
+                        EmotionDimension.AROUSAL: arousal,
+                        EmotionDimension.DOMINANCE: dominance,
+                    }
+                    return EmotionVector(dimensions=dimensions, confidence=0.85)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            # Fallback to regex parsing if JSON extraction fails
+            valence_match = re.search(
+                r"valence[:\s]+([-+]?\d*\.?\d+)", response, re.IGNORECASE
+            )
+            arousal_match = re.search(
+                r"arousal[:\s]+(\d*\.?\d+)", response, re.IGNORECASE
+            )
+
+            if valence_match and arousal_match:
+                valence = max(-1.0, min(1.0, float(valence_match.group(1))))
+                arousal = max(0.0, min(1.0, float(arousal_match.group(1))))
+
+                dimensions = {
+                    EmotionDimension.VALENCE: valence,
+                    EmotionDimension.AROUSAL: arousal,
+                }
+                return EmotionVector(dimensions=dimensions, confidence=0.7)
+
+            return None
+        except Exception as e:
+            logger.debug(f"LLM-based emotion generation failed for '{term}': {str(e)}")
+            return None
 
     def _generate_heuristic_emotion(self, term: str) -> EmotionVector:
         """Generate emotion vector using text patterns and heuristics."""

@@ -172,31 +172,36 @@ class EmotionManager:
         return self._recursive_processor
 
     def _init_analysis_tools(self) -> None:
-        """Initialize all available sentiment and emotion analysis tools.
+        """Initialize sentiment analysis tools based on availability."""
+        # Initialize VADER if available
+        try:
+            if VADER_AVAILABLE:
+                self.vader = SentimentIntensityAnalyzer()
+            else:
+                self.vader = None
+        except Exception as e:
+            self.vader = None
+            logger.warning(f"VADER initialization failed: {str(e)}")
 
-        Sets up:
-        1. VADER sentiment analyzer if available - specialized for social media
-        2. LLM interface if available - for deeper semantic understanding
-
-        Each tool is activated according to configuration settings to allow
-        flexible deployment in various environments.
-        """
-        # Initialize VADER if available and enabled
-        self.vader = (
-            SentimentIntensityAnalyzer()
-            if VADER_AVAILABLE and self.config.enable_vader
-            else None
-        )
-
-        # Initialize LLM interface if available and enabled
-        self.llm_interface = None
-        if LLM_AVAILABLE and getattr(self.config, "enable_llm", False):
-            try:
-                self.llm_interface = LLMInterface()
-            except Exception as e:
-                logger.warning(
-                    f"LLM initialization failed (continuing without LLM): {e}"
-                )
+        # Initialize LLM if available
+        try:
+            if LLM_AVAILABLE:
+                # Actually test LLM initialization rather than just assuming
+                if LLMInterface.initialize():
+                    self.llm_interface = LLMInterface()
+                    logger.info(
+                        f"LLM initialized successfully: {LLMInterface.model_name}"
+                    )
+                else:
+                    self.llm_interface = None
+                    logger.warning(
+                        "LLM initialization failed - operating with reduced capabilities"
+                    )
+            else:
+                self.llm_interface = None
+        except Exception as e:
+            self.llm_interface = None
+            logger.warning(f"LLM initialization failed: {str(e)}")
 
     def init_analysis_tools(self) -> None:
         """Reinitialize analysis tools.
@@ -867,7 +872,7 @@ Return the analysis as a JSON object with these fields:
         # Store the emotion data
         self.set_message_emotion(message_id, predicted_emotion, confidence)
 
-        # Track metrics if ground truth is provided
+        # Track metrics if ground_truth is provided
         if ground_truth is not None:
             try:
                 actual_emotion = normalize_emotion_category(ground_truth)
@@ -1584,6 +1589,19 @@ def main() -> None:
             print(f"Error analyzing {rel_type} between '{term1}' and '{term2}': {e}")
 
     print("-" * 60)
+
+    # Test LLM emotional analysis if available
+    if emotion_mgr.llm_interface is not None and LLM_AVAILABLE:
+        print("\nTesting LLM-enhanced emotional analysis:")
+        test_terms = ["serendipity", "melancholy", "exuberant"]
+        for term in test_terms:
+            emotion_data = emotion_mgr.analyze_term_recursively(term)
+            dimensions = emotion_data.get("dimensions", {})
+            valence = dimensions.get("valence", 0.0)
+            arousal = dimensions.get("arousal", 0.0)
+            print(f"  {term}: valence={valence:.2f}, arousal={arousal:.2f}")
+    else:
+        print("\nLLM integration not available for emotional analysis.")
 
 
 if __name__ == "__main__":
