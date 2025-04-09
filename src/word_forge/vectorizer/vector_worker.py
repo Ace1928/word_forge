@@ -23,24 +23,11 @@ Architecture:
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from pathlib import Path
-from typing import (
-    Dict,
-    Iterator,
-    List,
-    Optional,
-    Protocol,
-    TypedDict,
-    Union,
-    cast,
-    final,
-)
+from typing import Dict, List, Optional, Protocol, TypedDict, Union, cast, final
 
 import numpy as np
 import torch
@@ -665,68 +652,3 @@ class TransformerEmbedder:
             return cast(NDArray[np.float32], embedding)
         except Exception as e:
             raise EmbeddingError(f"Failed to generate embedding: {str(e)}") from e
-
-
-@contextmanager
-def temporary_database(path: Path) -> Iterator[Path]:
-    """
-    Create a temporary database for testing.
-
-    Args:
-        path: Path where temporary database will be created
-
-    Yields:
-        Path to the created database
-
-    Raises:
-        sqlite3.Error: If database creation fails
-    """
-    conn = None
-    try:
-        # Create the database
-        conn = sqlite3.connect(str(path))
-        cursor = conn.cursor()
-
-        # Create schema
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS words (
-                id INTEGER PRIMARY KEY,
-                term TEXT NOT NULL,
-                definition TEXT NOT NULL,
-                usage_examples TEXT
-            )
-            """
-        )
-
-        # Add sample data
-        sample_words = [
-            (
-                1,
-                "algorithm",
-                "A process or set of rules to be followed for calculations or problem-solving",
-                "The sorting algorithm efficiently organized the data; Computer scientists developed a new algorithm for image recognition",
-            ),
-            (
-                2,
-                "recursion",
-                "The process of defining something in terms of itself",
-                "The function uses recursion to calculate factorial; Recursion is a powerful technique in programming",
-            ),
-        ]
-
-        cursor.executemany(
-            "INSERT OR REPLACE INTO words VALUES (?, ?, ?, ?)", sample_words
-        )
-        conn.commit()
-
-        # Yield the path to the caller
-        yield path
-
-    except sqlite3.Error as e:
-        if path.exists():
-            path.unlink()
-        raise e
-    finally:
-        if conn:
-            conn.close()

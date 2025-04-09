@@ -216,17 +216,3 @@ class ModelState:
             Generated text or None if generation failed
         """
         return self.generate_text(prompt, max_new_tokens, temperature, num_beams)
-
-
-def main():
-    # Example usage
-    model_state = ModelState()
-    generated_text = model_state.generate_text(
-        "Create an absolutely unhinged finish to this, keep it brief: Once upon a time",
-        max_new_tokens=128,
-    )
-    print(generated_text)
-
-
-if __name__ == "__main__":
-    main()
