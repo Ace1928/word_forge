@@ -376,11 +376,11 @@ class ConversationManager:
             if not conv_result:
                 return Result[int].failure(
                     Error.create(
-                        "CONVERSATION_NOT_FOUND",
-                        f"Conversation {conversation_id} not found during response generation.",
-                        ErrorCategory.VALIDATION,
-                        ErrorSeverity.ERROR,
-                        {"conversation_id": conversation_id},
+                        message=f"Conversation {conversation_id} not found during response generation.",
+                        code="CONVERSATION_NOT_FOUND",
+                        category=ErrorCategory.VALIDATION,
+                        severity=ErrorSeverity.ERROR,
+                        context={"conversation_id": conversation_id},
                     )
                 )
             conversation_data = conv_result
@@ -409,9 +409,14 @@ class ConversationManager:
                 print(
                     f"[{conversation_id}] Warning: Reflexive model failed: {reflexive_result.error.message if reflexive_result.error else 'Unknown'}. Proceeding without reflex."
                 )
-            else:
-                context = reflexive_result.unwrap()
-                print(f"[{conversation_id}] Reflexive Model finished.")
+                context["additional_data"]["reflexive_error"] = (
+                    reflexive_result.error.to_dict()
+                    if reflexive_result.error
+                    else {
+                        "code": "UNKNOWN_REFLEX_FAILURE",
+                        "message": "Reflexive model failed without error details",
+                    }
+                )
 
             # --- 3. Lightweight Model ---
             print(f"[{conversation_id}] Calling Lightweight Model...")
@@ -420,7 +425,17 @@ class ConversationManager:
                 print(
                     f"[{conversation_id}] Error: Lightweight model failed: {lightweight_result.error.message if lightweight_result.error else 'Unknown'}"
                 )
-                return Result[int].failure(lightweight_result.error)
+                if lightweight_result.error:
+                    return Result[int].failure(lightweight_result.error)
+                else:
+                    return Result[int].failure(
+                        Error.create(
+                            message="Lightweight model failed without error details",
+                            code="LIGHTWEIGHT_FAILURE_NO_ERROR",
+                            category=ErrorCategory.UNEXPECTED,
+                            severity=ErrorSeverity.ERROR,
+                        )
+                    )
             context = lightweight_result.unwrap()
             print(f"[{conversation_id}] Lightweight Model finished.")
 
@@ -431,7 +446,17 @@ class ConversationManager:
                 print(
                     f"[{conversation_id}] Error: Affective model failed: {affective_result.error.message if affective_result.error else 'Unknown'}"
                 )
-                return Result[int].failure(affective_result.error)
+                if affective_result.error:
+                    return Result[int].failure(affective_result.error)
+                else:
+                    return Result[int].failure(
+                        Error.create(
+                            message="Affective model failed without error details",
+                            code="AFFECTIVE_FAILURE_NO_ERROR",
+                            category=ErrorCategory.UNEXPECTED,
+                            severity=ErrorSeverity.ERROR,
+                        )
+                    )
             context = affective_result.unwrap()
             print(
                 f"[{conversation_id}] Affective Model generated intermediate response: '{context.get('intermediate_response', '')[:50]}...'"
@@ -444,7 +469,17 @@ class ConversationManager:
                 print(
                     f"[{conversation_id}] Error: Identity model failed: {identity_result.error.message if identity_result.error else 'Unknown'}"
                 )
-                return Result[int].failure(identity_result.error)
+                if identity_result.error:
+                    return Result[int].failure(identity_result.error)
+                else:
+                    return Result[int].failure(
+                        Error.create(
+                            message="Identity model failed without error details",
+                            code="IDENTITY_FAILURE_NO_ERROR",
+                            category=ErrorCategory.UNEXPECTED,
+                            severity=ErrorSeverity.ERROR,
+                        )
+                    )
             final_response_text = identity_result.unwrap()
             print(
                 f"[{conversation_id}] Identity Model produced final response: '{final_response_text[:50]}...'"
@@ -465,11 +500,11 @@ class ConversationManager:
                 f"[{conversation_id}] Unexpected error during response generation pipeline: {type(e).__name__} - {e}"
             )
             error = Error.create(
-                "RESPONSE_PIPELINE_ERROR",
-                f"Unexpected error in response pipeline: {e}",
-                ErrorCategory.UNEXPECTED,
-                ErrorSeverity.ERROR,
-                {
+                message=f"Unexpected error in response pipeline: {e}",
+                code="RESPONSE_PIPELINE_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
                     "conversation_id": conversation_id,
                     "exception_type": type(e).__name__,
                 },

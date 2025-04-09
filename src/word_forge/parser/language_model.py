@@ -1,10 +1,13 @@
-from typing import Any, Dict, Optional, Union
+# Import PathLike for model paths
+from os import PathLike
+from typing import Any, Dict, List, Optional, Union, cast
 
 import nltk  # type: ignore
 import torch
 from transformers import (  # type: ignore
     AutoModelForCausalLM,
     AutoTokenizer,
+    PretrainedConfig,  # Import PretrainedConfig
     PreTrainedModel,
     PreTrainedTokenizer,
     PreTrainedTokenizerFast,
@@ -73,15 +76,23 @@ class ModelState:
 
         try:
             # Load tokenizer with explicit type annotation
-            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)
+            cls.tokenizer = cast(
+                Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+                AutoTokenizer.from_pretrained(
+                    cast(Union[str, PathLike], cls._model_name)
+                ),
+            )
             assert cls.tokenizer is not None, "Tokenizer loading returned None"
 
             # Load model with appropriate configuration
-            cls.model = AutoModelForCausalLM.from_pretrained(
-                cls._model_name,
-                device_map=str(cls._device),
-                torch_dtype=(
-                    torch.float16 if cls._device.type == "cuda" else torch.float32
+            cls.model = cast(
+                PreTrainedModel,
+                AutoModelForCausalLM.from_pretrained(
+                    cast(Union[str, PathLike], cls._model_name),
+                    device_map=str(cls._device),
+                    torch_dtype=(
+                        torch.float16 if cls._device.type == "cuda" else torch.float32
+                    ),
                 ),
             )
             assert cls.model is not None, "Model loading returned None"
@@ -131,13 +142,28 @@ class ModelState:
 
         try:
             # Create input tensors
-            input_tokens = cls.tokenizer(prompt, return_tensors="pt")
-            input_ids = input_tokens["input_ids"]
-            input_ids = input_ids.to(cls._device)
+            input_tokens: Dict[str, torch.Tensor] = cls.tokenizer(
+                prompt, return_tensors="pt"
+            )  # type: ignore
 
+            # Safely access 'input_ids' and 'attention_mask'
+            input_ids_tensor = input_tokens.get("input_ids")
+            if input_ids_tensor is None:
+                raise ValueError("Tokenizer did not return 'input_ids'")
+            if not isinstance(input_ids_tensor, torch.Tensor):
+                raise TypeError(
+                    f"Expected input_ids to be a Tensor, got {type(input_ids_tensor)}"
+                )
+            input_ids = input_ids_tensor.to(cls._device)
+
+            attention_mask_tensor = input_tokens.get("attention_mask")
             attention_mask = None
-            if "attention_mask" in input_tokens:
-                attention_mask = input_tokens["attention_mask"].to(cls._device)
+            if attention_mask_tensor is not None:
+                if not isinstance(attention_mask_tensor, torch.Tensor):
+                    raise TypeError(
+                        f"Expected attention_mask to be a Tensor, got {type(attention_mask_tensor)}"
+                    )
+                attention_mask = attention_mask_tensor.to(cls._device)
 
             # Configure generation parameters
             gen_kwargs: Dict[str, Any] = {
@@ -147,11 +173,14 @@ class ModelState:
             }
 
             # Calculate max_length carefully
-            input_length = input_ids.shape[1]
+            input_length = input_ids.shape[1] if hasattr(input_ids, "shape") else 0
             model_max_length = 2048
-            if hasattr(cls.model.config, "max_position_embeddings"):
+            model_config: Optional[PretrainedConfig] = getattr(
+                cls.model, "config", None
+            )
+            if model_config and hasattr(model_config, "max_position_embeddings"):
                 model_max_length = getattr(
-                    cls.model.config, "max_position_embeddings", model_max_length
+                    model_config, "max_position_embeddings", model_max_length
                 )
 
             if max_new_tokens is None:
@@ -162,27 +191,67 @@ class ModelState:
                 )
 
             # Handle pad_token_id carefully
-            if cls.tokenizer.pad_token_id is None:
-                if cls.tokenizer.eos_token_id is not None:
-                    cls.tokenizer.pad_token_id = cls.tokenizer.eos_token_id
-                    gen_kwargs["pad_token_id"] = cls.tokenizer.eos_token_id
+            pad_token_id: Optional[Union[int, List[int]]] = cls.tokenizer.pad_token_id  # type: ignore
+            eos_token_id: Optional[Union[int, List[int]]] = cls.tokenizer.eos_token_id  # type: ignore
+
+            if pad_token_id is None:
+                if eos_token_id is not None:
+                    gen_kwargs["pad_token_id"] = (
+                        eos_token_id[0]
+                        if isinstance(eos_token_id, list)
+                        else eos_token_id
+                    )
                 else:
                     print(
-                        "Warning: Tokenizer has no pad_token_id or eos_token_id. Generation might be unstable."
+                        "Warning: Tokenizer lacks both pad_token_id and eos_token_id. Generation might be unstable."
                     )
             else:
-                gen_kwargs["pad_token_id"] = cls.tokenizer.pad_token_id
+                gen_kwargs["pad_token_id"] = (
+                    pad_token_id[0] if isinstance(pad_token_id, list) else pad_token_id
+                )
+
+            if eos_token_id is not None:
+                gen_kwargs["eos_token_id"] = (
+                    eos_token_id[0] if isinstance(eos_token_id, list) else eos_token_id
+                )
 
             # Generate text
             with torch.no_grad():
-                outputs = cls.model.generate(
-                    input_ids=input_ids, attention_mask=attention_mask, **gen_kwargs
+                outputs: torch.Tensor = cls.model.generate(  # type: ignore
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    **gen_kwargs,
                 )
 
             # Process the output
-            output_ids = outputs[0] if outputs.ndim > 1 else outputs
-            newly_generated_ids = output_ids[input_length:]
-            result = cls.tokenizer.decode(newly_generated_ids, skip_special_tokens=True)
+            output_sequence: Optional[torch.Tensor] = None
+            if isinstance(outputs, torch.Tensor):
+                output_sequence = outputs
+            elif hasattr(outputs, "sequences"):
+                output_sequence = getattr(outputs, "sequences", None)
+
+            if output_sequence is None or not isinstance(output_sequence, torch.Tensor):
+                print(
+                    f"Warning: Could not extract output sequences from model.generate output type: {type(outputs)}"
+                )
+                newly_generated_ids = torch.tensor(
+                    [], dtype=torch.long, device=cls._device
+                )
+            else:
+                first_sequence = (
+                    output_sequence[0]
+                    if output_sequence.ndim > 1 and output_sequence.shape[0] > 0
+                    else output_sequence
+                )
+
+                if first_sequence.shape[0] > input_length:
+                    newly_generated_ids = first_sequence[input_length:]
+                else:
+                    newly_generated_ids = torch.tensor(
+                        [], dtype=torch.long, device=cls._device
+                    )
+
+            result = cls.tokenizer.decode(newly_generated_ids, skip_special_tokens=True)  # type: ignore
 
             return result.strip()
 

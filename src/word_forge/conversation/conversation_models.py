@@ -6,16 +6,22 @@ import json
 import random  # Import random
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Union, cast
 
 # Import Result and Error types correctly
-from word_forge.configs.config_essentials import ErrorCategory, ErrorSeverity, Result
+from word_forge.configs.config_essentials import (
+    Error,
+    ErrorCategory,
+    ErrorSeverity,
+    Result,
+)
 
 # Import model protocols and types from conversation_types
 from word_forge.conversation.conversation_types import (
     AffectiveLexicalModel,
     IdentityModel,
     LightweightModel,
+    MessageDict,  # Import MessageDict
     ModelContext,
     ReflexiveModel,  # Import ReflexiveModel protocol
 )
@@ -72,25 +78,27 @@ class MockAffectiveLexicalModel(AffectiveLexicalModel):  # Inherit from protocol
         graph_manager = context.get("graph_manager")  # Use .get for safety
         if graph_manager and keywords:
             try:
-                related = graph_manager.get_related_terms(keywords[0])
-                if related:
-                    related_info = f"related terms like '{related[0]}'"
+                # Ensure graph_manager is not None before calling methods
+                if graph_manager:
+                    related = graph_manager.get_related_terms(keywords[0])
+                    if related:
+                        related_info = f"related terms like '{related[0]}'"
             except Exception:
-                pass
+                pass  # Ignore errors during mock related term lookup
 
-        affective_state = {
+        affective_state: Dict[str, Union[float, str]] = {
             "valence": random.uniform(-0.5, 0.5),
             "arousal": random.uniform(0.1, 0.6),
             "dominant_emotion": random.choice(["neutral", "curious", "attentive"]),
         }
-        context["affective_state"] = affective_state
+        # Ensure affective_state is Dict[str, Any] for ModelContext compatibility
+        context["affective_state"] = cast(Dict[str, Any], affective_state)
         intermediate_response = f"Thinking about {input_text}... It seems related to {related_info}. My current state is {affective_state['dominant_emotion']}."
         context["intermediate_response"] = intermediate_response
         return Result[ModelContext].success(context)
 
 
 # --- Eidosian Identity Model Implementation ---
-# ... (EidosianIdentityState dataclass remains the same) ...
 
 
 @dataclass
@@ -158,8 +166,6 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
     stylistic adjustments.
     """
 
-    # ... (constructor remains the same) ...
-
     def __init__(self, initial_state: Optional[EidosianIdentityState] = None):
         """Initializes the identity model with an optional starting state.
 
@@ -197,22 +203,26 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         print("EidosianIdentity: Refining response using LLM...")
         intermediate_response = context.get("intermediate_response")
         if not intermediate_response:
-            # Use Result.failure factory method
+            # Use Result.failure factory method with Error object
             return Result[str].failure(
-                "MISSING_INTERMEDIATE_RESPONSE",
-                "No intermediate response provided for refinement.",
-                context={"conversation_id": str(context.get("conversation_id"))},
-                category=ErrorCategory.VALIDATION,
-                severity=ErrorSeverity.ERROR,
+                Error.create(
+                    message="No intermediate response provided for refinement.",
+                    code="MISSING_INTERMEDIATE_RESPONSE",
+                    category=ErrorCategory.VALIDATION,
+                    severity=ErrorSeverity.ERROR,
+                    context={"conversation_id": str(context.get("conversation_id"))},
+                )
             )
 
         if not LLMInterface.is_initialized():
             return Result[str].failure(
-                "LLM_NOT_INITIALIZED",
-                "LLM required for EidosianIdentityModel refinement is not available.",
-                context={"model_name": LLMInterface.get_model_name()},
-                category=ErrorCategory.RESOURCE,
-                severity=ErrorSeverity.ERROR,
+                Error.create(
+                    message="LLM required for EidosianIdentityModel refinement is not available.",
+                    code="LLM_NOT_INITIALIZED",
+                    category=ErrorCategory.RESOURCE,
+                    severity=ErrorSeverity.ERROR,
+                    context={"model_name": LLMInterface.get_model_name()},
+                )
             )
 
         try:
@@ -261,17 +271,17 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         except Exception as e:
             # Catch unexpected errors during the pipeline
             return Result[str].failure(
-                "IDENTITY_REFINEMENT_ERROR",
-                f"Unexpected error during identity refinement: {e}",
-                context={
-                    "intermediate_response": intermediate_response[:100],
-                    "error_type": type(e).__name__,
-                },
-                category=ErrorCategory.UNEXPECTED,
-                severity=ErrorSeverity.ERROR,
+                Error.create(
+                    message=f"Unexpected error during identity refinement: {e}",
+                    code="IDENTITY_REFINEMENT_ERROR",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.ERROR,
+                    context={
+                        "intermediate_response": intermediate_response[:100],
+                        "error_type": type(e).__name__,
+                    },
+                )
             )
-
-    # ... (_build_llm_prompt remains the same) ...
 
     def _build_llm_prompt(
         self, task_description: str, intermediate_response: str, context: ModelContext
@@ -292,14 +302,16 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         # Limit history length for prompt conciseness
         history_limit = 5
         # Ensure history is a list before slicing
-        history = context.get("history", [])
+        history: List[MessageDict] = context.get("history", [])
         history_summary = "\n".join(
             [f"- {msg['speaker']}: {msg['text']}" for msg in history[-history_limit:]]
         )
         # Safely access nested affective state
         affective_state = context.get("affective_state", {})
         detected_emotion = (
-            affective_state.get("detected_emotion", "neutral")
+            affective_state.get(
+                "dominant_emotion", "neutral"
+            )  # Use dominant_emotion if available
             if isinstance(affective_state, dict)
             else "neutral"
         )
@@ -361,10 +373,12 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         """Helper method to call the LLM and handle potential errors."""
         if not LLMInterface.is_initialized():
             return Result[str].failure(
-                "LLM_NOT_INITIALIZED",
-                "LLM is not available.",
-                category=ErrorCategory.RESOURCE,
-                severity=ErrorSeverity.ERROR,
+                Error.create(
+                    message="LLM is not available.",
+                    code="LLM_NOT_INITIALIZED",
+                    category=ErrorCategory.RESOURCE,
+                    severity=ErrorSeverity.ERROR,
+                )
             )
 
         # Estimate max tokens based on prompt length
@@ -379,11 +393,13 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             return Result[str].success(llm_result)
         else:
             return Result[str].failure(
-                "LLM_GENERATION_FAILED",
-                "LLM failed to generate a response for the given prompt.",
-                context={"prompt_start": prompt[:200]},
-                category=ErrorCategory.EXTERNAL,
-                severity=ErrorSeverity.ERROR,
+                Error.create(
+                    message="LLM failed to generate a response for the given prompt.",
+                    code="LLM_GENERATION_FAILED",
+                    category=ErrorCategory.EXTERNAL,
+                    severity=ErrorSeverity.ERROR,
+                    context={"prompt_start": prompt[:200]},
+                )
             )
 
     def _reflect_on_response(self, response: str, context: ModelContext) -> Result[str]:
@@ -409,25 +425,34 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         if style_result.is_success:
             stylized_response = style_result.unwrap()
             prefix = f"[Eidos v{self.state.version}]: "
-            if not stylized_response.startswith(prefix):
-                # Clean potential LLM preamble before adding prefix
-                first_meaningful_char_index = -1
-                for i, char in enumerate(stylized_response):
-                    if char.isalnum():
-                        first_meaningful_char_index = i
-                        break
-                if first_meaningful_char_index != -1:
-                    stylized_response = (
-                        prefix + stylized_response[first_meaningful_char_index:]
-                    )
-                else:
-                    stylized_response = (
-                        prefix + stylized_response.strip()
-                    )  # Add prefix to cleaned response
+            # Clean potential LLM preamble before adding prefix
+            # Find the first alphanumeric character to strip preamble reliably
+            first_meaningful_char_index = -1
+            for i, char in enumerate(stylized_response):
+                if char.isalnum():
+                    first_meaningful_char_index = i
+                    break
 
-            return Result[str].success(stylized_response)
+            if first_meaningful_char_index != -1:
+                cleaned_response = stylized_response[first_meaningful_char_index:]
+            else:
+                cleaned_response = (
+                    stylized_response.strip()
+                )  # Fallback if no alphanumeric found
+
+            # Add prefix only if not already present (case-insensitive check)
+            if not cleaned_response.lower().startswith(prefix.lower()):
+                final_stylized_response = prefix + cleaned_response
+            else:
+                final_stylized_response = cleaned_response  # Already has prefix
+
+            return Result[str].success(final_stylized_response)
         else:
-            # Return the original response with prefix if styling failed
+            # Return the original response with prefix if styling failed, but propagate the error
+            print(
+                f"Warning: Failed to apply Eidosian style: {style_result.error.message if style_result.error else 'Unknown'}. Using intermediate response with prefix."
+            )
+            # Return success with prefixed original response, but log the failure
             return Result[str].success(f"[Eidos v{self.state.version}]: {response}")
 
     def _align_with_ethics(self, response: str, context: ModelContext) -> Result[str]:
@@ -441,7 +466,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
     ) -> Result[None]:
         """Uses LLM to reflect on the interaction and potentially update identity state."""
         self.state.interaction_count += 1
-        update_frequency = 20
+        update_frequency = 20  # Reflect every 20 interactions
 
         if self.state.interaction_count % update_frequency == 0:
             print(
@@ -449,15 +474,17 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             )
             if not LLMInterface.is_initialized():
                 return Result[None].failure(
-                    "LLM_NOT_INITIALIZED",
-                    "LLM needed for state update is not available.",
-                    category=ErrorCategory.RESOURCE,
-                    severity=ErrorSeverity.WARNING,  # Non-critical failure
+                    Error.create(
+                        message="LLM needed for state update is not available.",
+                        code="LLM_NOT_INITIALIZED",
+                        category=ErrorCategory.RESOURCE,
+                        severity=ErrorSeverity.WARNING,  # Non-critical failure
+                    )
                 )
 
             try:
                 history_limit = 10
-                history = context.get("history", [])
+                history: List[MessageDict] = context.get("history", [])
                 history_summary = "\n".join(
                     [
                         f"- {msg['speaker']}: {msg['text']}"
@@ -516,24 +543,33 @@ Example:
                 )
 
                 if reflection_output_result.is_failure:
-                    # Use the error from the Result object
-                    return Result[None].failure(
-                        reflection_output_result.error.code,
-                        reflection_output_result.error.message,
-                        reflection_output_result.error.context,
-                        category=reflection_output_result.error.category,
-                        severity=ErrorSeverity.WARNING,  # Non-critical
-                    )
+                    # Propagate the error from the Result object
+                    if reflection_output_result.error:
+                        return Result[None].failure(reflection_output_result.error)
+                    else:
+                        return Result[None].failure(
+                            Error.create(
+                                message="LLM call failed during reflection, but no error object provided.",
+                                code="REFLECTION_LLM_FAILURE_NO_ERROR",
+                                category=ErrorCategory.EXTERNAL,
+                                severity=ErrorSeverity.WARNING,
+                            )
+                        )
 
                 reflection_output = reflection_output_result.unwrap()
 
                 try:
-                    cleaned_output = (
-                        reflection_output.strip()
-                        .removeprefix("```json")
-                        .removesuffix("```")
-                        .strip()
-                    )
+                    # More robust JSON cleaning
+                    json_start = reflection_output.find("{")
+                    json_end = reflection_output.rfind("}")
+                    if json_start == -1 or json_end == -1 or json_start >= json_end:
+                        raise json.JSONDecodeError(
+                            "Could not find valid JSON object delimiters.",
+                            reflection_output,
+                            0,
+                        )
+
+                    cleaned_output = reflection_output[json_start : json_end + 1]
                     reflection_data = json.loads(cleaned_output)
 
                     required_keys = {
@@ -549,6 +585,7 @@ Example:
                     delta_raw = reflection_data.get("ethical_score_delta", 0.0)
                     try:
                         delta = float(delta_raw)
+                        # Clamp delta to valid range
                         delta = max(-0.05, min(0.05, delta))
                     except (ValueError, TypeError):
                         print(
@@ -556,9 +593,11 @@ Example:
                         )
                         delta = 0.0
 
+                    # Update ethical alignment score, clamping between 0.5 and 1.0
                     self.state.ethical_alignment_score = max(
                         0.5, min(1.0, self.state.ethical_alignment_score + delta)
                     )
+                    # Update summary, ensuring it's a string
                     self.state.recent_interaction_summary = str(
                         reflection_data.get("learning_summary", "")
                     )
@@ -574,19 +613,24 @@ Example:
                         f"Warning: Failed to parse LLM reflection JSON: {json_e}. Raw output: '{reflection_output[:200]}...'"
                     )
                     return Result[None].failure(
-                        "REFLECTION_PARSE_ERROR",
-                        f"Failed to parse LLM reflection JSON: {json_e}",
-                        context={"raw_output": reflection_output[:200]},
-                        severity=ErrorSeverity.WARNING,  # Non-critical
+                        Error.create(
+                            message=f"Failed to parse LLM reflection JSON: {json_e}",
+                            code="REFLECTION_PARSE_ERROR",
+                            category=ErrorCategory.VALIDATION,
+                            severity=ErrorSeverity.WARNING,  # Non-critical
+                            context={"raw_output": reflection_output[:200]},
+                        )
                     )
 
             except Exception as e:
                 print(f"Warning: Unexpected error during identity state update: {e}")
                 return Result[None].failure(
-                    "STATE_UPDATE_ERROR",
-                    f"Unexpected error during state update: {e}",
-                    category=ErrorCategory.UNEXPECTED,
-                    severity=ErrorSeverity.WARNING,  # Non-critical
+                    Error.create(
+                        message=f"Unexpected error during state update: {e}",
+                        code="STATE_UPDATE_ERROR",
+                        category=ErrorCategory.UNEXPECTED,
+                        severity=ErrorSeverity.WARNING,  # Non-critical
+                    )
                 )
         else:
             # Simple update if not reflecting
@@ -597,6 +641,7 @@ Example:
 
 
 __all__ = [
+    "MockReflexiveModel",  # Export mock
     "MockLightweightModel",
     "MockAffectiveLexicalModel",
     "EidosianIdentityModel",

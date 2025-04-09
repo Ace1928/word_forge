@@ -19,15 +19,27 @@ Architecture:
 """
 
 from dataclasses import dataclass
+from enum import Enum, auto
 from functools import cached_property
-from typing import ClassVar, Dict, Optional, Union
+from typing import ClassVar, Dict, Literal, Optional, TypeAlias, Union
 
-from word_forge.configs.config_essentials import (
-    EnvMapping,
-    LockType,
-    QueueMetricsFormat,
-    QueuePerformanceProfile,  # Ensure this is imported
-)
+# Import necessary types from config_essentials
+from word_forge.configs.config_essentials import EnvMapping
+
+# Define missing types locally or import if they exist elsewhere
+LockType: TypeAlias = Literal["reentrant", "standard"]
+
+
+class QueueMetricsFormat(str, Enum):
+    JSON = "json"
+    PROMETHEUS = "prometheus"
+
+
+class QueuePerformanceProfile(Enum):
+    BALANCED = auto()
+    LOW_LATENCY = auto()
+    HIGH_THROUGHPUT = auto()
+    MEMORY_EFFICIENT = auto()
 
 
 @dataclass
@@ -80,7 +92,7 @@ class QueueConfig:
 
     # Performance monitoring
     track_metrics: bool = False
-    metrics_format: QueueMetricsFormat = "json"
+    metrics_format: QueueMetricsFormat = QueueMetricsFormat.JSON
     max_sample_size: int = 100
 
     # Performance profiles
@@ -91,12 +103,26 @@ class QueueConfig:
         "WORD_FORGE_QUEUE_BATCH_SIZE": ("batch_size", int),
         "WORD_FORGE_QUEUE_THROTTLE": ("throttle_seconds", float),
         "WORD_FORGE_QUEUE_CACHE_SIZE": ("lru_cache_size", int),
-        "WORD_FORGE_QUEUE_MAX_SIZE": ("max_queue_size", int),
-        "WORD_FORGE_QUEUE_USE_THREADS": ("use_threading", bool),
-        "WORD_FORGE_QUEUE_TRACK_METRICS": ("track_metrics", bool),
+        "WORD_FORGE_QUEUE_MAX_SIZE": (
+            "max_queue_size",
+            lambda v: int(v) if v else None,
+        ),
+        "WORD_FORGE_QUEUE_USE_THREADS": (
+            "use_threading",
+            lambda v: v.lower() == "true",
+        ),
+        "WORD_FORGE_QUEUE_LOCK_TYPE": (
+            "lock_type",
+            lambda v: cast(LockType, v.lower()),
+        ),
+        "WORD_FORGE_QUEUE_TRACK_METRICS": (
+            "track_metrics",
+            lambda v: v.lower() == "true",
+        ),
+        "WORD_FORGE_QUEUE_METRICS_FORMAT": ("metrics_format", QueueMetricsFormat),
         "WORD_FORGE_QUEUE_PERFORMANCE_PROFILE": (
             "performance_profile",
-            QueuePerformanceProfile,
+            lambda v: QueuePerformanceProfile[v.upper()] if v else None,
         ),
     }
 
@@ -137,33 +163,33 @@ class QueueConfig:
         )
 
     def with_performance_profile(
-        self, profile: QueuePerformanceProfile
+        self, profile: Optional[QueuePerformanceProfile]
     ) -> "QueueConfig":
         """
         Apply a predefined performance profile to the configuration.
 
         Args:
-            profile: Performance profile to apply
+            profile: Performance profile to apply, or None to reset to balanced.
 
         Returns:
             QueueConfig: New instance with profile settings applied
         """
-        # Start with current config
+        # Start with current config, but reset profile-specific settings to defaults
         config = QueueConfig(
-            batch_size=self.batch_size,
-            throttle_seconds=self.throttle_seconds,
-            lru_cache_size=self.lru_cache_size,
-            max_queue_size=self.max_queue_size,
+            batch_size=50,  # Default
+            throttle_seconds=0.1,  # Default
+            lru_cache_size=128,  # Default
+            max_queue_size=self.max_queue_size,  # Keep non-profile settings
             apply_default_normalization=self.apply_default_normalization,
             use_threading=self.use_threading,
             lock_type=self.lock_type,
             track_metrics=self.track_metrics,
             metrics_format=self.metrics_format,
             max_sample_size=self.max_sample_size,
-            performance_profile=profile,
+            performance_profile=profile,  # Set the new profile
         )
 
-        # Apply profile-specific settings
+        # Apply profile-specific settings if a profile is provided
         if profile == QueuePerformanceProfile.LOW_LATENCY:
             config.batch_size = 10
             config.throttle_seconds = 0.01
@@ -176,7 +202,7 @@ class QueueConfig:
             config.batch_size = 25
             config.throttle_seconds = 0.3
             config.lru_cache_size = 64
-        # BALANCED profile uses the default values
+        # BALANCED profile uses the default values already set
 
         return config
 

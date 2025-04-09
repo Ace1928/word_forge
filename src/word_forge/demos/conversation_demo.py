@@ -46,9 +46,16 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
         print("  (No messages yet)")
     else:
         for msg in conversation["messages"]:
-            timestamp = msg.get("timestamp", 0.0)
-            if not isinstance(timestamp, (int, float)):
-                timestamp = 0.0
+            # Safely get timestamp, default to 0.0 if missing or invalid type
+            timestamp_val = msg.get("timestamp", 0.0)
+            timestamp: float = 0.0
+            # Simplified check: isinstance handles Union types correctly
+            if isinstance(timestamp_val, (int, float)):
+                timestamp = float(timestamp_val)
+            else:
+                print(
+                    f"Warning: Invalid timestamp type for message {msg.get('id')}: {type(timestamp_val)}"
+                )
 
             timestamp_str = time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(timestamp)
@@ -58,20 +65,23 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
             if isinstance(emotion_data, dict):
                 label = emotion_data.get("emotion_label")
                 confidence = emotion_data.get("confidence")
+                # Simplified check: None check is sufficient
                 if label is not None and confidence is not None:
                     try:
                         confidence_float = float(confidence)
                         emotion_str = f" (Emotion: {label} [{confidence_float:.2f}])"
                     except (ValueError, TypeError):
-                        emotion_str = f" (Emotion: {label} [Invalid Confidence])"
+                        emotion_str = (
+                            f" (Emotion: {label} [Invalid Confidence: {confidence}])"
+                        )
                 elif label is not None:
                     emotion_str = f" (Emotion: {label} [Confidence Missing])"
-                else:
-                    emotion_str = " (Emotion: Data incomplete)"
+                # No need for 'else' as emotion_str defaults to ""
 
-            print(
-                f"[{timestamp_str}] {msg.get('speaker', 'Unknown')}: {msg.get('text', '')}{emotion_str}"
-            )
+            # Safely get speaker and text
+            speaker = msg.get("speaker", "Unknown")
+            text = msg.get("text", "")
+            print(f"[{timestamp_str}] {speaker}: {text}{emotion_str}")
     print("--- End Transcript ---")
 
 
@@ -104,8 +114,9 @@ def main() -> None:
             graph_manager.ensure_sample_data()
             graph_manager.build_graph()
 
+            # Use StorageType.MEMORY enum member correctly
             vector_store = VectorStore(
-                storage_type=StorageType.MEMORY,
+                storage_type=StorageType.MEMORY,  # Use the enum member directly
                 db_manager=db_manager,
                 emotion_manager=emotion_manager,
             )

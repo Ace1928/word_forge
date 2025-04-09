@@ -568,33 +568,41 @@ class ParserRefiner:
         combined_definitions: Set[str] = set()
 
         # WordNet definitions
-        for wn_data in dataset.get("wordnet_data", []):  # Use .get for safety
-            defn = wn_data.get("definition", "")
-            if defn:
-                combined_definitions.add(defn)
+        # Use .get with default empty list
+        for wn_data in dataset.get("wordnet_data", []):
+            # Ensure wn_data is a dict before accessing keys
+            if isinstance(wn_data, dict):
+                defn = wn_data.get("definition", "")
+                if defn and isinstance(defn, str):  # Check type
+                    combined_definitions.add(defn)
 
         # ODict / OpenDictData
-        odict_data = dataset.get("odict_data", {})  # Use .get
-        odict_def = (
-            odict_data.get("definition", "") if isinstance(odict_data, dict) else ""
+        odict_data = dataset.get("odict_data", {})
+        # Add type check for odict_data
+        odict_def: Optional[str] = (
+            odict_data.get("definition", "") if isinstance(odict_data, dict) else None
         )
         if odict_def and odict_def != "Not Found":
             combined_definitions.add(odict_def)
 
-        opendict_data = dataset.get("opendict_data", {})  # Use .get
-        open_dict_def = (
+        opendict_data = dataset.get("opendict_data", {})
+        # Add type check for opendict_data
+        open_dict_def: Optional[str] = (
             opendict_data.get("definition", "")
             if isinstance(opendict_data, dict)
-            else ""
+            else None
         )
         if open_dict_def and open_dict_def != "Not Found":
             combined_definitions.add(open_dict_def)
 
         # Dbnary definitions
-        for item in dataset.get("dbnary_data", []):  # Use .get
-            defn = item.get("definition", "")
-            if defn:
-                combined_definitions.add(defn)
+        # Use .get with default empty list
+        for item in dataset.get("dbnary_data", []):
+            # Ensure item is a dict before accessing keys
+            if isinstance(item, dict):
+                defn = item.get("definition", "")
+                if defn and isinstance(defn, str):  # Check type
+                    combined_definitions.add(defn)
 
         return list(combined_definitions)
 
@@ -608,9 +616,16 @@ class ParserRefiner:
         Returns:
             Part of speech string, or empty string if not available
         """
-        wordnet_data = dataset.get("wordnet_data", [])  # Use .get
-        if wordnet_data and isinstance(wordnet_data, list) and wordnet_data[0]:
-            return wordnet_data[0].get("part_of_speech", "")
+        # Use .get with default empty list
+        wordnet_data = dataset.get("wordnet_data", [])
+        # Ensure list is not empty and first element is a dict
+        if (
+            wordnet_data
+            and isinstance(wordnet_data, list)
+            and isinstance(wordnet_data[0], dict)
+        ):
+            pos: Optional[str] = wordnet_data[0].get("part_of_speech", "")
+            return pos if pos else ""  # Return empty string if None or empty
         return ""
 
     def _extract_usage_examples(self, dataset: LexicalDataset) -> List[str]:
