@@ -1,37 +1,45 @@
 """
-Demonstration of GraphManager functionality.
+Demonstration of GraphManager functionality, adhering to Eidosian principles.
+Ensures clarity, precision, and comprehensive testing of graph capabilities.
 """
 
+import logging  # Import logging
 import time
 import traceback
-from typing import Dict, List, Optional, Tuple, Union, cast  # Import Optional
+from pathlib import Path  # Import Path
+from typing import Dict, List, Tuple, Union, cast
 
 import networkx as nx
 
+from word_forge.config import config  # Import global config
 from word_forge.database.database_manager import DBManager
-from word_forge.exceptions import NodeNotFoundError
-from word_forge.graph.graph_manager import GraphError, GraphManager
+from word_forge.exceptions import GraphError, GraphVisualizationError, NodeNotFoundError
+from word_forge.graph.graph_manager import GraphManager
 
 # Define type aliases for clarity
 ValenceAnalysisResult = Dict[str, Union[float, int, List[Tuple[str, float]]]]
+
+# Configure logging for the demo
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("graph_demo")
 
 
 def graph_demo() -> None:
     """
     Demonstrate key functionality of the GraphManager class.
 
-    This function showcases the full capabilities of the GraphManager including:
-    - Basic graph operations (building, querying, visualization)
-    - Emotional and affective relationship analysis
-    - Meta-emotional patterns and transitions
-    - Semantic clustering and multidimensional analysis
-    - Context-based emotional analysis
-    - Advanced visualization techniques
-
-    This serves as both a demonstration and comprehensive test suite.
+    Showcases graph operations, analysis, and visualization, ensuring
+    robustness and adherence to configured settings. Serves as a functional
+    demonstration and integration test.
 
     Raises:
-        GraphError: If demonstration operations fail
+        GraphError: If core graph operations fail.
+        NodeNotFoundError: If specific terms required for demo phases are absent.
+        GraphVisualizationError: If visualization generation encounters issues.
 
     Example:
         ```python
@@ -41,300 +49,359 @@ def graph_demo() -> None:
     """
 
     start_time = time.time()
-    print("Starting GraphManager demonstration...\n")
+    logger.info("Starting GraphManager demonstration...")
+
+    # Define output directory relative to project structure or config
+    # Using config for consistency
+    output_dir = Path(config.graph.default_export_path).parent / "demo_outputs"
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured demo output directory exists: {output_dir}")
+    except OSError as e:
+        logger.error(f"Failed to create demo output directory {output_dir}: {e}")
+        return  # Cannot proceed without output directory
 
     # Initialize database and graph managers
-    db_manager = DBManager()
+    # Use in-memory DB for isolated demo run, or configured path
+    # db_path = ":memory:"
+    db_path = config.database.db_path
+    logger.info(f"Using database: {db_path}")
+    db_manager = DBManager(db_path=db_path)
     graph_manager = GraphManager(db_manager)
 
     try:
+        # --- Setup Phase ---
+        logger.info("--- SETUP PHASE ---")
         # Create database tables if they don't exist
         db_manager.create_tables()
 
         # Check if DB has data, add sample data if empty
         if graph_manager.ensure_sample_data():
-            print("Added sample data to empty database")
+            logger.info("Added sample data to empty database.")
 
         # Build the graph from database
-        print("Building lexical graph from database...")
+        logger.info("Building lexical graph from database...")
         graph_manager.build_graph()
 
         # Display graph information
         nodes_count = graph_manager.get_node_count()
         edges_count = graph_manager.get_edge_count()
-        print(f"Graph built with {nodes_count} words and {edges_count} relationships")
+        logger.info(
+            f"Graph built with {nodes_count} nodes and {edges_count} relationships."
+        )
 
         if nodes_count == 0:
-            print("No words found in the database. Please add some data first.")
+            logger.error("Graph is empty after build. Cannot proceed with demo.")
             return
 
-        # Display detailed graph summary
+        # Display detailed graph summary using the manager's method
         graph_manager.display_graph_summary()
 
-        # Phase 1: Basic Relationship Analysis
-        print("\n=== PHASE 1: BASIC RELATIONSHIP ANALYSIS ===")
+        # --- Phase 1: Basic Relationship Analysis ---
+        logger.info("--- PHASE 1: BASIC RELATIONSHIP ANALYSIS ---")
 
-        # Get related terms example
-        example_term = "algorithm"  # Changed to a sample term likely to exist
+        # Get related terms example - Choose a term likely in sample data
+        example_term = "algorithm"
         try:
             related_terms = graph_manager.get_related_terms(example_term)
-            print(f"\nTerms related to '{example_term}': {related_terms}")
+            logger.info(f"Terms related to '{example_term}': {related_terms}")
 
             # Filter by relationship type
             synonyms = graph_manager.get_related_terms(example_term, rel_type="synonym")
-            print(f"Synonyms of '{example_term}': {synonyms}")
+            logger.info(f"Synonyms of '{example_term}': {synonyms}")
 
             # Get other relationship types if available
-            for rel_type in ["antonym", "hypernym", "hyponym"]:
+            for rel_type in ["antonym", "hypernym", "hyponym", "domain", "function"]:
                 try:
                     terms = graph_manager.get_related_terms(
                         example_term, rel_type=rel_type
                     )
                     if terms:
-                        print(f"{rel_type.capitalize()}s of '{example_term}': {terms}")
-                except Exception:
-                    pass
+                        logger.info(
+                            f"{rel_type.capitalize()}s of '{example_term}': {terms}"
+                        )
+                except Exception as e:
+                    logger.debug(
+                        f"Could not get {rel_type} for '{example_term}': {e}"
+                    )  # Log as debug
 
         except NodeNotFoundError as e:
-            print(f"Warning: {e}")
+            logger.warning(f"{e}. Attempting alternative terms.")
             # Try an alternative term from the sample data
-            alternative_terms = ["data", "computer", "software", "function"]
+            alternative_terms = ["data", "computer", "software", "function", "graph"]
+            found_alternative = False
             for alt_term in alternative_terms:
                 try:
                     related_terms = graph_manager.get_related_terms(alt_term)
-                    print(f"\nTerms related to '{alt_term}': {related_terms}")
+                    logger.info(
+                        f"Using alternative term '{alt_term}'. Related: {related_terms}"
+                    )
                     example_term = alt_term  # Update for later use
+                    found_alternative = True
                     break
                 except NodeNotFoundError:
                     continue
+            if not found_alternative:
+                logger.error(
+                    "Could not find any suitable example terms in the graph. Aborting phase."
+                )
+                # Decide whether to continue demo or stop
+                # return
 
-        # Phase 2: Multidimensional Relationship Analysis
-        print("\n=== PHASE 2: MULTIDIMENSIONAL RELATIONSHIP ANALYSIS ===")
+        # --- Phase 2: Multidimensional Relationship Analysis ---
+        logger.info("--- PHASE 2: MULTIDIMENSIONAL RELATIONSHIP ANALYSIS ---")
 
-        # Analyze multidimensional relationships
-        print("Analyzing multidimensional relationship patterns...")
+        logger.info("Analyzing multidimensional relationship patterns...")
         relationship_analysis = graph_manager.analyze_multidimensional_relationships()
 
         # Display dimension statistics
-        print("Relationship dimensions:")
-        for dimension, count in relationship_analysis.get("dimensions", {}).items():
-            print(f"  - {dimension}: {count} relationships")
+        logger.info("Relationship dimensions found:")
+        dimensions_data = relationship_analysis.get("dimensions", {})
+        if dimensions_data:
+            for dimension, count in dimensions_data.items():
+                logger.info(f"  - {dimension}: {count} relationships")
+        else:
+            logger.info("  No specific dimensions found.")
 
         # Display multi-dimensional nodes
         multi_dim_nodes = relationship_analysis.get("multi_dimensional_nodes", {})
         if multi_dim_nodes:
-            print("\nTerms with multiple relationship dimensions:")
+            logger.info("Sample terms involved in multiple relationship dimensions:")
             for term, data in list(multi_dim_nodes.items())[:5]:  # Show first 5
                 dimensions = data.get("dimensions", [])
-                print(f"  - {term}: {', '.join(dimensions)}")
+                logger.info(f"  - {term}: {', '.join(dimensions)}")
+        else:
+            logger.info("  No nodes found participating in multiple dimensions.")
 
         # Display most common relationship types
         most_common = relationship_analysis.get("most_common", {})
         if most_common:
-            print("\nMost common relationship types by dimension:")
+            logger.info("Most common relationship types per dimension:")
             for dimension, types in most_common.items():
-                if types:
-                    print(f"  - {dimension}: {types[0][0]} ({types[0][1]} occurrences)")
-
-        # Phase 3: Emotional Relationship Analysis
-        print("\n=== PHASE 3: EMOTIONAL RELATIONSHIP ANALYSIS ===")
-
-        # Analyze emotional valence distribution
-        print("Analyzing emotional valence distribution...")
-        valence_analysis: ValenceAnalysisResult = cast(
-            ValenceAnalysisResult,
-            graph_manager.analyze_emotional_valence_distribution(),
-        )
-
-        if (
-            isinstance(valence_analysis.get("count"), int)
-            and cast(int, valence_analysis.get("count", 0))
-            > 0  # Cast count to int before comparison
-        ):
-            mean_valence = cast(float, valence_analysis.get("mean", 0.0))
-            valence_range = cast(List[float], valence_analysis.get("range", [0.0, 0.0]))
-            print(f"Found {valence_analysis['count']} terms with emotional valence")
-            print(
-                f"Average valence: {mean_valence:.2f} (range: {valence_range[0]:.2f} to {valence_range[1]:.2f})"
-            )
-
-            top_positive = cast(
-                List[Tuple[str, float]], valence_analysis.get("top_positive", [])
-            )
-            if top_positive:
-                print("\nMost positive terms:")
-                for term, val in top_positive:
-                    print(f"  - {term}: {val:.2f}")
-
-            top_negative = cast(
-                List[Tuple[str, float]], valence_analysis.get("top_negative", [])
-            )
-            if top_negative:
-                print("\nMost negative terms:")
-                for term, val in top_negative:
-                    print(f"  - {term}: {val:.2f}")
+                if types:  # types is List[Tuple[RelType, int]]
+                    logger.info(
+                        f"  - {dimension}: {types[0][0]} ({types[0][1]} occurrences)"
+                    )
         else:
-            print("No emotional valence data found in the graph")
+            logger.info("  Could not determine most common relationship types.")
 
-            # Add some sample emotional relationships for demonstration
-            print("\nAdding sample emotional relationships for demonstration...")
+        # --- Phase 3: Emotional Relationship Analysis ---
+        logger.info("--- PHASE 3: EMOTIONAL RELATIONSHIP ANALYSIS ---")
+        # Add sample emotional data if needed for demo robustness
+        logger.info("Ensuring sample emotional data exists...")
+        added_emotion = False
+        if "emotional" not in dimensions_data:  # Check if emotional dimension exists
             sample_emotional_relations = [
-                ("joy", "happiness", "emotional_synonym", 0.9),
-                ("sadness", "grief", "emotional_synonym", 0.8),
-                ("anger", "rage", "intensifies", 0.7),
-                ("fear", "anxiety", "related_emotion", 0.6),
-                ("surprise", "shock", "emotional_spectrum", 0.5),
+                (
+                    "joy",
+                    "happiness",
+                    "emotional_synonym",
+                    0.9,
+                    0.7,
+                    0.8,
+                ),  # src, tgt, type, weight, src_val, tgt_val
+                ("sadness", "grief", "emotional_synonym", 0.8, -0.7, -0.8),
+                ("anger", "rage", "intensifies", 0.7, -0.6, -0.9),
+                ("fear", "anxiety", "related_emotion", 0.6, -0.8, -0.7),
             ]
-
-            for source, target, rel_type, weight in sample_emotional_relations:
-                # Use public methods or handle node creation safely
-                source_id = graph_manager.get_node_id(source)
-                if source_id is None:
+            for (
+                source,
+                target,
+                rel_type,
+                weight,
+                src_val,
+                tgt_val,
+            ) in sample_emotional_relations:
+                try:
                     source_id = graph_manager.add_word_node(
-                        source,
-                        attributes={
-                            "valence": (0.7 if source in ["joy", "happiness"] else -0.7)
-                        },
+                        source, attributes={"valence": src_val}
                     )
-
-                target_id = graph_manager.get_node_id(target)
-                if target_id is None:
                     target_id = graph_manager.add_word_node(
-                        target,
-                        attributes={
-                            "valence": (0.8 if target in ["happiness"] else -0.8)
-                        },
+                        target, attributes={"valence": tgt_val}
                     )
-
-                if source_id is not None and target_id is not None:
                     graph_manager.add_relationship(
                         source_id,
                         target_id,
                         relationship=rel_type,
                         dimension="emotional",
                         weight=weight,
-                        color="#ff0000",  # Red for emotional relationships
+                        color="#ff69b4",  # Pinkish
                     )
+                    added_emotion = True
+                except Exception as add_err:
+                    logger.warning(
+                        f"Could not add sample emotional relation {source}-{target}: {add_err}"
+                    )
+            if added_emotion:
+                logger.info("Added sample emotional relationships.")
+
+        # Analyze emotional valence distribution
+        logger.info("Analyzing emotional valence distribution...")
+        try:
+            # Explicitly cast for type safety based on defined alias
+            valence_analysis: ValenceAnalysisResult = cast(
+                ValenceAnalysisResult,
+                graph_manager.analyze_emotional_valence_distribution(
+                    dimension="emotional"
+                ),
+            )
+
+            # Check count robustly
+            count_val = valence_analysis.get("count")
+            if isinstance(count_val, int) and count_val > 0:
+                mean_valence = cast(float, valence_analysis.get("mean", 0.0))
+                # Ensure range is a tuple/list of floats
+                valence_range_raw = valence_analysis.get("range", (0.0, 0.0))
+                if (
+                    isinstance(valence_range_raw, (tuple, list))
+                    and len(valence_range_raw) == 2
+                ):
+                    valence_range = cast(Tuple[float, float], tuple(valence_range_raw))
                 else:
-                    print(
-                        f"Warning: Could not add relationship between {source} and {target} due to missing nodes."
+                    valence_range = (0.0, 0.0)  # Default fallback
+
+                logger.info(
+                    f"Found {count_val} terms with emotional valence in 'emotional' dimension."
+                )
+                logger.info(
+                    f"  Average valence: {mean_valence:.2f} (Range: [{valence_range[0]:.2f}, {valence_range[1]:.2f}])"
+                )
+
+                top_positive = cast(
+                    List[Tuple[str, float]], valence_analysis.get("top_positive", [])
+                )
+                if top_positive:
+                    logger.info("  Most positive terms:")
+                    for term, val in top_positive:
+                        logger.info(f"    - {term}: {val:.2f}")
+
+                top_negative = cast(
+                    List[Tuple[str, float]], valence_analysis.get("top_negative", [])
+                )
+                if top_negative:
+                    logger.info("  Most negative terms:")
+                    for term, val in top_negative:
+                        logger.info(f"    - {term}: {val:.2f}")
+            else:
+                logger.info(
+                    "No significant emotional valence data found in 'emotional' dimension."
+                )
+
+        except GraphError as ge:  # Catch specific graph errors like missing numpy
+            logger.warning(f"Valence analysis skipped: {ge}")
+        except Exception as e:
+            logger.error(
+                f"Unexpected error during valence analysis: {e}", exc_info=True
+            )
+
+        # --- Phase 4: Meta-Emotional Patterns ---
+        logger.info("--- PHASE 4: META-EMOTIONAL PATTERNS ---")
+        # Add sample meta-emotional data if needed
+        logger.info("Ensuring sample meta-emotional data exists...")
+        added_meta = False
+        # Check if specific meta patterns exist before adding more
+        meta_patterns_check = graph_manager.extract_meta_emotional_patterns()
+        if not any(p for p in meta_patterns_check if p == "anxiety"):  # Example check
+            sample_meta_relations = [
+                ("anxiety", "fear", "meta_emotion", 0.8),
+                ("regret", "sadness", "evokes", 0.7),
+            ]
+            for source, target, rel_type, weight in sample_meta_relations:
+                try:
+                    source_id = graph_manager.add_word_node(
+                        source, attributes={"valence": -0.7}
                     )
-
-            print("Sample emotional relationships added")
-
-        # Phase 4: Meta-Emotional Patterns
-        print("\n=== PHASE 4: META-EMOTIONAL PATTERNS ===")
+                    target_id = graph_manager.add_word_node(
+                        target, attributes={"valence": -0.8}
+                    )
+                    graph_manager.add_relationship(
+                        source_id,
+                        target_id,
+                        relationship=rel_type,
+                        dimension="emotional",
+                        weight=weight,
+                        color="#8a2be2",  # BlueViolet
+                    )
+                    added_meta = True
+                except Exception as add_err:
+                    logger.warning(
+                        f"Could not add sample meta-emotional relation {source}-{target}: {add_err}"
+                    )
+            if added_meta:
+                logger.info("Added sample meta-emotional relationships.")
 
         meta_patterns = graph_manager.extract_meta_emotional_patterns()
-
         if meta_patterns:
-            print(f"Found {len(meta_patterns)} meta-emotional patterns")
-            print("\nSample meta-emotional patterns:")
+            logger.info(
+                f"Found {len(meta_patterns)} source terms in meta-emotional patterns."
+            )
+            logger.info("Sample meta-emotional patterns:")
             for source, targets in list(meta_patterns.items())[:3]:  # Show first 3
                 target_str = ", ".join(
                     [f"{t['term']} ({t['relationship']})" for t in targets[:2]]
                 )
-                print(f"  - {source} → {target_str}")
+                logger.info(f"  - {source} → {target_str}...")
         else:
-            print("No meta-emotional patterns found")
+            logger.info("No meta-emotional patterns found.")
 
-            print("\nAdding sample meta-emotional patterns for demonstration...")
-            sample_meta_relations = [
-                ("anxiety", "fear", "meta_emotion", 0.8),
-                ("regret", "sadness", "evokes", 0.7),
-                ("awe", "surprise", "emotional_component", 0.9),
-            ]
-
-            for source, target, rel_type, weight in sample_meta_relations:
-                # Use public methods or handle node creation safely
-                source_id = graph_manager.get_node_id(source)
-                if source_id is None:
-                    source_id = graph_manager.add_word_node(
-                        source, attributes={"valence": -0.3}
-                    )
-
-                target_id = graph_manager.get_node_id(target)
-                if target_id is None:
-                    target_id = graph_manager.add_word_node(
-                        target, attributes={"valence": -0.5}
-                    )
-
-                if source_id is not None and target_id is not None:
-                    graph_manager.add_relationship(
-                        source_id,
-                        target_id,
-                        relationship=rel_type,
-                        dimension="emotional",
-                        weight=weight,
-                        color="#800080",  # Purple for meta-emotional
-                    )
-                else:
-                    print(
-                        f"Warning: Could not add meta relationship between {source} and {target} due to missing nodes."
-                    )
-
-            print("Sample meta-emotional patterns added")
-
-        # Phase 5: Emotional Transitions
-        print("\n=== PHASE 5: EMOTIONAL TRANSITIONS ===")
-
-        transitions = graph_manager.analyze_emotional_transitions()
-
-        if transitions:
-            print(f"Found {len(transitions)} emotional transition pathways")
-            print("\nTop emotional transitions:")
-            for t in transitions[:3]:  # Show top 3
-                path_str = " → ".join(t["path"])
-                print(f"  - {path_str}")
-                print(
-                    f"    Strength: {t['strength']:.2f}, Valence shift: {t['valence_shift']:.2f}"
-                )
-        else:
-            print("No emotional transitions found in the graph")
-
-        # Phase 6: Semantic Clusters
-        print("\n=== PHASE 6: SEMANTIC CLUSTERS ===")
-
+        # --- Phase 5: Emotional Transitions ---
+        logger.info("--- PHASE 5: EMOTIONAL TRANSITIONS ---")
         try:
-            print("Identifying semantic and emotional clusters...")
+            transitions = graph_manager.analyze_emotional_transitions(
+                path_length=2, min_transition_strength=0.05
+            )  # Lower threshold for demo
+            if transitions:
+                logger.info(f"Found {len(transitions)} emotional transition pathways.")
+                logger.info("Top emotional transitions (strength > 0.05, length <= 2):")
+                for t in transitions[:3]:  # Show top 3
+                    path_str = " → ".join(t["path"])
+                    logger.info(f"  - Path: {path_str}")
+                    logger.info(
+                        f"    Strength: {t['strength']:.3f}, Valence Shift: {t['valence_shift']:.2f}"
+                    )
+            else:
+                logger.info(
+                    "No significant emotional transitions found meeting criteria."
+                )
+        except Exception as e:
+            logger.error(f"Error analyzing emotional transitions: {e}", exc_info=True)
+
+        # --- Phase 6: Semantic Clusters ---
+        logger.info("--- PHASE 6: SEMANTIC CLUSTERS ---")
+        try:
+            logger.info("Identifying semantic clusters (min size 2)...")
+            # Use default weight 'weight', ensure nodes exist
             clusters = graph_manager.analyze_semantic_clusters(min_community_size=2)
 
             if clusters:
-                print(f"Found {len(clusters)} semantic clusters")
-                print("\nSample clusters:")
-                for cluster_id, terms in list(clusters.items())[:3]:  # Show first 3
-                    print(f"  Cluster {cluster_id}:")
-                    for term_data in terms[:3]:  # Show first 3 terms per cluster
-                        term = term_data["term"]
-                        valence = term_data.get("valence")
+                logger.info(f"Found {len(clusters)} semantic clusters.")
+                logger.info("Sample clusters:")
+                for cluster_id, nodes_info in list(clusters.items())[
+                    :3
+                ]:  # Show first 3 clusters
+                    logger.info(f"  Cluster {cluster_id}:")
+                    for node_info in nodes_info[:3]:  # Show first 3 terms per cluster
+                        term = node_info["term"]
+                        valence = node_info.get("valence")
                         valence_str = (
-                            f", valence: {valence:.2f}" if valence is not None else ""
+                            f", valence: {valence:.2f}"
+                            if isinstance(valence, float)
+                            else ""
                         )
-                        print(f"    - {term}{valence_str}")
+                        logger.info(f"    - {term}{valence_str}")
             else:
-                print("No significant semantic clusters found")
-        except ImportError:
-            print("Note: Semantic clustering requires python-louvain package")
-            print("Install with: pip install python-louvain")
+                logger.info("No significant semantic clusters found (min size 2).")
+        except GraphAnalysisError as ga_err:  # Catch specific error for missing library
+            logger.warning(f"Semantic clustering skipped: {ga_err}")
+        except Exception as e:
+            logger.error(f"Error during semantic clustering: {e}", exc_info=True)
 
-        # Phase 7: Context Integration
-        print("\n=== PHASE 7: CONTEXT INTEGRATION ===")
-
-        print("Integrating emotional contexts...")
-
-        clinical_context = {
-            "professional": 0.9,
-            "analytical": 0.8,
-            "detached": 0.6,
-            "compassionate": 0.5,
-        }
-
-        literary_context = {
-            "expressive": 0.9,
-            "narrative": 0.8,
-            "dramatic": 0.7,
-            "metaphorical": 0.6,
-        }
+        # --- Phase 7: Context Integration ---
+        logger.info("--- PHASE 7: CONTEXT INTEGRATION ---")
+        logger.info("Integrating emotional contexts (placeholder)...")
+        # Contexts are stored but don't modify graph in current analysis implementation
+        clinical_context = {"anger": 0.2, "fear": 0.5, "joy": 0.1}  # Example weights
+        literary_context = {"anger": 1.5, "joy": 1.2, "sadness": 1.1}
 
         try:
             updated_clinical = graph_manager.integrate_emotional_context(
@@ -343,101 +410,142 @@ def graph_demo() -> None:
             updated_literary = graph_manager.integrate_emotional_context(
                 "literary", literary_context
             )
-
-            print(
-                f"Integrated clinical context (affected {updated_clinical} relationships)"
+            logger.info(
+                f"Stored 'clinical' context (affected {updated_clinical} elements - placeholder)."
             )
-            print(
-                f"Integrated literary context (affected {updated_literary} relationships)"
+            logger.info(
+                f"Stored 'literary' context (affected {updated_literary} elements - placeholder)."
             )
 
-            top_positive_terms = cast(
-                List[Tuple[str, float]], valence_analysis.get("top_positive", [])
-            )
-            top_negative_terms = cast(
-                List[Tuple[str, float]], valence_analysis.get("top_negative", [])
-            )
-            emotional_terms: List[str] = [
-                t[0] for t in top_positive_terms + top_negative_terms
-            ]
-
-            context_term: str
-            if emotional_terms:
-                context_term = emotional_terms[0]
-            else:
-                context_term = "anxiety"
-
-            print(
-                f"\nExtracting emotional subgraph for '{context_term}' with clinical context..."
+            # Demonstrate getting emotional subgraph (even without context application)
+            context_term = "fear"  # Term likely involved in emotional edges
+            logger.info(
+                f"Extracting emotional subgraph around '{context_term}' (depth 1)..."
             )
             emotional_subgraph: nx.Graph = graph_manager.get_emotional_subgraph(
-                str(context_term), depth=2, context="clinical"
+                context_term, depth=1, min_intensity=0.1  # Use a threshold
+            )
+            logger.info(
+                f"Extracted emotional subgraph: {emotional_subgraph.number_of_nodes()} nodes, {emotional_subgraph.number_of_edges()} edges."
             )
 
-            print(
-                f"Extracted emotional subgraph with {emotional_subgraph.number_of_nodes()} nodes "
-                f"and {emotional_subgraph.number_of_edges()} emotional relationships"  # Use number_of_edges() method
+        except NodeNotFoundError as nnf:
+            logger.warning(
+                f"Could not extract emotional subgraph for '{context_term}': {nnf}"
             )
         except Exception as e:
-            print(f"Note: Context integration skipped: {e}")
+            logger.error(f"Error during context integration phase: {e}", exc_info=True)
 
-        # Phase 8: Visualization
-        print("\n=== PHASE 8: VISUALIZATION ===")
-        vis_path_emotional: Optional[str] = None  # Define with Optional[str]
+        # --- Phase 8: Visualization ---
+        logger.info("--- PHASE 8: VISUALIZATION ---")
+        vis_paths: Dict[str, Path] = {
+            "2d": output_dir / "graph_visualization_2d.html",
+            "3d": output_dir / "graph_visualization_3d.html",
+            "emotional": output_dir / "graph_visualization_emotional.html",
+            "lexical": output_dir / "graph_visualization_lexical.html",
+        }
 
         try:
-            vis_path_2d = "data/graph_visualization_2d.html"
-            print("\nGenerating 2D interactive visualization...")
-            graph_manager.visualize(output_path=vis_path_2d)
+            logger.info(
+                "Generating 2D interactive visualization (default dimensions)..."
+            )
+            graph_manager.visualize_2d(
+                output_path=str(vis_paths["2d"]), open_in_browser=False
+            )  # Specify 2D
 
-            vis_path_3d = "data/graph_visualization_3d.html"
-            print("\nGenerating 3D interactive visualization...")
-            graph_manager.visualize_3d(output_path=vis_path_3d)
+            logger.info(
+                "Generating 3D interactive visualization (default dimensions)..."
+            )
+            graph_manager.visualize_3d(
+                output_path=str(vis_paths["3d"]), open_in_browser=False
+            )  # Specify 3D
 
-            if "emotional" in relationship_analysis.get("dimensions", {}):
-                vis_path_emotional = "data/emotional_graph.html"
-                print("\nGenerating emotional relationships visualization...")
-                # Ensure vis_path_emotional is passed correctly
-                graph_manager.visualize(
-                    output_path=vis_path_emotional, dimensions=["emotional"]
+            # Visualize specific dimensions if they exist
+            if "emotional" in dimensions_data:
+                logger.info(
+                    "Generating visualization for 'emotional' dimension only..."
+                )
+                graph_manager.visualize(  # Use default (likely 2D)
+                    output_path=str(vis_paths["emotional"]),
+                    dimensions_filter=["emotional"],
+                    open_in_browser=False,
+                )
+            if "lexical" in dimensions_data:
+                logger.info("Generating visualization for 'lexical' dimension only...")
+                graph_manager.visualize(  # Use default (likely 2D)
+                    output_path=str(vis_paths["lexical"]),
+                    dimensions_filter=["lexical"],
+                    open_in_browser=False,
                 )
 
-            print("\nVisualizations saved:")
-            print(f"  - 2D: {vis_path_2d}")
-            print(f"  - 3D: {vis_path_3d}")
-            if vis_path_emotional:
-                print(f"  - Emotional: {vis_path_emotional}")
-            print("Open these files in a web browser to explore the graph")
+            logger.info("Visualizations saved to:")
+            for key, path in vis_paths.items():
+                if path.exists():
+                    logger.info(f"  - {key.capitalize()}: {path}")
+            logger.info("Open HTML files in a browser to explore.")
 
-        except ImportError as e:
-            print(f"Note: {e}")
+        except GraphVisualizationError as gv_err:  # Catch specific viz errors
+            logger.warning(f"Visualization generation issue: {gv_err}")
+        except ImportError as ie:  # Catch missing optional dependencies
+            logger.warning(f"Visualization skipped due to missing library: {ie}")
         except Exception as e:
-            print(f"Warning: Could not generate visualization: {e}")
+            logger.error(f"Unexpected error during visualization: {e}", exc_info=True)
 
-        output_path = "data/lexical_graph.gexf"
-        print(f"\nSaving complete graph to {output_path}")
-        graph_manager.save_to_gexf(output_path)
-        print(f"Graph saved successfully to {output_path}")
-
+        # --- Phase 9: Export ---
+        logger.info("--- PHASE 9: EXPORT ---")
+        gexf_path = output_dir / "lexical_graph_demo.gexf"
+        logger.info(f"Saving complete graph to GEXF: {gexf_path}")
         try:
-            print(f"\nExtracting subgraph for '{example_term}'...")
-            subgraph_path = graph_manager.export_subgraph(example_term, depth=2)
-            print(f"Subgraph exported to {subgraph_path}")
-        except NodeNotFoundError:
-            print(
-                f"Warning: Could not extract subgraph for '{example_term}' (term not found)"
+            graph_manager.save_to_gexf(str(gexf_path))
+            logger.info(f"Graph saved successfully to {gexf_path}")
+        except GraphError as ge:
+            logger.error(f"Failed to save graph to GEXF: {ge}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving GEXF: {e}", exc_info=True)
+
+        # Export subgraph example
+        try:
+            logger.info(f"Exporting subgraph for '{example_term}' (depth 2)...")
+            subgraph_path_str = graph_manager.export_subgraph(
+                example_term,
+                depth=2,
+                output_path=str(output_dir / f"subgraph_{example_term}_depth2.gexf"),
             )
+            if subgraph_path_str:
+                logger.info(f"Subgraph exported successfully to {subgraph_path_str}")
+            else:
+                logger.warning(
+                    f"Subgraph export for '{example_term}' resulted in an empty path (likely empty subgraph)."
+                )
+        except NodeNotFoundError:
+            logger.warning(
+                f"Could not extract subgraph for '{example_term}' (term not found)."
+            )
+        except GraphError as ge:
+            logger.error(f"Failed to export subgraph: {ge}")
+        except Exception as e:
+            logger.error(f"Unexpected error exporting subgraph: {e}", exc_info=True)
 
         elapsed_time = time.time() - start_time
-        print(f"\nDemonstration completed in {elapsed_time:.2f} seconds")
+        logger.info(f"Demonstration completed in {elapsed_time:.2f} seconds.")
 
     except GraphError as e:
-        print(f"Graph error: {e}")
+        logger.error(f"A graph operation failed: {e}", exc_info=True)
+        print(f"\nDemo aborted due to GraphError: {e}")
+    except NodeNotFoundError as e:
+        logger.error(f"Required node not found: {e}", exc_info=True)
+        print(f"\nDemo aborted due to NodeNotFoundError: {e}")
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        logger.error(
+            f"An unexpected error occurred during the demo: {e}", exc_info=True
+        )
+        print(f"\nDemo aborted due to unexpected error: {e}")
         traceback.print_exc()
     finally:
-        db_manager.close()
+        # Ensure DB connection is closed
+        if db_manager:
+            db_manager.close()
+            logger.info("Database connection closed.")
 
 
 if __name__ == "__main__":

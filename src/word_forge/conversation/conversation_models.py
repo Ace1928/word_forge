@@ -203,26 +203,27 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         print("EidosianIdentity: Refining response using LLM...")
         intermediate_response = context.get("intermediate_response")
         if not intermediate_response:
-            # Use Result.failure factory method with Error object
+            error = Error.create(
+                message="No intermediate response provided for refinement.",
+                code="MISSING_INTERMEDIATE_RESPONSE",
+                category=ErrorCategory.VALIDATION,
+                severity=ErrorSeverity.ERROR,
+                context={"conversation_id": str(context.get("conversation_id"))},
+            )
             return Result[str].failure(
-                Error.create(
-                    message="No intermediate response provided for refinement.",
-                    code="MISSING_INTERMEDIATE_RESPONSE",
-                    category=ErrorCategory.VALIDATION,
-                    severity=ErrorSeverity.ERROR,
-                    context={"conversation_id": str(context.get("conversation_id"))},
-                )
+                error.code, error.message, error.context, error.category, error.severity
             )
 
         if not LLMInterface.is_initialized():
+            error = Error.create(
+                message="LLM required for EidosianIdentityModel refinement is not available.",
+                code="LLM_NOT_INITIALIZED",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={"model_name": LLMInterface.get_model_name()},
+            )
             return Result[str].failure(
-                Error.create(
-                    message="LLM required for EidosianIdentityModel refinement is not available.",
-                    code="LLM_NOT_INITIALIZED",
-                    category=ErrorCategory.RESOURCE,
-                    severity=ErrorSeverity.ERROR,
-                    context={"model_name": LLMInterface.get_model_name()},
-                )
+                error.code, error.message, error.context, error.category, error.severity
             )
 
         try:
@@ -232,7 +233,6 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             # 1. Self-Reflection
             reflection_result = self._reflect_on_response(current_response, context)
             if reflection_result.is_failure:
-                # Propagate the failure Result directly
                 return reflection_result
             current_response = reflection_result.unwrap()
 
@@ -259,7 +259,6 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             update_result = self._update_identity_state(context, final_response)
             if update_result.is_failure:
                 error_details = "Unknown error"
-                # Check if error object exists before accessing attributes
                 if update_result.error:
                     error_details = (
                         f"{update_result.error.code}: {update_result.error.message}"
@@ -269,18 +268,18 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             return Result[str].success(final_response)
 
         except Exception as e:
-            # Catch unexpected errors during the pipeline
+            error = Error.create(
+                message=f"Unexpected error during identity refinement: {e}",
+                code="IDENTITY_REFINEMENT_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "intermediate_response": intermediate_response[:100],
+                    "error_type": type(e).__name__,
+                },
+            )
             return Result[str].failure(
-                Error.create(
-                    message=f"Unexpected error during identity refinement: {e}",
-                    code="IDENTITY_REFINEMENT_ERROR",
-                    category=ErrorCategory.UNEXPECTED,
-                    severity=ErrorSeverity.ERROR,
-                    context={
-                        "intermediate_response": intermediate_response[:100],
-                        "error_type": type(e).__name__,
-                    },
-                )
+                error.code, error.message, error.context, error.category, error.severity
             )
 
     def _build_llm_prompt(
@@ -372,13 +371,14 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
     ) -> Result[str]:
         """Helper method to call the LLM and handle potential errors."""
         if not LLMInterface.is_initialized():
+            error = Error.create(
+                message="LLM is not available.",
+                code="LLM_NOT_INITIALIZED",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+            )
             return Result[str].failure(
-                Error.create(
-                    message="LLM is not available.",
-                    code="LLM_NOT_INITIALIZED",
-                    category=ErrorCategory.RESOURCE,
-                    severity=ErrorSeverity.ERROR,
-                )
+                error.code, error.message, error.context, error.category, error.severity
             )
 
         # Estimate max tokens based on prompt length
@@ -392,14 +392,15 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         if llm_result is not None:
             return Result[str].success(llm_result)
         else:
+            error = Error.create(
+                message="LLM failed to generate a response for the given prompt.",
+                code="LLM_GENERATION_FAILED",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={"prompt_start": prompt[:200]},
+            )
             return Result[str].failure(
-                Error.create(
-                    message="LLM failed to generate a response for the given prompt.",
-                    code="LLM_GENERATION_FAILED",
-                    category=ErrorCategory.EXTERNAL,
-                    severity=ErrorSeverity.ERROR,
-                    context={"prompt_start": prompt[:200]},
-                )
+                error.code, error.message, error.context, error.category, error.severity
             )
 
     def _reflect_on_response(self, response: str, context: ModelContext) -> Result[str]:
@@ -425,8 +426,6 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         if style_result.is_success:
             stylized_response = style_result.unwrap()
             prefix = f"[Eidos v{self.state.version}]: "
-            # Clean potential LLM preamble before adding prefix
-            # Find the first alphanumeric character to strip preamble reliably
             first_meaningful_char_index = -1
             for i, char in enumerate(stylized_response):
                 if char.isalnum():
@@ -436,24 +435,19 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             if first_meaningful_char_index != -1:
                 cleaned_response = stylized_response[first_meaningful_char_index:]
             else:
-                cleaned_response = (
-                    stylized_response.strip()
-                )  # Fallback if no alphanumeric found
+                cleaned_response = stylized_response.strip()
 
-            # Add prefix only if not already present (case-insensitive check)
             if not cleaned_response.lower().startswith(prefix.lower()):
                 final_stylized_response = prefix + cleaned_response
             else:
-                final_stylized_response = cleaned_response  # Already has prefix
+                final_stylized_response = cleaned_response
 
             return Result[str].success(final_stylized_response)
         else:
-            # Return the original response with prefix if styling failed, but propagate the error
             print(
-                f"Warning: Failed to apply Eidosian style: {style_result.error.message if style_result.error else 'Unknown'}. Using intermediate response with prefix."
+                f"Warning: Failed to apply Eidosian style: {style_result.error.message if style_result.error else 'Unknown'}."
             )
-            # Return success with prefixed original response, but log the failure
-            return Result[str].success(f"[Eidos v{self.state.version}]: {response}")
+            return style_result
 
     def _align_with_ethics(self, response: str, context: ModelContext) -> Result[str]:
         """Uses LLM to align the response with the Eidosian ethical framework."""
@@ -466,20 +460,25 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
     ) -> Result[None]:
         """Uses LLM to reflect on the interaction and potentially update identity state."""
         self.state.interaction_count += 1
-        update_frequency = 20  # Reflect every 20 interactions
+        update_frequency = 20
 
         if self.state.interaction_count % update_frequency == 0:
             print(
                 f"EidosianIdentity: Performing periodic self-reflection (Interaction #{self.state.interaction_count})..."
             )
             if not LLMInterface.is_initialized():
+                error = Error.create(
+                    message="LLM needed for state update is not available.",
+                    code="LLM_NOT_INITIALIZED",
+                    category=ErrorCategory.RESOURCE,
+                    severity=ErrorSeverity.WARNING,
+                )
                 return Result[None].failure(
-                    Error.create(
-                        message="LLM needed for state update is not available.",
-                        code="LLM_NOT_INITIALIZED",
-                        category=ErrorCategory.RESOURCE,
-                        severity=ErrorSeverity.WARNING,  # Non-critical failure
-                    )
+                    error.code,
+                    error.message,
+                    error.context,
+                    error.category,
+                    error.severity,
                 )
 
             try:
@@ -491,7 +490,6 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
                         for msg in history[-history_limit:]
                     ]
                 )
-                # Safely serialize principles
                 try:
                     principles_json = json.dumps(self.state.core_principles)
                 except TypeError:
@@ -543,23 +541,27 @@ Example:
                 )
 
                 if reflection_output_result.is_failure:
-                    # Propagate the error from the Result object
-                    if reflection_output_result.error:
-                        return Result[None].failure(reflection_output_result.error)
-                    else:
-                        return Result[None].failure(
-                            Error.create(
-                                message="LLM call failed during reflection, but no error object provided.",
-                                code="REFLECTION_LLM_FAILURE_NO_ERROR",
-                                category=ErrorCategory.EXTERNAL,
-                                severity=ErrorSeverity.WARNING,
-                            )
+                    return (
+                        Result[None].failure(
+                            reflection_output_result.error.code,
+                            reflection_output_result.error.message,
+                            reflection_output_result.error.context,
+                            reflection_output_result.error.category,
+                            reflection_output_result.error.severity,
                         )
+                        if reflection_output_result.error
+                        else Result[None].failure(
+                            "REFLECTION_LLM_FAILURE_NO_ERROR",
+                            "LLM call failed during reflection, but no error object provided.",
+                            None,
+                            ErrorCategory.EXTERNAL,
+                            ErrorSeverity.WARNING,
+                        )
+                    )
 
                 reflection_output = reflection_output_result.unwrap()
 
                 try:
-                    # More robust JSON cleaning
                     json_start = reflection_output.find("{")
                     json_end = reflection_output.rfind("}")
                     if json_start == -1 or json_end == -1 or json_start >= json_end:
@@ -585,7 +587,6 @@ Example:
                     delta_raw = reflection_data.get("ethical_score_delta", 0.0)
                     try:
                         delta = float(delta_raw)
-                        # Clamp delta to valid range
                         delta = max(-0.05, min(0.05, delta))
                     except (ValueError, TypeError):
                         print(
@@ -593,11 +594,9 @@ Example:
                         )
                         delta = 0.0
 
-                    # Update ethical alignment score, clamping between 0.5 and 1.0
                     self.state.ethical_alignment_score = max(
                         0.5, min(1.0, self.state.ethical_alignment_score + delta)
                     )
-                    # Update summary, ensuring it's a string
                     self.state.recent_interaction_summary = str(
                         reflection_data.get("learning_summary", "")
                     )
@@ -612,28 +611,37 @@ Example:
                     print(
                         f"Warning: Failed to parse LLM reflection JSON: {json_e}. Raw output: '{reflection_output[:200]}...'"
                     )
+                    error = Error.create(
+                        message=f"Failed to parse LLM reflection JSON: {json_e}",
+                        code="REFLECTION_PARSE_ERROR",
+                        category=ErrorCategory.VALIDATION,
+                        severity=ErrorSeverity.WARNING,
+                        context={"raw_output": reflection_output[:200]},
+                    )
                     return Result[None].failure(
-                        Error.create(
-                            message=f"Failed to parse LLM reflection JSON: {json_e}",
-                            code="REFLECTION_PARSE_ERROR",
-                            category=ErrorCategory.VALIDATION,
-                            severity=ErrorSeverity.WARNING,  # Non-critical
-                            context={"raw_output": reflection_output[:200]},
-                        )
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
                     )
 
             except Exception as e:
                 print(f"Warning: Unexpected error during identity state update: {e}")
+                error = Error.create(
+                    message=f"Unexpected error during state update: {e}",
+                    code="STATE_UPDATE_ERROR",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.WARNING,
+                )
                 return Result[None].failure(
-                    Error.create(
-                        message=f"Unexpected error during state update: {e}",
-                        code="STATE_UPDATE_ERROR",
-                        category=ErrorCategory.UNEXPECTED,
-                        severity=ErrorSeverity.WARNING,  # Non-critical
-                    )
+                    error.code,
+                    error.message,
+                    error.context,
+                    error.category,
+                    error.severity,
                 )
         else:
-            # Simple update if not reflecting
             self.state.recent_interaction_summary = (
                 f"Processed input: '{context.get('current_input', '')[:30]}...'"
             )

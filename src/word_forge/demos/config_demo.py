@@ -4,13 +4,11 @@ Demonstration and CLI tool for Word Forge configuration.
 
 import argparse
 import json
-from enum import Enum  # Add Enum import
 
-from word_forge.config import config
-from word_forge.configs.config_essentials import (  # Import ConfigComponent
-    ConfigValue,
-    serialize_config,
-)
+from word_forge.config import config  # Import necessary items
+
+# Import serialize_config explicitly
+from word_forge.configs.config_essentials import ConfigValue, serialize_config
 
 
 def main() -> None:
@@ -112,6 +110,8 @@ def main() -> None:
 
             # Convert the string value to the appropriate type
             # Need to import Enum for this check
+            from enum import Enum
+
             if isinstance(current_value, bool):
                 value = value_str.lower() in ("true", "yes", "1", "y")
             elif isinstance(current_value, int):

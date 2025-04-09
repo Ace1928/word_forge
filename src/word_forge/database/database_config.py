@@ -69,14 +69,13 @@ Architecture:
 from dataclasses import dataclass, field, fields, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Literal, Set, TypedDict, Union, cast
+from typing import Any, Dict, Literal, Set, TypedDict, Union, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
     ConnectionPoolMode,
     DatabaseConfigError,
     DatabaseDialect,
-    EnvMapping,
     ErrorCategory,
     ErrorSeverity,
     PathLike,
@@ -224,16 +223,6 @@ class DatabaseConfig:
     enable_wal_mode: bool = True
     page_size: int = 4096  # 4KB pages
     cache_size: int = 2000  # 2000 pages (~8MB)
-
-    # Environment variable mapping for configuration overrides
-    ENV_VARS: ClassVar[EnvMapping] = {
-        "WORD_FORGE_DB_PATH": ("db_path", str),
-        "WORD_FORGE_DB_DIALECT": ("dialect", DatabaseDialect),
-        "WORD_FORGE_DB_POOL_SIZE": ("pool_size", int),
-        "WORD_FORGE_DB_POOL_MODE": ("pool_mode", str),
-        "WORD_FORGE_DB_ISOLATION": ("isolation_level", str),
-        "WORD_FORGE_DB_FOREIGN_KEYS": ("enable_foreign_keys", bool),
-    }
 
     # ==========================================
     # Cached Properties

@@ -1,6 +1,7 @@
 import sqlite3
+import traceback
 from contextlib import contextmanager
-from typing import Iterator, List, Optional, cast  # Import Iterator
+from typing import Dict, Iterator, List, Optional, cast
 
 # Import Result and Error types correctly
 from word_forge.configs.config_essentials import (
@@ -18,7 +19,7 @@ from word_forge.conversation.conversation_types import (
     LightweightModel,
     MessageDict,
     ModelContext,
-    ReflexiveModel,  # Import ReflexiveModel protocol
+    ReflexiveModel,
 )
 from word_forge.database.database_manager import DatabaseError, DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
@@ -26,88 +27,135 @@ from word_forge.graph.graph_manager import GraphManager
 from word_forge.vectorizer.vector_store import VectorStore
 
 
-class ConversationError(DatabaseError):
-    """Base exception for conversation operations."""
+# --- Custom Exceptions ---
+class ConversationError(Exception):
+    """
+    Base exception for errors specific to conversation management operations.
 
-    pass
+    Inherits from Exception, providing a specific type for catching
+    conversation-related issues distinct from general database errors.
+
+    Attributes:
+        message (str): A description of the error.
+        original_exception (Optional[Exception]): The underlying exception, if any.
+    """
+
+    def __init__(self, message: str, original_exception: Optional[Exception] = None):
+        """
+        Initializes a ConversationError.
+
+        Args:
+            message: The error message describing the issue.
+            original_exception: The optional original exception that caused this error.
+        """
+        super().__init__(message)
+        self.message = message
+        self.original_exception = original_exception
+
+    def __str__(self) -> str:
+        """Returns the string representation of the error."""
+        if self.original_exception:
+            return f"{self.message}: {self.original_exception}"
+        return self.message
 
 
 class ConversationNotFoundError(ConversationError):
-    """Raised when a conversation cannot be found."""
+    """
+    Raised specifically when a conversation cannot be found in the database.
 
-    pass
+    Inherits from ConversationError for categorization.
+    """
+
+    def __init__(self, conversation_id: int):
+        """
+        Initializes a ConversationNotFoundError.
+
+        Args:
+            conversation_id: The ID of the conversation that was not found.
+        """
+        super().__init__(f"Conversation with ID {conversation_id} not found.")
+        self.conversation_id = conversation_id
 
 
-# SQL query constants to prevent duplication and enhance maintainability
+# --- SQL Query Constants ---
 SQL_CREATE_CONVERSATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    status TEXT DEFAULT 'ACTIVE',
-    created_at REAL DEFAULT (strftime('%s','now')),
-    updated_at REAL DEFAULT (strftime('%s','now'))
-)
+    status TEXT DEFAULT 'ACTIVE' NOT NULL,
+    created_at REAL DEFAULT (strftime('%s','now')) NOT NULL,
+    updated_at REAL DEFAULT (strftime('%s','now')) NOT NULL
+);
 """
 
 SQL_CREATE_CONVERSATION_MESSAGES_TABLE = """
 CREATE TABLE IF NOT EXISTS conversation_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
-    speaker TEXT,
-    text TEXT,
-    timestamp REAL DEFAULT (strftime('%s','now')),
-    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-)
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    timestamp REAL DEFAULT (strftime('%s','now')) NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
 """
 
 SQL_START_CONVERSATION = """
-INSERT INTO conversations (status) VALUES ('ACTIVE')
+INSERT INTO conversations (status) VALUES ('ACTIVE');
 """
 
 SQL_END_CONVERSATION = """
 UPDATE conversations
 SET status = 'COMPLETED',
     updated_at = strftime('%s','now')
-WHERE id = ?
+WHERE id = ?;
 """
 
 SQL_ADD_MESSAGE = """
 INSERT INTO conversation_messages (conversation_id, speaker, text)
-VALUES (?, ?, ?)
+VALUES (?, ?, ?);
 """
 
 SQL_UPDATE_CONVERSATION_TIMESTAMP = """
 UPDATE conversations
 SET updated_at = strftime('%s','now')
-WHERE id = ?
+WHERE id = ?;
 """
 
 SQL_GET_CONVERSATION = """
 SELECT id, status, created_at, updated_at
 FROM conversations
-WHERE id = ?
+WHERE id = ?;
 """
 
 SQL_GET_MESSAGES = """
-SELECT cm.id, cm.speaker, cm.text, cm.timestamp, me.label as emotion_label, me.confidence as emotion_confidence
+SELECT
+    cm.id,
+    cm.speaker,
+    cm.text,
+    cm.timestamp
 FROM conversation_messages cm
-LEFT JOIN message_emotion me ON cm.id = me.message_id
 WHERE cm.conversation_id = ?
-ORDER BY cm.timestamp ASC -- Order by timestamp for chronological order
+ORDER BY cm.timestamp ASC;
 """
 
 
 class ConversationManager:
     """
-    Manages conversation sessions and messages, integrating multi-model response generation.
+    Manages conversation sessions, messages, and multi-model response generation.
 
-    Orchestrates a multi-stage response generation pipeline involving:
-    1. Reflexive Model: Quick initial response/context.
-    2. Lightweight Model: Routing and basic processing.
-    3. Affective/Lexical Model: Core understanding and response generation.
-    4. Identity Model: Personality, consistency, and final refinement.
+    Orchestrates interactions with the database and a sequence of language models
+    (Reflexive, Lightweight, Affective/Lexical, Identity) to manage chat flows.
+    Provides an interface adhering to principles of precision, clarity,
+    and robust error handling using the Result pattern.
 
-    Provides methods for starting, ending, adding messages to, and retrieving
-    conversations, ensuring data persistence and interaction flow management.
+    Attributes:
+        db_manager (DBManager): Instance for database interactions.
+        emotion_manager (EmotionManager): Instance for emotion analysis.
+        graph_manager (GraphManager): Instance for graph database access.
+        vector_store (VectorStore): Instance for vector similarity searches.
+        reflexive_model (ReflexiveModel): Protocol implementation for initial response.
+        lightweight_model (LightweightModel): Protocol implementation for routing/basic processing.
+        affective_model (AffectiveLexicalModel): Protocol implementation for core response generation.
+        identity_model (IdentityModel): Protocol implementation for final refinement.
     """
 
     def __init__(
@@ -122,7 +170,9 @@ class ConversationManager:
         identity_model: IdentityModel,
     ) -> None:
         """
-        Initialize the conversation manager with dependencies and models.
+        Initializes the ConversationManager with dependencies and models.
+
+        Ensures necessary database tables are created upon instantiation.
 
         Args:
             db_manager: Database manager instance for persistence.
@@ -135,7 +185,7 @@ class ConversationManager:
             identity_model: The personality and refinement model instance.
 
         Raises:
-            ConversationError: If initialization fails (e.g., table creation).
+            ConversationError: If initialization fails, particularly during table creation.
         """
         self.db_manager = db_manager
         self.emotion_manager = emotion_manager
@@ -145,21 +195,26 @@ class ConversationManager:
         self.lightweight_model = lightweight_model
         self.affective_model = affective_model
         self.identity_model = identity_model
-        self._create_tables()  # Ensure tables are created on init
+        try:
+            self._create_tables()
+        except ConversationError as e:
+            print(f"Error during ConversationManager initialization: {e}")
+            raise
 
     @contextmanager
     def _db_connection(self) -> Iterator[sqlite3.Connection]:
         """
-        Provides a managed database connection context.
+        Provides a managed database connection context using the DBManager.
 
-        Ensures the connection uses a Row factory for dictionary-like access
-        and handles connection acquisition and release through the DBManager.
+        Ensures the connection uses `sqlite3.Row` for dictionary-like row access
+        and handles potential `DatabaseError` exceptions from the manager,
+        wrapping them in `ConversationError`.
 
         Yields:
-            sqlite3.Connection: An active database connection.
+            sqlite3.Connection: An active SQLite database connection configured with Row factory.
 
         Raises:
-            ConversationError: If obtaining a connection fails.
+            ConversationError: If obtaining or managing the connection fails.
         """
         conn: Optional[sqlite3.Connection] = None
         try:
@@ -168,21 +223,24 @@ class ConversationManager:
                 conn.row_factory = sqlite3.Row
                 yield conn
         except DatabaseError as e:
-            raise ConversationError(f"Failed to get database connection: {e}") from e
+            raise ConversationError(
+                f"Failed to get database connection via DBManager: {e}",
+                original_exception=e,
+            ) from e
         except Exception as e:
             raise ConversationError(
-                f"Unexpected error during database connection: {e}"
+                f"Unexpected error during database connection context: {e}",
+                original_exception=e,
             ) from e
 
     def _create_tables(self) -> None:
         """
-        Ensures necessary database tables for conversations and messages exist.
+        Ensures necessary database tables exist for conversations and messages.
 
-        Executes CREATE TABLE IF NOT EXISTS statements for `conversations`
-        and `conversation_messages`.
+        Executes `CREATE TABLE IF NOT EXISTS` statements within a transaction.
 
         Raises:
-            ConversationError: If there's an issue executing the SQL statements.
+            ConversationError: If executing the SQL statements fails.
         """
         try:
             with self._db_connection() as conn:
@@ -192,20 +250,27 @@ class ConversationManager:
                 conn.commit()
         except sqlite3.Error as e:
             raise ConversationError(
-                f"Failed to initialize conversation tables: {e}"
+                f"SQLite error initializing conversation tables: {e}",
+                original_exception=e,
+            ) from e
+        except ConversationError as e:
+            raise e
+        except Exception as e:
+            raise ConversationError(
+                f"Unexpected error initializing conversation tables: {e}",
+                original_exception=e,
             ) from e
 
-    def start_conversation(self) -> int:
+    def start_conversation(self) -> Result[int]:
         """
         Initiates a new conversation record in the database.
 
         Sets the initial status to 'ACTIVE' and records the creation timestamp.
+        Uses the Result pattern for explicit success/failure signaling.
 
         Returns:
-            int: The unique ID assigned to the newly created conversation.
-
-        Raises:
-            ConversationError: If the database insertion fails or the ID cannot be retrieved.
+            Result[int]: On success, contains the unique ID of the newly created
+                         conversation. On failure, contains an Error object.
         """
         try:
             with self._db_connection() as conn:
@@ -214,28 +279,72 @@ class ConversationManager:
                 conversation_id = cursor.lastrowid
                 conn.commit()
                 if conversation_id is None:
-                    raise ConversationError(
-                        "Failed to retrieve conversation ID after insertion"
+                    error = Error.create(
+                        message="Failed to retrieve conversation ID after insertion (lastrowid was None).",
+                        code="DB_INSERT_NO_ID",
+                        category=ErrorCategory.UNEXPECTED,
+                        severity=ErrorSeverity.ERROR,
                     )
-                print(
-                    f"Started new conversation with ID: {conversation_id}"
-                )  # Added log
-                return conversation_id
+                    return Result[int].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
+                    )
+                print(f"Started new conversation with ID: {conversation_id}")
+                return Result[int].success(conversation_id)
         except sqlite3.Error as e:
-            raise ConversationError(f"Failed to start new conversation: {e}") from e
+            error = Error.create(
+                message=f"SQLite error starting new conversation: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={"sql_operation": "start_conversation"},
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error starting conversation: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={"sql_operation": "start_conversation"},
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error starting conversation: {e}",
+                code="UNEXPECTED_START_CONV_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "start_conversation",
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
-    def end_conversation(self, conversation_id: int) -> None:
+    def end_conversation(self, conversation_id: int) -> Result[None]:
         """
         Marks an existing conversation as 'COMPLETED'.
 
         Updates the conversation's status and `updated_at` timestamp.
+        Uses the Result pattern for explicit success/failure signaling.
 
         Args:
             conversation_id: The ID of the conversation to mark as completed.
 
-        Raises:
-            ConversationNotFoundError: If no conversation with the given ID exists.
-            ConversationError: If the database update operation fails.
+        Returns:
+            Result[None]: Contains None on success, or an Error object on failure.
+                          Specifically returns a CONVERSATION_NOT_FOUND error
+                          if the ID does not exist.
         """
         try:
             with self._db_connection() as conn:
@@ -243,14 +352,65 @@ class ConversationManager:
                 cursor.execute(SQL_END_CONVERSATION, (conversation_id,))
                 conn.commit()
                 if cursor.rowcount == 0:
-                    raise ConversationNotFoundError(
-                        f"Conversation with ID {conversation_id} not found"
+                    error = Error.create(
+                        message=f"Conversation with ID {conversation_id} not found to end.",
+                        code="CONVERSATION_NOT_FOUND",
+                        category=ErrorCategory.VALIDATION,
+                        severity=ErrorSeverity.WARNING,
+                        context={"conversation_id": str(conversation_id)},
                     )
-                print(f"Ended conversation with ID: {conversation_id}")  # Added log
+                    return Result[None].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
+                    )
+                print(f"Ended conversation with ID: {conversation_id}")
+                return Result[None].success(None)
         except sqlite3.Error as e:
-            raise ConversationError(
-                f"Failed to end conversation {conversation_id}: {e}"
-            ) from e
+            error = Error.create(
+                message=f"SQLite error ending conversation {conversation_id}: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "end_conversation",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[None].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error ending conversation: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "end_conversation",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[None].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error ending conversation {conversation_id}: {e}",
+                code="UNEXPECTED_END_CONV_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "end_conversation",
+                    "conversation_id": str(conversation_id),
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[None].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
     def add_message(
         self,
@@ -258,107 +418,176 @@ class ConversationManager:
         speaker: str,
         text: str,
         generate_response: bool = False,
-    ) -> int:
+    ) -> Result[int]:
         """
-        Adds a message to a conversation and optionally triggers response generation.
+        Adds a message and optionally triggers multi-model response generation.
 
-        Persists the message to the database, updates the conversation's timestamp,
-        processes the message for emotion, and if requested, initiates the
-        multi-model response generation pipeline for an assistant reply.
+        Persists the message, updates conversation timestamp, processes emotion,
+        and if `generate_response` is True and speaker is not 'Assistant',
+        initiates the response pipeline. Uses the Result pattern.
 
         Args:
             conversation_id: The ID of the target conversation.
-            speaker: The identifier of the message sender (e.g., "User", "Assistant").
+            speaker: Identifier of the message sender (e.g., "User", "Assistant").
+                     Case-insensitive check for "Assistant" to prevent self-reply loops.
             text: The textual content of the message. Cannot be empty or whitespace.
-            generate_response: If True and the speaker is not "Assistant", triggers
-                               the response generation pipeline. Defaults to False.
+            generate_response: If True and speaker is not "Assistant", triggers
+                               response generation. Defaults to False.
 
         Returns:
-            int: The unique ID of the newly added message (the input message, not the
-                 potential assistant response).
+            Result[int]: On success, contains the unique ID of the newly added
+                         *input* message. On failure, contains an Error object.
+                         If response generation fails, the input message is still
+                         added, but the overall result reflects the generation failure.
 
         Raises:
-            ValueError: If the provided message text is empty or whitespace.
-            ConversationNotFoundError: If the specified conversation_id does not exist
-                                      (can be raised during response generation).
-            ConversationError: If database operations fail or the response generation
-                               pipeline encounters an unrecoverable error.
+            ValueError: If the provided message text is empty or purely whitespace.
+                        (This is a programming error, hence direct raise).
         """
         if not text or not text.strip():
-            raise ValueError("Message text cannot be empty.")
+            raise ValueError("Message text cannot be empty or whitespace.")
 
+        message_id: Optional[int] = None
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
+
                 cursor.execute(SQL_ADD_MESSAGE, (conversation_id, speaker, text))
                 message_id = cursor.lastrowid
 
-                # Update conversation timestamp
                 cursor.execute(SQL_UPDATE_CONVERSATION_TIMESTAMP, (conversation_id,))
                 conn.commit()
 
                 if message_id is None:
-                    raise ConversationError(
-                        "Failed to retrieve message ID after insertion"
+                    error = Error.create(
+                        message="Failed to retrieve message ID after insertion.",
+                        code="DB_INSERT_NO_ID",
+                        category=ErrorCategory.UNEXPECTED,
+                        severity=ErrorSeverity.ERROR,
+                        context={
+                            "conversation_id": str(conversation_id),
+                            "speaker": speaker,
+                        },
                     )
+                    return Result[int].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
+                    )
+
                 print(
                     f"Added message {message_id} from {speaker} to conversation {conversation_id}"
-                )  # Added log
+                )
 
-                # Process emotion for the added message (can happen after commit)
                 try:
                     self.emotion_manager.process_message(message_id, text)
                 except Exception as emotion_e:
-                    # Log emotion processing error but don't fail message addition
                     print(
-                        f"Warning: Failed to process emotion for message {message_id}: {emotion_e}"
+                        f"Warning: Failed to process emotion for message {message_id} "
+                        f"in conversation {conversation_id}: {emotion_e}"
                     )
 
-                # Generate and add response if requested and not from Assistant
-                if generate_response and speaker.lower() != "assistant":
+            if generate_response and speaker.lower() != "assistant":
+                print(
+                    f"Triggering response generation for conversation {conversation_id}..."
+                )
+                response_result: Result[int] = self.generate_and_add_response(
+                    conversation_id, text, speaker
+                )
+                if response_result.is_failure:
+                    error_details = "Unknown error"
+                    error_code = "RESPONSE_GENERATION_FAILED"
+                    if response_result.error:
+                        error_details = response_result.error.message
+                        error_code = response_result.error.code
                     print(
-                        f"Triggering response generation for conversation {conversation_id}..."
+                        f"Error generating response for conversation {conversation_id}: "
+                        f"Code: {error_code}, Details: {error_details}"
                     )
-                    response_result: Result[int] = self.generate_and_add_response(
-                        conversation_id, text, speaker
+                    failure_error = response_result.error or Error.create(
+                        code="RESPONSE_GEN_UNKNOWN_FAILURE",
+                        message="Response generation failed without specific error.",
+                        context={
+                            "conversation_id": str(conversation_id),
+                            "speaker": speaker,
+                            "message_id": str(message_id),
+                            "error_details": error_details,
+                            "error_code": error_code,
+                        },
+                        category=ErrorCategory.UNEXPECTED,
+                        severity=ErrorSeverity.ERROR,
                     )
-                    if response_result.is_failure:
-                        error_details = "Unknown error during response generation"
-                        if response_result.error:
-                            error_details = response_result.error.message
-                        print(
-                            f"Error generating response for conversation {conversation_id}: {error_details}"
-                        )
-                        raise ConversationError(
-                            f"Failed to generate response: {error_details}"
-                        )
-                    else:
-                        print(
-                            f"Successfully generated and added response (ID: {response_result.unwrap()})"
-                        )
-
-                return message_id
+                    return Result[int].failure(
+                        failure_error.code,
+                        failure_error.message,
+                        failure_error.context,
+                        failure_error.category,
+                        failure_error.severity,
+                    )
+                else:
+                    print(
+                        f"Successfully generated and added response (ID: {response_result.unwrap()})"
+                    )
+                    return Result[int].success(message_id)
+            else:
+                return Result[int].success(message_id)
 
         except sqlite3.Error as e:
-            raise ConversationError(
-                f"Failed to add message to conversation {conversation_id}: {e}"
-            ) from e
-        except Exception as e:
-            print(
-                f"Error in add_message for conversation {conversation_id}: {type(e).__name__} - {e}"
+            error = Error.create(
+                message=f"SQLite error adding message to conversation {conversation_id}: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "add_message",
+                    "conversation_id": str(conversation_id),
+                    "speaker": speaker,
+                },
             )
-            raise ConversationError(
-                f"Error during message addition or response generation for conversation {conversation_id}: {e}"
-            ) from e
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error adding message: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "add_message",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error adding message or generating response for conversation {conversation_id}: {e}",
+                code="UNEXPECTED_ADD_MSG_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "add_message",
+                    "conversation_id": str(conversation_id),
+                    "exception_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
     def generate_and_add_response(
         self, conversation_id: int, last_user_text: str, last_user_speaker: str
     ) -> Result[int]:
         """
-        Generates and adds an assistant response using the multi-model pipeline.
+        Generates and adds an assistant response via the multi-model pipeline.
 
-        Orchestrates the flow: Context Prep -> Reflexive -> Lightweight ->
-        Affective/Lexical -> Identity -> Add Response. Handles errors at each stage.
+        Orchestrates: Context Prep -> Reflexive -> Lightweight -> Affective -> Identity -> Add Response.
+        Uses the Result pattern throughout for robust error handling.
 
         Args:
             conversation_id: ID of the current conversation.
@@ -367,129 +596,159 @@ class ConversationManager:
 
         Returns:
             Result[int]: Contains the ID of the added assistant message on success,
-                         or an Error object detailing the failure on error.
+                         or an Error object detailing the failure.
         """
+        print(f"[{conversation_id}] Preparing context for response generation...")
+        conv_result = self.get_conversation(conversation_id)
+        if conv_result.is_failure:
+            failure_error = conv_result.error or Error.create(
+                message="Failed to get conversation data before response generation.",
+                code="GET_CONV_FAILED_PRE_RESPONSE",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+            )
+            return Result[int].failure(
+                failure_error.code,
+                failure_error.message,
+                failure_error.context,
+                failure_error.category,
+                failure_error.severity,
+            )
+        conversation_data = conv_result.unwrap()
+
+        history_limit = 20
+        limited_history = conversation_data["messages"][-history_limit:]
+
+        context: ModelContext = {
+            "conversation_id": conversation_id,
+            "history": limited_history,
+            "current_input": last_user_text,
+            "speaker": last_user_speaker,
+            "db_manager": self.db_manager,
+            "emotion_manager": self.emotion_manager,
+            "graph_manager": self.graph_manager,
+            "vector_store": self.vector_store,
+            "reflexive_output": None,
+            "intermediate_response": None,
+            "affective_state": None,
+            "identity_state": None,
+            "additional_data": {},
+        }
+        print(
+            f"[{conversation_id}] Context prepared with {len(limited_history)} messages."
+        )
+
         try:
-            # --- 1. Prepare Context ---
-            print(f"[{conversation_id}] Preparing context...")
-            conv_result = self.get_conversation_if_exists(conversation_id)
-            if not conv_result:
-                return Result[int].failure(
-                    Error.create(
-                        message=f"Conversation {conversation_id} not found during response generation.",
-                        code="CONVERSATION_NOT_FOUND",
-                        category=ErrorCategory.VALIDATION,
-                        severity=ErrorSeverity.ERROR,
-                        context={"conversation_id": conversation_id},
-                    )
-                )
-            conversation_data = conv_result
-
-            context: ModelContext = {
-                "conversation_id": conversation_id,
-                "history": conversation_data["messages"][-20:],
-                "current_input": last_user_text,
-                "speaker": last_user_speaker,
-                "db_manager": self.db_manager,
-                "emotion_manager": self.emotion_manager,
-                "graph_manager": self.graph_manager,
-                "vector_store": self.vector_store,
-                "reflexive_output": None,
-                "intermediate_response": None,
-                "affective_state": None,
-                "identity_state": None,
-                "additional_data": {},
-            }
-            print(f"[{conversation_id}] Context prepared.")
-
-            # --- 2. Reflexive Model ---
             print(f"[{conversation_id}] Calling Reflexive Model...")
             reflexive_result = self.reflexive_model.generate_reflex(context)
             if reflexive_result.is_failure:
-                print(
-                    f"[{conversation_id}] Warning: Reflexive model failed: {reflexive_result.error.message if reflexive_result.error else 'Unknown'}. Proceeding without reflex."
-                )
-                context["additional_data"]["reflexive_error"] = (
-                    reflexive_result.error.to_dict()
-                    if reflexive_result.error
-                    else {
-                        "code": "UNKNOWN_REFLEX_FAILURE",
-                        "message": "Reflexive model failed without error details",
-                    }
-                )
+                reflex_error_msg = "Unknown reflexive failure"
+                reflex_error_code = "REFLEX_UNKNOWN"
+                reflex_error_context: Optional[Dict[str, str]] = None
+                if reflexive_result.error:
+                    reflex_error_msg = reflexive_result.error.message
+                    reflex_error_code = reflexive_result.error.code
+                    reflex_error_context = reflexive_result.error.context
 
-            # --- 3. Lightweight Model ---
+                print(
+                    f"[{conversation_id}] Warning: Reflexive model failed: {reflex_error_msg}. Proceeding."
+                )
+                context["additional_data"]["reflexive_error"] = {
+                    "message": reflex_error_msg,
+                    "code": reflex_error_code,
+                    "context": reflex_error_context or {},
+                }
+
             print(f"[{conversation_id}] Calling Lightweight Model...")
             lightweight_result = self.lightweight_model.process(context)
             if lightweight_result.is_failure:
-                print(
-                    f"[{conversation_id}] Error: Lightweight model failed: {lightweight_result.error.message if lightweight_result.error else 'Unknown'}"
+                print(f"[{conversation_id}] Error: Lightweight model failed.")
+                failure_error = lightweight_result.error or Error.create(
+                    message="Lightweight model failed without specific error.",
+                    code="LIGHTWEIGHT_UNKNOWN_FAILURE",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.ERROR,
                 )
-                if lightweight_result.error:
-                    return Result[int].failure(lightweight_result.error)
-                else:
-                    return Result[int].failure(
-                        Error.create(
-                            message="Lightweight model failed without error details",
-                            code="LIGHTWEIGHT_FAILURE_NO_ERROR",
-                            category=ErrorCategory.UNEXPECTED,
-                            severity=ErrorSeverity.ERROR,
-                        )
-                    )
+                return Result[int].failure(
+                    failure_error.code,
+                    failure_error.message,
+                    failure_error.context,
+                    failure_error.category,
+                    failure_error.severity,
+                )
             context = lightweight_result.unwrap()
             print(f"[{conversation_id}] Lightweight Model finished.")
 
-            # --- 4. Affective/Lexical Model ---
             print(f"[{conversation_id}] Calling Affective/Lexical Model...")
             affective_result = self.affective_model.generate_core_response(context)
             if affective_result.is_failure:
-                print(
-                    f"[{conversation_id}] Error: Affective model failed: {affective_result.error.message if affective_result.error else 'Unknown'}"
+                print(f"[{conversation_id}] Error: Affective model failed.")
+                failure_error = affective_result.error or Error.create(
+                    message="Affective model failed without specific error.",
+                    code="AFFECTIVE_UNKNOWN_FAILURE",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.ERROR,
                 )
-                if affective_result.error:
-                    return Result[int].failure(affective_result.error)
-                else:
-                    return Result[int].failure(
-                        Error.create(
-                            message="Affective model failed without error details",
-                            code="AFFECTIVE_FAILURE_NO_ERROR",
-                            category=ErrorCategory.UNEXPECTED,
-                            severity=ErrorSeverity.ERROR,
-                        )
-                    )
+                return Result[int].failure(
+                    failure_error.code,
+                    failure_error.message,
+                    failure_error.context,
+                    failure_error.category,
+                    failure_error.severity,
+                )
             context = affective_result.unwrap()
-            print(
-                f"[{conversation_id}] Affective Model generated intermediate response: '{context.get('intermediate_response', '')[:50]}...'"
-            )
+            intermediate_resp = context.get("intermediate_response", "")
+            if intermediate_resp:
+                preview = intermediate_resp[:50]
+            else:
+                preview = "<empty response>"
+            print(f"[{conversation_id}] Affective Model generated: '{preview}...'")
 
-            # --- 5. Identity Model ---
             print(f"[{conversation_id}] Calling Identity Model...")
             identity_result = self.identity_model.refine_response(context)
             if identity_result.is_failure:
-                print(
-                    f"[{conversation_id}] Error: Identity model failed: {identity_result.error.message if identity_result.error else 'Unknown'}"
+                print(f"[{conversation_id}] Error: Identity model failed.")
+                failure_error = identity_result.error or Error.create(
+                    message="Identity model failed without specific error.",
+                    code="IDENTITY_UNKNOWN_FAILURE",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.ERROR,
                 )
-                if identity_result.error:
-                    return Result[int].failure(identity_result.error)
-                else:
-                    return Result[int].failure(
-                        Error.create(
-                            message="Identity model failed without error details",
-                            code="IDENTITY_FAILURE_NO_ERROR",
-                            category=ErrorCategory.UNEXPECTED,
-                            severity=ErrorSeverity.ERROR,
-                        )
-                    )
+                return Result[int].failure(
+                    failure_error.code,
+                    failure_error.message,
+                    failure_error.context,
+                    failure_error.category,
+                    failure_error.severity,
+                )
             final_response_text = identity_result.unwrap()
             print(
-                f"[{conversation_id}] Identity Model produced final response: '{final_response_text[:50]}...'"
+                f"[{conversation_id}] Identity Model produced final: '{final_response_text[:50]}...'"
             )
 
-            # --- 6. Add Assistant Response ---
             print(f"[{conversation_id}] Adding final assistant response to DB...")
-            assistant_message_id = self._add_assistant_message_internal(
+            add_assistant_result = self._add_assistant_message_internal(
                 conversation_id, final_response_text
             )
+            if add_assistant_result.is_failure:
+                print(
+                    f"[{conversation_id}] Error: Failed to add assistant message to DB."
+                )
+                failure_error = add_assistant_result.error or Error.create(
+                    message="Failed to add assistant message internally without specific error.",
+                    code="ADD_ASSISTANT_INTERNAL_FAILURE",
+                    category=ErrorCategory.UNEXPECTED,
+                    severity=ErrorSeverity.ERROR,
+                )
+                return Result[int].failure(
+                    failure_error.code,
+                    failure_error.message,
+                    failure_error.context,
+                    failure_error.category,
+                    failure_error.severity,
+                )
+
+            assistant_message_id = add_assistant_result.unwrap()
             print(
                 f"[{conversation_id}] Assistant message {assistant_message_id} added."
             )
@@ -501,32 +760,35 @@ class ConversationManager:
             )
             error = Error.create(
                 message=f"Unexpected error in response pipeline: {e}",
-                code="RESPONSE_PIPELINE_ERROR",
+                code="RESPONSE_PIPELINE_UNEXPECTED_ERROR",
                 category=ErrorCategory.UNEXPECTED,
                 severity=ErrorSeverity.ERROR,
                 context={
-                    "conversation_id": conversation_id,
+                    "conversation_id": str(conversation_id),
                     "exception_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
                 },
             )
-            return Result[int].failure(error)
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
-    def _add_assistant_message_internal(self, conversation_id: int, text: str) -> int:
+    def _add_assistant_message_internal(
+        self, conversation_id: int, text: str
+    ) -> Result[int]:
         """
-        Internal helper to add an 'Assistant' message without recursion.
+        Internal helper to add an 'Assistant' message using the Result pattern.
 
-        Handles database insertion, timestamp update, and emotion processing
-        for the assistant's message.
+        Handles database insertion, timestamp update, and best-effort emotion
+        processing for the assistant's message.
 
         Args:
             conversation_id: The ID of the conversation.
             text: The assistant's message text.
 
         Returns:
-            int: The ID of the newly added assistant message.
-
-        Raises:
-            ConversationError: If the database operation fails.
+            Result[int]: Contains the ID of the newly added assistant message on success,
+                         or an Error object on failure.
         """
         try:
             with self._db_connection() as conn:
@@ -535,44 +797,113 @@ class ConversationManager:
                 message_id = cursor.lastrowid
                 cursor.execute(SQL_UPDATE_CONVERSATION_TIMESTAMP, (conversation_id,))
                 conn.commit()
+
                 if message_id is None:
-                    raise ConversationError("Failed to retrieve assistant message ID.")
+                    error = Error.create(
+                        message="Failed to retrieve assistant message ID after insertion.",
+                        code="DB_INSERT_NO_ID",
+                        category=ErrorCategory.UNEXPECTED,
+                        severity=ErrorSeverity.ERROR,
+                        context={"conversation_id": str(conversation_id)},
+                    )
+                    return Result[int].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
+                    )
+
                 try:
                     self.emotion_manager.process_message(message_id, text)
                 except Exception as emotion_e:
                     print(
-                        f"Warning: Failed to process emotion for assistant message {message_id}: {emotion_e}"
+                        f"Warning: Failed to process emotion for assistant message {message_id} "
+                        f"in conversation {conversation_id}: {emotion_e}"
                     )
-                return message_id
+
+                return Result[int].success(message_id)
+
         except sqlite3.Error as e:
-            raise ConversationError(f"Failed to add assistant message: {e}") from e
+            error = Error.create(
+                message=f"SQLite error adding assistant message: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "_add_assistant_message_internal",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error adding assistant message: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "_add_assistant_message_internal",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error adding assistant message: {e}",
+                code="UNEXPECTED_ADD_ASSISTANT_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "_add_assistant_message_internal",
+                    "conversation_id": str(conversation_id),
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[int].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
-    def get_conversation(self, conversation_id: int) -> ConversationDict:
+    def get_conversation(self, conversation_id: int) -> Result[ConversationDict]:
         """
-        Retrieves full conversation details, including messages and emotions.
+        Retrieves full conversation details, including messages.
 
-        Fetches the conversation metadata and all associated messages, joining
-        with emotion data where available. Messages are ordered chronologically.
+        Fetches conversation metadata and all associated messages, ordered chronologically.
+        Handles potential database errors and non-existent conversations using the Result pattern.
 
         Args:
             conversation_id: The ID of the conversation to retrieve.
 
         Returns:
-            ConversationDict: A dictionary representing the conversation and its messages.
-
-        Raises:
-            ConversationNotFoundError: If no conversation with the given ID exists.
-            ConversationError: If a database error occurs during retrieval.
+            Result[ConversationDict]: On success, contains a dictionary representing
+                                      the conversation. On failure, contains an Error object,
+                                      including CONVERSATION_NOT_FOUND if applicable.
         """
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
+
                 cursor.execute(SQL_GET_CONVERSATION, (conversation_id,))
                 row: Optional[sqlite3.Row] = cursor.fetchone()
 
                 if not row:
-                    raise ConversationNotFoundError(
-                        f"Conversation with ID {conversation_id} not found"
+                    error = Error.create(
+                        message=f"Conversation with ID {conversation_id} not found.",
+                        code="CONVERSATION_NOT_FOUND",
+                        category=ErrorCategory.VALIDATION,
+                        severity=ErrorSeverity.WARNING,
+                        context={"conversation_id": str(conversation_id)},
+                    )
+                    return Result[ConversationDict].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
                     )
 
                 conv_data: ConversationDict = {
@@ -584,9 +915,9 @@ class ConversationManager:
                 }
 
                 cursor.execute(SQL_GET_MESSAGES, (conversation_id,))
-                messages: List[sqlite3.Row] = cursor.fetchall()
+                messages_rows: List[sqlite3.Row] = cursor.fetchall()
 
-                for m_row in messages:
+                for m_row in messages_rows:
                     message: MessageDict = {
                         "id": int(cast(int, m_row["id"])),
                         "speaker": str(cast(str, m_row["speaker"])),
@@ -595,50 +926,104 @@ class ConversationManager:
                         "emotion": None,
                     }
 
-                    emotion_label = m_row["emotion_label"]
-                    emotion_confidence = m_row["emotion_confidence"]
-                    if emotion_label is not None and emotion_confidence is not None:
-                        try:
-                            confidence_float = float(emotion_confidence)
-                            message["emotion"] = {
-                                "emotion_label": str(emotion_label),
-                                "confidence": confidence_float,
-                            }
-                        except (ValueError, TypeError):
-                            print(
-                                f"Warning: Invalid emotion data for message {message['id']} - Label: {emotion_label}, Confidence: {emotion_confidence}"
-                            )
-
                     conv_data["messages"].append(message)
 
-                return conv_data
+                return Result[ConversationDict].success(conv_data)
 
         except sqlite3.Error as e:
-            raise ConversationError(
-                f"Database error retrieving conversation {conversation_id}: {e}"
-            ) from e
+            error = Error.create(
+                message=f"SQLite error retrieving conversation {conversation_id}: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_conversation",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[ConversationDict].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error retrieving conversation: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_conversation",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[ConversationDict].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error retrieving conversation {conversation_id}: {e}",
+                code="UNEXPECTED_GET_CONV_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_conversation",
+                    "conversation_id": str(conversation_id),
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[ConversationDict].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
 
     def get_conversation_if_exists(
         self, conversation_id: int
-    ) -> Optional[ConversationDict]:
+    ) -> Result[Optional[ConversationDict]]:
         """
         Retrieves conversation details only if the conversation exists.
 
-        A convenience wrapper around `get_conversation` that returns None
-        instead of raising `ConversationNotFoundError`.
+        Wraps `get_conversation` but treats `CONVERSATION_NOT_FOUND` as a
+        successful outcome returning `None`, rather than a failure. Other
+        errors are still propagated as failures.
 
         Args:
             conversation_id: The ID of the conversation to attempt retrieval for.
 
         Returns:
-            Optional[ConversationDict]: The conversation data if found, otherwise None.
-
-        Raises:
-            ConversationError: If a database error occurs (other than not found).
+            Result[Optional[ConversationDict]]: On success, contains the conversation
+                                                 data if found, or None if not found.
+                                                 On failure (e.g., database error),
+                                                 contains an Error object.
         """
-        try:
-            return self.get_conversation(conversation_id)
-        except ConversationNotFoundError:
-            return None
-        except ConversationError as e:
-            raise e
+        result = self.get_conversation(conversation_id)
+
+        if result.is_success:
+            return Result[Optional[ConversationDict]].success(result.unwrap())
+        elif result.error and result.error.code == "CONVERSATION_NOT_FOUND":
+            return Result[Optional[ConversationDict]].success(None)
+        else:
+            failure_error = result.error or Error.create(
+                message="Unknown error in get_conversation_if_exists.",
+                code="GET_CONV_IF_EXISTS_UNKNOWN_FAILURE",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+            )
+            return Result[Optional[ConversationDict]].failure(
+                failure_error.code,
+                failure_error.message,
+                failure_error.context,
+                failure_error.category,
+                failure_error.severity,
+            )
+
+
+__all__ = [
+    "ConversationManager",
+    "ConversationError",
+    "ConversationNotFoundError",
+    "ConversationDict",
+    "MessageDict",
+    "ModelContext",
+    "ReflexiveModel",
+    "LightweightModel",
+    "AffectiveLexicalModel",
+    "IdentityModel",
+]

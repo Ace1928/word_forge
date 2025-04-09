@@ -44,6 +44,72 @@ class GraphError(WordForgeError):
     pass
 
 
+class GraphAnalysisError(GraphError):
+    """Base exception for graph analysis operations."""
+
+    pass
+
+
+class GraphExportError(GraphError):
+    """Base exception for graph export operations."""
+
+    pass
+
+
+class GraphImportError(GraphError):
+    """Base exception for graph import operations."""
+
+    pass
+
+
+class GraphUpdateError(GraphError):
+    """Base exception for graph update operations."""
+
+    pass
+
+
+class GraphQueryError(GraphError):
+    """Base exception for graph query operations."""
+
+    pass
+
+
+class GraphConnectionError(GraphError):
+    """Base exception for graph connection operations."""
+
+    pass
+
+
+class GraphTraversalError(GraphError):
+    """Base exception for graph traversal operations."""
+
+    pass
+
+
+class GraphStorageError(GraphError):
+    """Base exception for graph storage operations."""
+
+    pass
+
+
+class GraphSerializationError(GraphError):
+    """Base exception for graph serialization operations."""
+
+    pass
+
+
+class GraphIOError(GraphError):
+    """Base exception for graph input/output operations."""
+
+    pass
+
+
+class GraphLayoutError(GraphError):
+    """Base exception for graph layout operations."""
+
+    pass
+
+
 class QueueError(WordForgeError):
     """Base exception for queue operations."""
 

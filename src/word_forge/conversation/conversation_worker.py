@@ -757,15 +757,18 @@ class ConversationWorker(Thread):
                         processed_count += 1
                     elif isinstance(task_item, str):
                         # Handle string tasks by converting to simple task format
-                        simple_task: ConversationTask = {
-                            "task_id": f"auto_{int(time.time())}",
-                            "conversation_id": None,
-                            "message": task_item,
-                            "speaker": "user",
-                            "timestamp": time.time(),
-                            "priority": 1,
-                            "context": {},
-                        }
+                        simple_task = cast(
+                            ConversationTask,
+                            {
+                                "task_id": f"auto_{int(time.time())}",
+                                "conversation_id": None,
+                                "message": task_item,
+                                "speaker": "user",
+                                "timestamp": time.time(),
+                                "priority": 1,
+                                "context": {},
+                            },
+                        )
                         self._process_task(simple_task)
                         processed_count += 1
                     else:
@@ -848,7 +851,12 @@ class ConversationWorker(Thread):
 
             if task_type == "start_conversation_and_add":
                 # Create new conversation
-                conversation_id = self.conversation_manager.start_conversation()
+                start_result = self.conversation_manager.start_conversation()
+                if not start_result.is_success:
+                    raise ConversationProcessingError(
+                        f"Task {task_id}: Failed to start new conversation: {start_result.error}"
+                    )
+                conversation_id = start_result.unwrap()
                 if self.logger:
                     self.logger.info(
                         f"Task {task_id}: Started new conversation {conversation_id}"
@@ -1018,15 +1026,18 @@ class ConversationWorker(Thread):
         try:
             task_id = f"task_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
 
-            task: ConversationTask = {
-                "task_id": task_id,
-                "conversation_id": conversation_id,
-                "message": message,
-                "speaker": speaker,
-                "timestamp": time.time(),
-                "priority": 1,
-                "context": {"generate_response": True},
-            }
+            task = cast(
+                ConversationTask,
+                {
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "message": message,
+                    "speaker": speaker,
+                    "timestamp": time.time(),
+                    "priority": 1,
+                    "context": {"generate_response": True},
+                },
+            )
 
             # Enqueue the task
             self.queue_manager.enqueue(task)

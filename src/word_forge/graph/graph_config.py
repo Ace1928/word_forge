@@ -25,7 +25,7 @@ Architecture:
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import (
+from typing import (  # NewType # Optional: Use NewType for stronger typing if desired
     Any,
     ClassVar,
     Dict,
@@ -63,6 +63,7 @@ GraphData = Tuple[List[Tuple[WordId, str]], List[Tuple[WordId, str, str]]]
 WordId = int
 Term = str
 RelType = str
+ColorHex = str  # Define ColorHex as a string alias
 WordTuple = Tuple[WordId, Term]
 RelationshipTuple = Tuple[WordId, Term, RelType]
 GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
@@ -777,16 +778,19 @@ __all__ = [
     "GraphNodeSizeStrategy",
     "GraphEdgeWeightStrategy",
     "RelationshipDimension",
-    # Error type
-    "GraphConfigError",
-    "GraphConfig",
-    # Type definitions
-    "GraphLayoutAlgorithm",
-    "GraphColorScheme",
-    "GraphExportFormat",
-    "GraphNodeSizeStrategy",
-    "GraphEdgeWeightStrategy",
-    "RelationshipDimension",
+    "ColorHex",  # Ensure ColorHex is exported
+    "WordId",
+    "Term",
+    "RelType",
+    "WordTuple",
+    "RelationshipTuple",
+    "GraphData",
+    "Position",
+    "PositionDict",
+    "LayoutAlgorithm",
+    "WordTupleDict",
+    "RelationshipTupleDict",
+    "GraphInfoDict",
     # Error type
     "GraphConfigError",
 ]

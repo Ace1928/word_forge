@@ -49,8 +49,8 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
             # Safely get timestamp, default to 0.0 if missing or invalid type
             timestamp_val = msg.get("timestamp", 0.0)
             timestamp: float = 0.0
-            # Simplified check: isinstance handles Union types correctly
-            if isinstance(timestamp_val, (int, float)):
+            # Check if we have a numeric value we can convert to float
+            if isinstance(timestamp_val, int):
                 timestamp = float(timestamp_val)
             else:
                 print(
@@ -65,19 +65,13 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
             if isinstance(emotion_data, dict):
                 label = emotion_data.get("emotion_label")
                 confidence = emotion_data.get("confidence")
-                # Simplified check: None check is sufficient
-                if label is not None and confidence is not None:
-                    try:
-                        confidence_float = float(confidence)
-                        emotion_str = f" (Emotion: {label} [{confidence_float:.2f}])"
-                    except (ValueError, TypeError):
-                        emotion_str = (
-                            f" (Emotion: {label} [Invalid Confidence: {confidence}])"
-                        )
-                elif label is not None:
-                    emotion_str = f" (Emotion: {label} [Confidence Missing])"
-                # No need for 'else' as emotion_str defaults to ""
-
+                try:
+                    confidence_float = float(confidence)
+                    emotion_str = f" (Emotion: {label} [{confidence_float:.2f}])"
+                except (ValueError, TypeError):
+                    emotion_str = (
+                        f" (Emotion: {label} [Invalid Confidence: {confidence}])"
+                    )
             # Safely get speaker and text
             speaker = msg.get("speaker", "Unknown")
             text = msg.get("text", "")
@@ -146,7 +140,10 @@ def main() -> None:
 
             # Start a new conversation
             try:
-                conversation_id = conversation_manager.start_conversation()
+                conversation_id_result = conversation_manager.start_conversation()
+                conversation_id = conversation_id_result.value
+                if conversation_id is None:
+                    raise ValueError("Failed to get a valid conversation ID")
                 logger.info(f"Started new conversation with ID: {conversation_id}")
                 print(
                     f"\nAssistant: Hello! I'm ready to chat. (Conversation ID: {conversation_id}). Type 'quit' to exit."
@@ -169,16 +166,20 @@ def main() -> None:
 
                     print("Assistant thinking...")
                     try:
-                        message_id = conversation_manager.add_message(
+                        message_id_result = conversation_manager.add_message(
                             conversation_id, "User", user_input, generate_response=True
                         )
+                        message_id = message_id_result.value
                         logger.info(
                             f"User message {message_id} added and response triggered."
                         )
 
-                        conversation = conversation_manager.get_conversation_if_exists(
-                            conversation_id
+                        conversation_result = (
+                            conversation_manager.get_conversation_if_exists(
+                                conversation_id
+                            )
                         )
+                        conversation = conversation_result.value
                         display_conversation(conversation)
 
                     except Exception as add_msg_e:
@@ -189,9 +190,12 @@ def main() -> None:
                         print(
                             f"Assistant: Sorry, I encountered an error processing that: {add_msg_e}"
                         )
-                        conversation = conversation_manager.get_conversation_if_exists(
-                            conversation_id
+                        conversation_result = (
+                            conversation_manager.get_conversation_if_exists(
+                                conversation_id
+                            )
                         )
+                        conversation = conversation_result.value
                         display_conversation(conversation)
 
                 except EOFError:
