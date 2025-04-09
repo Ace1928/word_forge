@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import (
+    Any,  # Keep Any for ErrorContext context
     Dict,
     Generic,
     Iterator,
@@ -30,7 +31,7 @@ from typing import (
     TypedDict,
     TypeVar,
     Union,
-    cast,
+    cast,  # Keep cast for Result.unwrap
     final,
 )
 
@@ -234,10 +235,10 @@ class ErrorContext:
     error_code: str
     message: str
     timestamp: float = field(default_factory=time.time)
-    context: Dict[str, str] = field(default_factory=dict)
+    context: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Result(Generic[T]):
     """
     Represents the outcome of an operation that may fail.
@@ -273,7 +274,8 @@ class Result(Generic[T]):
             ValueError: If trying to unwrap a failed result
         """
         if self.is_failure:
-            raise ValueError(f"Cannot unwrap failed result: {self.error}")
+            error_msg = f"Cannot unwrap failed result: {self.error.message if self.error else 'Unknown error'}"
+            raise ValueError(error_msg)
         return cast(T, self.value)
 
     @classmethod
@@ -283,7 +285,7 @@ class Result(Generic[T]):
 
     @classmethod
     def failure(
-        cls, error_code: str, message: str, context: Optional[Dict[str, str]] = None
+        cls, error_code: str, message: str, context: Optional[Dict[str, Any]] = None
     ) -> "Result[T]":
         """Create a failed result with error information."""
         return cls(
@@ -548,7 +550,9 @@ class QueueManager(Generic[T]):
         try:
             try:
                 # Get the next item
-                prioritized = self._queue.get(block=block, timeout=timeout)
+                prioritized: PrioritizedItem[T] = self._queue.get(
+                    block=block, timeout=timeout
+                )
                 item = prioritized.item
 
                 # Update metrics
@@ -884,11 +888,11 @@ class WorkerMetrics(TypedDict):
     items_processed: int
     errors: int
     start_time: float
-    worker_states: Dict[int, str]
+    worker_states: Dict[int, str]  # State description is string
     last_processed_item: Optional[str]
 
 
-class WorkDistributor:
+class WorkDistributor(Generic[T]):
     """
     Manages parallel processing of queue items.
 
@@ -993,7 +997,6 @@ class WorkDistributor:
             result = self.queue_manager.dequeue(block=True, timeout=0.5)
 
             if result.is_failure:
-                # No items or queue not active
                 continue
 
             # Process the item

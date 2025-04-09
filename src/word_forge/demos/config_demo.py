@@ -7,6 +7,9 @@ import json
 
 from word_forge.config import config  # Import necessary items
 
+# Import serialize_config explicitly
+from word_forge.configs.config_essentials import ConfigValue, serialize_config
+
 
 def main() -> None:
     """
@@ -220,11 +223,16 @@ def main() -> None:
         if component:
             print(f"{args.component.title()} Configuration")
             print("=" * (len(args.component) + 14))
-            # Need serialize_config for proper display
-            from word_forge.configs.config_essentials import serialize_config
 
-            component_dict = serialize_config(component)
-            print(json.dumps(component_dict, indent=2))
+            # Serialize and print component config
+            component_dict: ConfigValue = serialize_config(
+                component
+            )  # Use ConfigValue type hint
+            # Ensure component_dict is a dictionary before passing to json.dumps
+            if isinstance(component_dict, dict):
+                print(json.dumps(component_dict, indent=2))
+            else:
+                print(f"Serialized component is not a dictionary: {component_dict}")
 
             # Add component status information
             print("\nStatus Information:")

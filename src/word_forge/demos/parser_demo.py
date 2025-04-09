@@ -5,7 +5,7 @@ Demonstration of ParserRefiner functionality.
 import os
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from word_forge.parser.parser_refiner import ParserRefiner
 

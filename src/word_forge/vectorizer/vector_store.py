@@ -33,9 +33,10 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
+    TypeAlias,  # Added TypeAlias
     TypedDict,
     Union,
-    cast,
+    cast,  # Keep cast for external library interactions
     overload,
 )
 
@@ -49,13 +50,19 @@ from word_forge.database.database_manager import DatabaseError, DBManager, WordE
 from word_forge.emotion.emotion_manager import EmotionManager
 
 # Type definitions for clarity and constraint
-VectorID = Union[int, str]  # Unique identifier for vectors (compatible with ChromaDB)
-SearchResult = List[Tuple[VectorID, float]]  # (id, distance) pairs
-ContentType = Literal["word", "definition", "example", "message", "conversation"]
-EmbeddingList = List[float]  # Type for ChromaDB's embedding format
-QueryType = Literal["search", "definition", "similarity"]
-TemplateDict = Dict[str, Optional[str]]
-WordID = Union[int, str]  # ID can be int or str for ChromaDB compatibility
+VectorID: TypeAlias = Union[
+    int, str
+]  # Unique identifier for vectors (compatible with ChromaDB)
+SearchResultList: TypeAlias = List[
+    Tuple[VectorID, float]
+]  # (id, distance) pairs - Renamed from SearchResult
+ContentType: TypeAlias = Literal[
+    "word", "definition", "example", "message", "conversation"
+]
+EmbeddingList: TypeAlias = List[float]  # Type for ChromaDB's embedding format
+QueryType: TypeAlias = Literal["search", "definition", "similarity"]
+TemplateDict: TypeAlias = Dict[str, Optional[str]]
+WordID: TypeAlias = Union[int, str]  # ID can be int or str for ChromaDB compatibility
 
 
 class VectorMetadata(TypedDict, total=False):
@@ -348,25 +355,22 @@ class VectorStore:
         persistent storage and loads or initializes required models.
 
         Args:
-            dimension: Optional override for vector dimensions
-            model_name: Optional embedding model to use
-            index_path: Optional path for vector storage
-            storage_type: Optional storage type (memory or disk)
-            collection_name: Optional name for the vector collection
-            db_manager: Optional database manager for content lookup
-            emotion_manager: Optional emotion manager for sentiment analysis
+            dimension: Optional override for vector dimensions. If None, it will be inferred from the model.
+            model_name: Optional embedding model to use. Defaults to config.
+            index_path: Optional path for vector storage. Defaults to config.
+            storage_type: Optional storage type (memory or disk). Defaults to config.
+            collection_name: Optional name for the vector collection. Defaults to config or 'word_forge_vectors'.
+            db_manager: Optional database manager for content lookup.
+            emotion_manager: Optional emotion manager for sentiment analysis.
 
         Raises:
-            InitializationError: If initialization fails
-            ModelLoadError: If embedding model cannot be loaded
+            InitializationError: If initialization fails.
+            ModelLoadError: If embedding model cannot be loaded or dimension cannot be inferred.
         """
         # Set up logging
         self.logger = logging.getLogger(__name__)
 
-        # Initialize dimension with a default value
-        self.dimension = 0
-
-        # Store configuration
+        # Store configuration, using defaults from config object
         self.index_path = Path(index_path or config.vectorizer.index_path)
         self.storage_type = storage_type or config.vectorizer.storage_type
         self.db_manager = db_manager
@@ -377,7 +381,9 @@ class VectorStore:
         if self.storage_type != StorageType.MEMORY:
             os.makedirs(self.index_path, exist_ok=True)
 
+        # Load the embedding model first
         try:
+            # Ensure model is loaded only once if not already present
             if not hasattr(self, "model"):
                 self.model = SentenceTransformer(self.model_name)  # type: ignore
         except Exception as e:
@@ -385,32 +391,50 @@ class VectorStore:
                 f"Failed to load embedding model '{self.model_name}': {str(e)}"
             ) from e
 
-        # Initialize embedding model first to determine dimension
+        # Determine the vector dimension
         try:
             if dimension is not None:
                 self.dimension = dimension
             elif (
                 hasattr(config.vectorizer, "dimension")
                 and config.vectorizer.dimension is not None
+                and config.vectorizer.dimension > 0
             ):
                 self.dimension = config.vectorizer.dimension
-            # If model wasn't loaded to get dimension, load it now
+            else:
+                # Infer dimension from the loaded model
+                model_dimension = self.model.get_sentence_embedding_dimension()  # type: ignore
+                if (
+                    model_dimension is None
+                    or not isinstance(model_dimension, int)
+                    or model_dimension <= 0
+                ):
+                    raise ModelLoadError(
+                        f"Could not infer valid dimension from model '{self.model_name}'"
+                    )
+                self.dimension = model_dimension
+                self.logger.info(
+                    f"Inferred dimension {self.dimension} from model '{self.model_name}'"
+                )
+
         except Exception as e:
             raise ModelLoadError(
                 f"Failed to determine vector dimension: {str(e)}"
             ) from e
 
-        # Initialize ChromaDB client and collection
+        # Initialize ChromaDB client and collection *after* dimension is set
         try:
             self.client = self._create_client()
             collection_name = collection_name or (
                 config.vectorizer.collection_name or "word_forge_vectors"
             )
+            # Pass the determined dimension to the collection metadata
             self.collection = self._initialize_collection(collection_name)
         except Exception as e:
             raise InitializationError(
-                f"Failed to initialize vector store: {str(e)}"
+                f"Failed to initialize vector store backend: {str(e)}"
             ) from e
+
         # Load instruction templates if available
         self.instruction_templates: Dict[str, InstructionTemplate] = {}
         if hasattr(config.vectorizer, "instruction_templates"):
@@ -575,11 +599,15 @@ class VectorStore:
             formatted_text = self.format_with_instruction(text, template_key, is_query)
 
             # Generate embedding
-            vector = self.model.encode(  # type: ignore
-                formatted_text,
-                normalize_embeddings=normalize,
-                convert_to_numpy=True,
-                show_progress_bar=False,
+            # Cast is appropriate here as SentenceTransformer.encode can return different types
+            vector = cast(
+                NDArray[np.float32],
+                self.model.encode(  # type: ignore
+                    formatted_text,
+                    normalize_embeddings=normalize,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                ),
             )
 
             # Ensure correct type
@@ -1199,10 +1227,16 @@ class VectorStore:
             return results
 
         # Extract result components
-        ids = query_results.get("ids", [[]])[0]
-        distances = query_results.get("distances", [[]])[0]
-        metadatas = query_results.get("metadatas", [[None] * len(ids)])[0]
-        documents = query_results.get("documents", [[None] * len(ids)])[0]
+        # Cast is appropriate here due to ChromaDB's loose return types
+        ids = cast(List[str], query_results.get("ids", [[]])[0])
+        distances = cast(List[float], query_results.get("distances", [[]])[0])
+        metadatas = cast(
+            List[Optional[Dict[str, Any]]],
+            query_results.get("metadatas", [[None] * len(ids)])[0],
+        )
+        documents = cast(
+            List[Optional[str]], query_results.get("documents", [[None] * len(ids)])[0]
+        )
 
         # Convert similarities to distances if needed
         if distances and min(distances) >= 0 and max(distances) <= 1:
@@ -1217,6 +1251,7 @@ class VectorStore:
                 )
 
                 # Get metadata and text
+                # Cast metadata to the expected type
                 metadata = (
                     cast(Optional[VectorMetadata], metadatas[i])
                     if i < len(metadatas)
@@ -1243,7 +1278,7 @@ class VectorStore:
 
     def get_legacy_search_results(
         self, query_vector: NDArray[np.float32], k: int = 5
-    ) -> SearchResult:
+    ) -> SearchResultList:  # Use renamed TypeAlias
         """
         Legacy method for backward compatibility with older code.
 
@@ -1262,7 +1297,7 @@ class VectorStore:
         results = self.search(query_vector=query_vector, k=k)
 
         # Convert to legacy format
-        legacy_results: SearchResult = [
+        legacy_results: SearchResultList = [  # Use renamed TypeAlias
             (result["id"], result["distance"]) for result in results
         ]
 

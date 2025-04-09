@@ -6,13 +6,17 @@ import functools
 import json
 import os
 import re
+import typing
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union, cast
+from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Union
 
 import nltk  # type: ignore
 from nltk.corpus import wordnet as wn  # type: ignore
+from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
 from rdflib import Graph
+from rdflib import Literal as RdfLiteral  # Import Literal and URIRef
+from rdflib.query import ResultRow  # Import ResultRow for type hinting
 
 from word_forge.configs.config_essentials import (
     DbnaryEntry,
@@ -50,7 +54,7 @@ def file_exists(file_path: Union[str, Path]) -> bool:
 @contextmanager
 def safe_open(
     file_path: Union[str, Path], mode: str = "r", encoding: str = "utf-8"
-) -> Iterator[Optional[Any]]:
+) -> Iterator[Optional[IO[Any]]]:
     """
     Safely open a file, handling non-existent files and IO errors.
 
@@ -71,7 +75,8 @@ def safe_open(
 
     try:
         with open(file_path, mode, encoding=encoding) as f:
-            yield f
+            fh: IO[Any] = f
+            yield fh
     except (IOError, OSError) as e:
         raise LexicalResourceError(f"Error opening file {file_path}: {str(e)}")
 
@@ -145,7 +150,7 @@ def read_jsonl_file(
 #                            WORDNET FUNCTIONS
 # ============================================================================
 @functools.lru_cache(maxsize=1024)
-def get_synsets(word: str) -> List[Any]:
+def get_synsets(word: str) -> List[Synset]:
     """
     Retrieve synsets from WordNet for a given word with efficient caching.
 
@@ -170,29 +175,53 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
         and part-of-speech information
     """
     results: List[WordnetEntry] = []
-    synsets = get_synsets(word)
+    synsets: List[Synset] = get_synsets(word)
 
     for synset in synsets:
-        lemmas = synset.lemmas()
-        synonyms = [lemma.name().replace("_", " ") for lemma in lemmas]
+        lemmas: List[Lemma] = synset.lemmas() or []
+        synonyms: List[str] = []
+        for lemma in lemmas:
+            name = lemma.name()
+            if isinstance(name, str):
+                synonyms.append(name.replace("_", " "))
 
         # Extract antonyms from lemmas
         antonyms: List[str] = []
         for lemma in lemmas:
-            for antonym in lemma.antonyms():
-                antonym_name = antonym.name().replace("_", " ")
-                if antonym_name not in antonyms:
+            lemma_antonyms: List[Lemma] = lemma.antonyms()
+            for antonym in lemma_antonyms:
+                antonym_name = antonym.name()
+                if isinstance(antonym_name, str):
+                    antonym_name = antonym_name.replace("_", " ")
                     antonyms.append(antonym_name)
 
+        # Explicitly type with expected return types but handle variations
+        # Cast the result to Optional[str] as nltk types might be incomplete
+        definition_result: Optional[str] = typing.cast(
+            Optional[str], synset.definition()
+        )
+        definition: str = definition_result if definition_result is not None else ""
+
+        # Cast the result to Optional[List[str]]
+        examples_result: Optional[List[str]] = typing.cast(
+            Optional[List[str]], synset.examples()
+        )
+        examples: List[str] = examples_result if examples_result is not None else []
+
+        # Cast the result to Optional[str]
+        pos_result: Optional[str] = typing.cast(Optional[str], synset.pos())
+        pos: str = pos_result if pos_result is not None else ""
+        pos: str = pos_result if pos_result is not None else ""
+
         results.append(
-            {
-                "word": word,
-                "definition": synset.definition(),
-                "examples": synset.examples(),
-                "synonyms": synonyms,
-                "antonyms": antonyms,
-                "part_of_speech": synset.pos(),
-            }
+            WordnetEntry(
+                word=word,
+                definition=definition,
+                examples=examples,
+                synonyms=synonyms,
+                antonyms=antonyms,
+                part_of_speech=pos,
+            )
         )
 
     return results
@@ -243,10 +272,19 @@ def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
         "examples": [],
     }
     odict_data = read_json_file(odict_path, {})
-    if not isinstance(odict_data, dict):
-        return default_entry
-
-    return cast(DictionaryEntry, odict_data.get(word, default_entry))
+    entry = (
+        odict_data.get(word, default_entry)
+        if isinstance(odict_data, dict)
+        else default_entry
+    )
+    if isinstance(entry, dict) and "definition" in entry and "examples" in entry:
+        examples_raw = entry.get("examples", [])
+        if isinstance(examples_raw, list):
+            examples = [str(ex) for ex in examples_raw]
+        else:
+            examples = []
+        return DictionaryEntry(definition=str(entry["definition"]), examples=examples)
+    return default_entry
 
 
 def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
@@ -286,14 +324,30 @@ def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
         output: List[DbnaryEntry] = []
 
         for row in results:
-            # Cast row to Any to bypass type checking for RDFLib query results
-            row_any = cast(Any, row)
+            # Ensure row is a ResultRow before accessing elements by index/key
+            if not isinstance(row, ResultRow):
+                continue
 
-            definition = str(row_any[0]) if row_any[0] is not None else ""
-            translation = str(row_any[1]) if row_any[1] is not None else ""
+            # Access elements safely using .get() or check length
+            definition_node = row.definition if hasattr(row, "definition") else None
+            translation_node = row.translation if hasattr(row, "translation") else None
+
+            # Convert rdflib Nodes (Literal, URIRef) to string safely
+            definition = (
+                str(definition_node.value)
+                if isinstance(definition_node, RdfLiteral)
+                else ""
+            )
+            translation = (
+                str(translation_node.value)
+                if isinstance(translation_node, RdfLiteral)
+                else ""
+            )
 
             if definition or translation:
-                output.append({"definition": definition, "translation": translation})
+                output.append(
+                    DbnaryEntry(definition=definition, translation=translation)
+                )
 
         return output
 
@@ -317,10 +371,17 @@ def get_opendictdata(word: str, opendict_path: str) -> DictionaryEntry:
         "examples": [],
     }
     data = read_json_file(opendict_path, {})
-    if not isinstance(data, dict):
-        return default_entry
-
-    return cast(DictionaryEntry, data.get(word, default_entry))
+    entry = data.get(word, default_entry) if isinstance(data, dict) else default_entry
+    if isinstance(entry, dict) and "definition" in entry and "examples" in entry:
+        # Ensure examples are processed correctly into List[str]
+        examples_raw = entry.get("examples", [])
+        examples: List[str] = []
+        if isinstance(examples_raw, list):
+            examples = [
+                str(ex) for ex in examples_raw if isinstance(ex, (str, int, float))
+            ]
+        return DictionaryEntry(definition=str(entry["definition"]), examples=examples)
+    return default_entry
 
 
 def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:

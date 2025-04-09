@@ -345,62 +345,24 @@ class EmotionManager:
                 cursor.execute(
                     self.config.get_sql_template("get_word_emotion"), (word_id,)
                 )
-                row = cursor.fetchone()
+                row: Optional[sqlite3.Row] = cursor.fetchone()
 
                 if row:
-                    return cast(WordEmotionDict, dict(row))
+                    return WordEmotionDict(
+                        word_id=int(row["word_id"]),
+                        valence=float(row["valence"]),
+                        arousal=float(row["arousal"]),
+                        timestamp=float(row["timestamp"]),
+                        dominance=(
+                            float(row["dominance"])
+                            if "dominance" in row.keys()
+                            else 0.0
+                        ),
+                    )
                 return None
         except sqlite3.Error as e:
             raise EmotionError(
                 f"Failed to retrieve word emotion: {e}", {"word_id": word_id}
-            ) from e
-
-    @lru_cache(maxsize=256)
-    def set_message_emotion(
-        self, message_id: int, emotion: EmotionCategoryType, confidence: float = 1.0
-    ) -> None:
-        """Tag a message with an emotion label.
-
-        Records the emotional classification of a message with a confidence
-        score, ensuring the confidence value is within valid range.
-
-        Args:
-            message_id: Database ID of the target message
-            emotion: Emotional category (enum or string label)
-            confidence: Certainty level of the emotion (0.0 to 1.0)
-
-        Raises:
-            EmotionError: If the database operation fails
-
-        Example:
-            ```python
-            # Tag message as expressing anger with high confidence
-            emotion_manager.set_message_emotion(1042, EmotionCategory.ANGER, 0.85)
-            # String labels still work for backward compatibility
-            emotion_manager.set_message_emotion(1043, "happiness", 0.92)
-            ```
-        """
-        # Normalize emotion category to ensure consistency
-        emotion_cat = normalize_emotion_category(emotion)
-        # Use the label for storage
-        label = emotion_cat.label
-
-        confidence = max(
-            self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence)
-        )
-
-        try:
-            with self._db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    self.config.get_sql_template("insert_message_emotion"),
-                    (message_id, label, confidence, time.time()),
-                )
-                conn.commit()
-        except sqlite3.Error as e:
-            raise EmotionError(
-                f"Failed to store message emotion: {e}",
-                {"message_id": message_id, "label": label, "confidence": confidence},
             ) from e
 
     @lru_cache(maxsize=256)
@@ -431,10 +393,15 @@ class EmotionManager:
                 cursor.execute(
                     self.config.get_sql_template("get_message_emotion"), (message_id,)
                 )
-                row = cursor.fetchone()
+                row: Optional[sqlite3.Row] = cursor.fetchone()
 
                 if row:
-                    return cast(MessageEmotionDict, dict(row))
+                    return MessageEmotionDict(
+                        message_id=int(row["message_id"]),
+                        label=str(row["label"]),
+                        confidence=float(row["confidence"]),
+                        timestamp=float(row["timestamp"]),
+                    )
                 return None
         except sqlite3.Error as e:
             raise EmotionError(
@@ -549,7 +516,6 @@ Return the analysis as a JSON object with these fields:
 
             # Ensure emotion_dimensions is a valid dictionary with float values
             if isinstance(emotion_dimensions_raw, dict):
-                # Cast to Dict[Any, Any] to help type checker understand dictionary structure
                 typed_dimensions = cast(Dict[Any, Any], emotion_dimensions_raw)
                 for key_raw, value_raw in typed_dimensions.items():
                     key = str(key_raw)
@@ -820,6 +786,44 @@ Return the analysis as a JSON object with these fields:
 
         return top_category.label, confidence
 
+    def _store_message_emotion(
+        self, message_id: int, emotion_label: str, confidence: float
+    ) -> None:
+        """Store emotional data for a message.
+
+        Internal method to handle database insertion or update for message emotions.
+
+        Args:
+            message_id: Database ID of the target message
+            emotion_label: Text label for the identified emotion
+            confidence: Confidence score for the classification (0.0 to 1.0)
+
+        Raises:
+            EmotionError: If the database operation fails
+        """
+        # Clamp confidence value
+        confidence = max(
+            self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence)
+        )
+
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    self.config.get_sql_template("insert_message_emotion"),
+                    (message_id, emotion_label, confidence, time.time()),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            raise EmotionError(
+                f"Failed to store message emotion: {e}",
+                {
+                    "message_id": message_id,
+                    "label": emotion_label,
+                    "confidence": confidence,
+                },
+            ) from e
+
     def process_message(
         self,
         message_id: int,
@@ -868,8 +872,8 @@ Return the analysis as a JSON object with these fields:
             predicted_emotion = EmotionCategory.NEUTRAL
             emotion_label = predicted_emotion.label
 
-        # Store the emotion data
-        self.set_message_emotion(message_id, predicted_emotion, confidence)
+        # Store the emotion data using the correct private method
+        self._store_message_emotion(message_id, emotion_label, confidence)
 
         # Track metrics if ground_truth is provided
         if ground_truth is not None:

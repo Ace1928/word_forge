@@ -71,6 +71,7 @@ from typing import (
     Set,
     Tuple,
     Type,
+    TypeAlias,
     TypedDict,
     TypeVar,
     Union,
@@ -112,26 +113,42 @@ LOGS_ROOT: Final[Path] = PROJECT_ROOT / "logs"
 
 # JSON-related type definitions for configuration serialization
 JsonPrimitive = Union[str, int, float, bool, None]
-JsonDict = Dict[str, "JsonValue"]  # Recursive type reference
-JsonList = List["JsonValue"]  # Recursive type reference
-JsonValue = Union[JsonDict, JsonList, JsonPrimitive]
+JsonDict = Dict[str, "JsonValue"]  # Forward reference for recursion
+JsonList = List["JsonValue"]  # Forward reference for recursion
+JsonValue: TypeAlias = Union[JsonDict, JsonList, JsonPrimitive]  # Explicit TypeAlias
 
 # Configuration-specific type aliases
-ConfigValue = JsonValue  # Alias for clarity in configuration context
-SerializedConfig = Dict[str, ConfigValue]
-PathLike = Union[str, Path]
+ConfigValue: TypeAlias = JsonValue  # Use defined JsonValue
 
-# Environment variable related types
-EnvVarType = Union[Type[str], Type[int], Type[float], Type[bool], Type[Enum]]
-EnvMapping = Dict[str, Tuple[str, EnvVarType]]
+# Logging
+LoggingConfigDict: TypeAlias = Dict[str, Any]  # Define LoggingConfig as Dict
+ValidationError: TypeAlias = str
+FormatStr: TypeAlias = str
+LogFilePathStr: TypeAlias = Optional[str]
 
-# Component registry related types
-ComponentName = str
-ComponentRegistry = Dict[ComponentName, "ConfigComponentInfo"]
+# Function type for validation handlers
+ValidationFunction: TypeAlias = Callable[
+    [LoggingConfigDict, List[ValidationError]], None
+]  # Use LoggingConfigDict
+EnvVarType: TypeAlias = Union[str, int, float, bool, None]  # Define EnvVarType
 
-# Self-documenting type alias for configuration dictionaries
-ConfigDict = Dict[str, ConfigValue]
+# Type alias for serialized configuration data
+SerializedConfig: TypeAlias = JsonDict
 
+# Type alias for path-like objects
+PathLike: TypeAlias = Union[str, Path]
+
+# Type alias for environment variable mapping in ConfigComponent
+EnvMapping: TypeAlias = Dict[str, Tuple[str, EnvVarType]]
+
+# Type alias for the name of a configuration component
+ComponentName: TypeAlias = str
+
+# Type alias for a registry mapping component names to instances
+ComponentRegistry: TypeAlias = Dict[ComponentName, "ConfigComponent"]
+
+# Type alias for a dictionary representing a configuration section
+ConfigDict: TypeAlias = Dict[str, ConfigValue]
 # ==========================================
 # Result and Error Handling Types
 # ==========================================
@@ -1055,7 +1072,7 @@ class ConfigComponentInfo:
     """
 
     name: str
-    class_type: Type[Any]  # Using Any to allow various config component types
+    class_type: Type[ConfigComponent]
     dependencies: Set[str] = field(default_factory=set)
 
 
@@ -1511,22 +1528,33 @@ def serialize_config(obj: Any) -> ConfigValue:
         {'name': 'test', 'values': [1, 2, 3]}
     """
     if hasattr(obj, "__dict__"):
-        d: Dict[str, ConfigValue] = {}
+        # Use ConfigDict for the dictionary type hint
+        d: ConfigDict = {}
         for key, value in obj.__dict__.items():
             if not key.startswith("_"):
                 d[key] = serialize_config(value)
         return d
     elif isinstance(obj, (list, tuple)):
-        return [serialize_config(item) for item in cast(Sequence[Any], obj)]
+        # Return JsonList type
+        return cast(
+            JsonList, [serialize_config(item) for item in cast(Sequence[Any], obj)]
+        )
     elif isinstance(obj, dict):
+        # Return JsonDict type
         return {
-            key: serialize_config(value)
+            str(key): serialize_config(value)
             for key, value in cast(Dict[Any, Any], obj).items()
         }
     elif isinstance(obj, Enum):
-        return obj.value
-    elif isinstance(obj, (int, float, str, bool, type(None))):
-        return obj
+        # Return the enum's value, which should be a JsonPrimitive
+        return cast(JsonPrimitive, obj.value)
+    elif isinstance(obj, Path):
+        # Return string representation of Path
+        return str(obj)
+    elif isinstance(obj, (int, float, str, bool)) or obj is None:
+        # Return JsonPrimitive directly
+        return cast(JsonPrimitive, obj)
+    # Fallback: convert other types to string
     return str(obj)
 
 
@@ -1658,4 +1686,5 @@ __all__ = [
     "QueueOperationError",
     "CircuitOpenError",
     "EmptyQueueError",
+    "TypeAlias",
 ]

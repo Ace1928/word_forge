@@ -3,10 +3,17 @@ Demonstration of GraphManager functionality.
 """
 
 import time
+import traceback
+from typing import Dict, List, Optional, Tuple, Union, cast  # Import Optional
+
+import networkx as nx
 
 from word_forge.database.database_manager import DBManager
 from word_forge.exceptions import NodeNotFoundError
 from word_forge.graph.graph_manager import GraphError, GraphManager
+
+# Define type aliases for clarity
+ValenceAnalysisResult = Dict[str, Union[float, int, List[Tuple[str, float]]]]
 
 
 def graph_demo() -> None:
@@ -134,23 +141,37 @@ def graph_demo() -> None:
 
         # Analyze emotional valence distribution
         print("Analyzing emotional valence distribution...")
-        valence_analysis = graph_manager.analyze_emotional_valence_distribution()
+        valence_analysis: ValenceAnalysisResult = cast(
+            ValenceAnalysisResult,
+            graph_manager.analyze_emotional_valence_distribution(),
+        )
 
-        if valence_analysis["count"] > 0:
+        if (
+            isinstance(valence_analysis.get("count"), int)
+            and cast(int, valence_analysis.get("count", 0))
+            > 0  # Cast count to int before comparison
+        ):
+            mean_valence = cast(float, valence_analysis.get("mean", 0.0))
+            valence_range = cast(List[float], valence_analysis.get("range", [0.0, 0.0]))
             print(f"Found {valence_analysis['count']} terms with emotional valence")
             print(
-                f"Average valence: {valence_analysis['mean']:.2f} (range: {valence_analysis['range'][0]:.2f} to {valence_analysis['range'][1]:.2f})"
+                f"Average valence: {mean_valence:.2f} (range: {valence_range[0]:.2f} to {valence_range[1]:.2f})"
             )
 
-            # Show positive and negative examples
-            if valence_analysis.get("top_positive"):
+            top_positive = cast(
+                List[Tuple[str, float]], valence_analysis.get("top_positive", [])
+            )
+            if top_positive:
                 print("\nMost positive terms:")
-                for term, val in valence_analysis["top_positive"]:
+                for term, val in top_positive:
                     print(f"  - {term}: {val:.2f}")
 
-            if valence_analysis.get("top_negative"):
+            top_negative = cast(
+                List[Tuple[str, float]], valence_analysis.get("top_negative", [])
+            )
+            if top_negative:
                 print("\nMost negative terms:")
-                for term, val in valence_analysis["top_negative"]:
+                for term, val in top_negative:
                     print(f"  - {term}: {val:.2f}")
         else:
             print("No emotional valence data found in the graph")
@@ -165,47 +186,45 @@ def graph_demo() -> None:
                 ("surprise", "shock", "emotional_spectrum", 0.5),
             ]
 
-            # Add these to the graph (simplified for demonstration)
             for source, target, rel_type, weight in sample_emotional_relations:
-                # First ensure the nodes exist (simplified)
-                if source.lower() not in graph_manager._term_to_id:
-                    source_id = len(graph_manager._term_to_id) + 1
-                    graph_manager.g.add_node(
+                # Use public methods or handle node creation safely
+                source_id = graph_manager.get_node_id(source)
+                if source_id is None:
+                    source_id = graph_manager.add_word_node(
+                        source,
+                        attributes={
+                            "valence": (0.7 if source in ["joy", "happiness"] else -0.7)
+                        },
+                    )
+
+                target_id = graph_manager.get_node_id(target)
+                if target_id is None:
+                    target_id = graph_manager.add_word_node(
+                        target,
+                        attributes={
+                            "valence": (0.8 if target in ["happiness"] else -0.8)
+                        },
+                    )
+
+                if source_id is not None and target_id is not None:
+                    graph_manager.add_relationship(
                         source_id,
-                        term=source,
-                        valence=(0.7 if source in ["joy", "happiness"] else -0.7),
-                    )
-                    graph_manager._term_to_id[source.lower()] = source_id
-                else:
-                    source_id = graph_manager._term_to_id[source.lower()]
-
-                if target.lower() not in graph_manager._term_to_id:
-                    target_id = len(graph_manager._term_to_id) + 1
-                    graph_manager.g.add_node(
                         target_id,
-                        term=target,
-                        valence=(0.8 if target in ["happiness"] else -0.8),
+                        relationship=rel_type,
+                        dimension="emotional",
+                        weight=weight,
+                        color="#ff0000",  # Red for emotional relationships
                     )
-                    graph_manager._term_to_id[target.lower()] = target_id
                 else:
-                    target_id = graph_manager._term_to_id[target.lower()]
-
-                # Add the emotional edge
-                graph_manager.g.add_edge(
-                    source_id,
-                    target_id,
-                    relationship=rel_type,
-                    dimension="emotional",
-                    weight=weight,
-                    color="#ff0000",  # Red for emotional relationships
-                )
+                    print(
+                        f"Warning: Could not add relationship between {source} and {target} due to missing nodes."
+                    )
 
             print("Sample emotional relationships added")
 
         # Phase 4: Meta-Emotional Patterns
         print("\n=== PHASE 4: META-EMOTIONAL PATTERNS ===")
 
-        # Extract meta-emotional patterns
         meta_patterns = graph_manager.extract_meta_emotional_patterns()
 
         if meta_patterns:
@@ -219,7 +238,6 @@ def graph_demo() -> None:
         else:
             print("No meta-emotional patterns found")
 
-            # Add sample meta-emotional patterns for demonstration
             print("\nAdding sample meta-emotional patterns for demonstration...")
             sample_meta_relations = [
                 ("anxiety", "fear", "meta_emotion", 0.8),
@@ -227,39 +245,39 @@ def graph_demo() -> None:
                 ("awe", "surprise", "emotional_component", 0.9),
             ]
 
-            # Add these to the graph (simplified)
             for source, target, rel_type, weight in sample_meta_relations:
-                # First ensure the nodes exist (simplified)
-                if source.lower() not in graph_manager._term_to_id:
-                    source_id = len(graph_manager._term_to_id) + 1
-                    graph_manager.g.add_node(source_id, term=source, valence=-0.3)
-                    graph_manager._term_to_id[source.lower()] = source_id
-                else:
-                    source_id = graph_manager._term_to_id[source.lower()]
+                # Use public methods or handle node creation safely
+                source_id = graph_manager.get_node_id(source)
+                if source_id is None:
+                    source_id = graph_manager.add_word_node(
+                        source, attributes={"valence": -0.3}
+                    )
 
-                if target.lower() not in graph_manager._term_to_id:
-                    target_id = len(graph_manager._term_to_id) + 1
-                    graph_manager.g.add_node(target_id, term=target, valence=-0.5)
-                    graph_manager._term_to_id[target.lower()] = target_id
-                else:
-                    target_id = graph_manager._term_to_id[target.lower()]
+                target_id = graph_manager.get_node_id(target)
+                if target_id is None:
+                    target_id = graph_manager.add_word_node(
+                        target, attributes={"valence": -0.5}
+                    )
 
-                # Add the meta-emotional edge
-                graph_manager.g.add_edge(
-                    source_id,
-                    target_id,
-                    relationship=rel_type,
-                    dimension="emotional",
-                    weight=weight,
-                    color="#800080",  # Purple for meta-emotional
-                )
+                if source_id is not None and target_id is not None:
+                    graph_manager.add_relationship(
+                        source_id,
+                        target_id,
+                        relationship=rel_type,
+                        dimension="emotional",
+                        weight=weight,
+                        color="#800080",  # Purple for meta-emotional
+                    )
+                else:
+                    print(
+                        f"Warning: Could not add meta relationship between {source} and {target} due to missing nodes."
+                    )
 
             print("Sample meta-emotional patterns added")
 
         # Phase 5: Emotional Transitions
         print("\n=== PHASE 5: EMOTIONAL TRANSITIONS ===")
 
-        # Analyze emotional transitions
         transitions = graph_manager.analyze_emotional_transitions()
 
         if transitions:
@@ -277,7 +295,6 @@ def graph_demo() -> None:
         # Phase 6: Semantic Clusters
         print("\n=== PHASE 6: SEMANTIC CLUSTERS ===")
 
-        # Analyze semantic clusters
         try:
             print("Identifying semantic and emotional clusters...")
             clusters = graph_manager.analyze_semantic_clusters(min_community_size=2)
@@ -303,10 +320,8 @@ def graph_demo() -> None:
         # Phase 7: Context Integration
         print("\n=== PHASE 7: CONTEXT INTEGRATION ===")
 
-        # Define and integrate emotional contexts
         print("Integrating emotional contexts...")
 
-        # Define a clinical/medical context
         clinical_context = {
             "professional": 0.9,
             "analytical": 0.8,
@@ -314,7 +329,6 @@ def graph_demo() -> None:
             "compassionate": 0.5,
         }
 
-        # Define a literary/narrative context
         literary_context = {
             "expressive": 0.9,
             "narrative": 0.8,
@@ -322,7 +336,6 @@ def graph_demo() -> None:
             "metaphorical": 0.6,
         }
 
-        # Integrate contexts
         try:
             updated_clinical = graph_manager.integrate_emotional_context(
                 "clinical", clinical_context
@@ -338,53 +351,53 @@ def graph_demo() -> None:
                 f"Integrated literary context (affected {updated_literary} relationships)"
             )
 
-            # Apply context to emotional subgraph
-            # Try with an emotional term if present
-            emotional_terms = [
-                t["term"]
-                for t in valence_analysis.get("top_positive", [])
-                + valence_analysis.get("top_negative", [])
+            top_positive_terms = cast(
+                List[Tuple[str, float]], valence_analysis.get("top_positive", [])
+            )
+            top_negative_terms = cast(
+                List[Tuple[str, float]], valence_analysis.get("top_negative", [])
+            )
+            emotional_terms: List[str] = [
+                t[0] for t in top_positive_terms + top_negative_terms
             ]
 
+            context_term: str
             if emotional_terms:
                 context_term = emotional_terms[0]
             else:
-                # Fallback to one we might have added
                 context_term = "anxiety"
 
             print(
                 f"\nExtracting emotional subgraph for '{context_term}' with clinical context..."
             )
-            emotional_subgraph = graph_manager.get_emotional_subgraph(
-                context_term, depth=2, context="clinical"
+            emotional_subgraph: nx.Graph = graph_manager.get_emotional_subgraph(
+                str(context_term), depth=2, context="clinical"
             )
 
             print(
                 f"Extracted emotional subgraph with {emotional_subgraph.number_of_nodes()} nodes "
-                f"and {emotional_subgraph.number_of_edges()} emotional relationships"
+                f"and {emotional_subgraph.number_of_edges()} emotional relationships"  # Use number_of_edges() method
             )
         except Exception as e:
             print(f"Note: Context integration skipped: {e}")
 
         # Phase 8: Visualization
         print("\n=== PHASE 8: VISUALIZATION ===")
+        vis_path_emotional: Optional[str] = None  # Define with Optional[str]
 
-        # Generate and save both 2D and 3D visualizations
         try:
-            # Create standard 2D visualization
             vis_path_2d = "data/graph_visualization_2d.html"
             print("\nGenerating 2D interactive visualization...")
             graph_manager.visualize(output_path=vis_path_2d)
 
-            # Create enhanced 3D visualization
             vis_path_3d = "data/graph_visualization_3d.html"
             print("\nGenerating 3D interactive visualization...")
             graph_manager.visualize_3d(output_path=vis_path_3d)
 
-            # Create dimension-specific visualizations
             if "emotional" in relationship_analysis.get("dimensions", {}):
                 vis_path_emotional = "data/emotional_graph.html"
                 print("\nGenerating emotional relationships visualization...")
+                # Ensure vis_path_emotional is passed correctly
                 graph_manager.visualize(
                     output_path=vis_path_emotional, dimensions=["emotional"]
                 )
@@ -392,7 +405,7 @@ def graph_demo() -> None:
             print("\nVisualizations saved:")
             print(f"  - 2D: {vis_path_2d}")
             print(f"  - 3D: {vis_path_3d}")
-            if "emotional" in relationship_analysis.get("dimensions", {}):
+            if vis_path_emotional:
                 print(f"  - Emotional: {vis_path_emotional}")
             print("Open these files in a web browser to explore the graph")
 
@@ -401,13 +414,11 @@ def graph_demo() -> None:
         except Exception as e:
             print(f"Warning: Could not generate visualization: {e}")
 
-        # Save the complete graph to a file
         output_path = "data/lexical_graph.gexf"
         print(f"\nSaving complete graph to {output_path}")
         graph_manager.save_to_gexf(output_path)
         print(f"Graph saved successfully to {output_path}")
 
-        # Export subgraphs
         try:
             print(f"\nExtracting subgraph for '{example_term}'...")
             subgraph_path = graph_manager.export_subgraph(example_term, depth=2)
@@ -417,19 +428,15 @@ def graph_demo() -> None:
                 f"Warning: Could not extract subgraph for '{example_term}' (term not found)"
             )
 
-        # Display execution time
         elapsed_time = time.time() - start_time
         print(f"\nDemonstration completed in {elapsed_time:.2f} seconds")
 
     except GraphError as e:
         print(f"Graph error: {e}")
     except Exception as e:
-        import traceback
-
         print(f"Unexpected error: {e}")
         traceback.print_exc()
     finally:
-        # Ensure connections are properly closed
         db_manager.close()
 
 
