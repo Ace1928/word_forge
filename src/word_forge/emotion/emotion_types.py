@@ -24,6 +24,7 @@ C = TypeVar("C", bound="EmotionalContext")  # Context type
 
 
 VADER_AVAILABLE = True
+LLM_AVAILABLE = True
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CORE TYPE DEFINITIONS

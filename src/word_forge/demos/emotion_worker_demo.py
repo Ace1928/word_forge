@@ -8,14 +8,11 @@ import time
 
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.emotion.emotion_processor import RecursiveEmotionProcessor
 from word_forge.emotion.emotion_worker import EmotionWorker
 
 # Conditionally import recursive processor
 RECURSIVE_PROCESSOR_AVAILABLE = True
-try:
-    from word_forge.emotion.emotion_processor import RecursiveEmotionProcessor
-except ImportError:
-    RECURSIVE_PROCESSOR_AVAILABLE = False
 
 
 def main() -> None:
