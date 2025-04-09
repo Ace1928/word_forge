@@ -26,7 +26,7 @@ from word_forge.configs.config_essentials import (
     EnvMapping,
     LockType,
     QueueMetricsFormat,
-    QueuePerformanceProfile,
+    QueuePerformanceProfile,  # Ensure this is imported
 )
 
 

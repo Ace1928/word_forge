@@ -1,26 +1,29 @@
 import sqlite3
 from contextlib import contextmanager
-from typing import List, Optional, cast  # Keep cast for sqlite3.Row
+from typing import Iterator, List, Optional, cast  # Import Iterator
 
-from word_forge.configs.config_essentials import (  # Import Result and Error types
+# Import Result and Error types correctly
+from word_forge.configs.config_essentials import (
+    Error,
     ErrorCategory,
     ErrorSeverity,
     Result,
 )
-from word_forge.conversation.conversation_models import (  # Import new protocols
+
+# Import protocols and types from conversation_types
+from word_forge.conversation.conversation_types import (
     AffectiveLexicalModel,
+    ConversationDict,
     IdentityModel,
     LightweightModel,
-    ModelContext,
-)
-from word_forge.conversation.conversation_types import (  # Import types from the new file
-    ConversationDict,
     MessageDict,
+    ModelContext,
+    ReflexiveModel,  # Import ReflexiveModel protocol
 )
 from word_forge.database.database_manager import DatabaseError, DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
-from word_forge.graph.graph_manager import GraphManager  # Import GraphManager
-from word_forge.vectorizer.vector_store import VectorStore  # Import VectorStore
+from word_forge.graph.graph_manager import GraphManager
+from word_forge.vectorizer.vector_store import VectorStore
 
 
 class ConversationError(DatabaseError):
@@ -89,7 +92,7 @@ SELECT cm.id, cm.speaker, cm.text, cm.timestamp, me.label as emotion_label, me.c
 FROM conversation_messages cm
 LEFT JOIN message_emotion me ON cm.id = me.message_id
 WHERE cm.conversation_id = ?
-ORDER BY cm.id ASC
+ORDER BY cm.timestamp ASC -- Order by timestamp for chronological order
 """
 
 
@@ -97,10 +100,14 @@ class ConversationManager:
     """
     Manages conversation sessions and messages, integrating multi-model response generation.
 
-    This class provides an interface for storing and retrieving conversation data,
-    including conversation metadata and the messages within each conversation.
-    It orchestrates a multi-stage response generation pipeline involving lightweight,
-    affective/lexical, and identity models.
+    Orchestrates a multi-stage response generation pipeline involving:
+    1. Reflexive Model: Quick initial response/context.
+    2. Lightweight Model: Routing and basic processing.
+    3. Affective/Lexical Model: Core understanding and response generation.
+    4. Identity Model: Personality, consistency, and final refinement.
+
+    Provides methods for starting, ending, adding messages to, and retrieving
+    conversations, ensuring data persistence and interaction flow management.
     """
 
     def __init__(
@@ -109,6 +116,7 @@ class ConversationManager:
         emotion_manager: EmotionManager,
         graph_manager: GraphManager,
         vector_store: VectorStore,
+        reflexive_model: ReflexiveModel,
         lightweight_model: LightweightModel,
         affective_model: AffectiveLexicalModel,
         identity_model: IdentityModel,
@@ -117,39 +125,47 @@ class ConversationManager:
         Initialize the conversation manager with dependencies and models.
 
         Args:
-            db_manager: Database manager providing connection to storage.
-            emotion_manager: Emotion manager for sentiment analysis.
-            graph_manager: Graph manager for lexical relationships.
-            vector_store: Vector store for semantic search.
-            lightweight_model: The initial processing model.
-            affective_model: The core understanding and response model.
-            identity_model: The personality and refinement model.
+            db_manager: Database manager instance for persistence.
+            emotion_manager: Emotion manager instance for analysis.
+            graph_manager: Graph manager instance for knowledge access.
+            vector_store: Vector store instance for similarity searches.
+            reflexive_model: The initial reflexive model instance.
+            lightweight_model: The routing/basic processing model instance.
+            affective_model: The core understanding and response model instance.
+            identity_model: The personality and refinement model instance.
 
         Raises:
-            ConversationError: If there's an issue initializing the tables.
+            ConversationError: If initialization fails (e.g., table creation).
         """
         self.db_manager = db_manager
         self.emotion_manager = emotion_manager
         self.graph_manager = graph_manager
         self.vector_store = vector_store
+        self.reflexive_model = reflexive_model
         self.lightweight_model = lightweight_model
         self.affective_model = affective_model
         self.identity_model = identity_model
-        self._create_tables()
+        self._create_tables()  # Ensure tables are created on init
 
     @contextmanager
-    def _db_connection(self):
-        """Create a database connection using the DBManager's path.
+    def _db_connection(self) -> Iterator[sqlite3.Connection]:
+        """
+        Provides a managed database connection context.
+
+        Ensures the connection uses a Row factory for dictionary-like access
+        and handles connection acquisition and release through the DBManager.
 
         Yields:
-            sqlite3.Connection: An active database connection with Row factory.
+            sqlite3.Connection: An active database connection.
+
+        Raises:
+            ConversationError: If obtaining a connection fails.
         """
         conn: Optional[sqlite3.Connection] = None
         try:
-            # Use DBManager's context manager for connection handling
             with self.db_manager.get_connection() as db_conn:
-                conn = db_conn  # Assign to outer scope variable
-                conn.row_factory = sqlite3.Row  # Ensure row factory is set
+                conn = db_conn
+                conn.row_factory = sqlite3.Row
                 yield conn
         except DatabaseError as e:
             raise ConversationError(f"Failed to get database connection: {e}") from e
@@ -157,14 +173,16 @@ class ConversationManager:
             raise ConversationError(
                 f"Unexpected error during database connection: {e}"
             ) from e
-        # No finally needed as DBManager's context manager handles closing
 
     def _create_tables(self) -> None:
         """
-        Create tables if they don't already exist.
+        Ensures necessary database tables for conversations and messages exist.
+
+        Executes CREATE TABLE IF NOT EXISTS statements for `conversations`
+        and `conversation_messages`.
 
         Raises:
-            ConversationError: If there's an issue creating the tables.
+            ConversationError: If there's an issue executing the SQL statements.
         """
         try:
             with self._db_connection() as conn:
@@ -179,13 +197,15 @@ class ConversationManager:
 
     def start_conversation(self) -> int:
         """
-        Creates a new conversation row and returns its ID.
+        Initiates a new conversation record in the database.
+
+        Sets the initial status to 'ACTIVE' and records the creation timestamp.
 
         Returns:
-            The ID of the newly created conversation.
+            int: The unique ID assigned to the newly created conversation.
 
         Raises:
-            ConversationError: If the database operation fails.
+            ConversationError: If the database insertion fails or the ID cannot be retrieved.
         """
         try:
             with self._db_connection() as conn:
@@ -206,14 +226,16 @@ class ConversationManager:
 
     def end_conversation(self, conversation_id: int) -> None:
         """
-        Marks a conversation as COMPLETED.
+        Marks an existing conversation as 'COMPLETED'.
+
+        Updates the conversation's status and `updated_at` timestamp.
 
         Args:
-            conversation_id: The ID of the conversation to end.
+            conversation_id: The ID of the conversation to mark as completed.
 
         Raises:
-            ConversationNotFoundError: If the conversation doesn't exist.
-            ConversationError: If the database operation fails.
+            ConversationNotFoundError: If no conversation with the given ID exists.
+            ConversationError: If the database update operation fails.
         """
         try:
             with self._db_connection() as conn:
@@ -238,20 +260,29 @@ class ConversationManager:
         generate_response: bool = False,
     ) -> int:
         """
-        Appends a message and optionally generates and adds an assistant response.
+        Adds a message to a conversation and optionally triggers response generation.
+
+        Persists the message to the database, updates the conversation's timestamp,
+        processes the message for emotion, and if requested, initiates the
+        multi-model response generation pipeline for an assistant reply.
 
         Args:
-            conversation_id: The ID of the conversation.
-            speaker: The name or identifier of the message sender.
-            text: The content of the message.
-            generate_response: If True and speaker is not 'Assistant', trigger the
-                               response generation pipeline.
+            conversation_id: The ID of the target conversation.
+            speaker: The identifier of the message sender (e.g., "User", "Assistant").
+            text: The textual content of the message. Cannot be empty or whitespace.
+            generate_response: If True and the speaker is not "Assistant", triggers
+                               the response generation pipeline. Defaults to False.
 
         Returns:
-            The ID of the newly added message (the user's message, not the potential response).
+            int: The unique ID of the newly added message (the input message, not the
+                 potential assistant response).
 
         Raises:
-            ConversationError: If the database operation fails or response generation fails.
+            ValueError: If the provided message text is empty or whitespace.
+            ConversationNotFoundError: If the specified conversation_id does not exist
+                                      (can be raised during response generation).
+            ConversationError: If database operations fail or the response generation
+                               pipeline encounters an unrecoverable error.
         """
         if not text or not text.strip():
             raise ValueError("Message text cannot be empty.")
@@ -284,39 +315,35 @@ class ConversationManager:
                     )
 
                 # Generate and add response if requested and not from Assistant
-                if generate_response and speaker != "Assistant":
+                if generate_response and speaker.lower() != "assistant":
                     print(
                         f"Triggering response generation for conversation {conversation_id}..."
-                    )  # Added log
-                    response_result = self.generate_and_add_response(
+                    )
+                    response_result: Result[int] = self.generate_and_add_response(
                         conversation_id, text, speaker
                     )
                     if response_result.is_failure:
-                        # Log the error and raise a ConversationError
-                        error_details = (
-                            response_result.error.message
-                            if response_result.error
-                            else "Unknown error"
-                        )
+                        error_details = "Unknown error during response generation"
+                        if response_result.error:
+                            error_details = response_result.error.message
                         print(
                             f"Error generating response for conversation {conversation_id}: {error_details}"
-                        )  # Added log
+                        )
                         raise ConversationError(
                             f"Failed to generate response: {error_details}"
                         )
                     else:
                         print(
                             f"Successfully generated and added response (ID: {response_result.unwrap()})"
-                        )  # Added log
+                        )
 
-                return message_id  # Return the ID of the original message added
+                return message_id
 
         except sqlite3.Error as e:
             raise ConversationError(
                 f"Failed to add message to conversation {conversation_id}: {e}"
             ) from e
-        except Exception as e:  # Catch other potential errors like response generation
-            # Log the specific error
+        except Exception as e:
             print(
                 f"Error in add_message for conversation {conversation_id}: {type(e).__name__} - {e}"
             )
@@ -328,110 +355,144 @@ class ConversationManager:
         self, conversation_id: int, last_user_text: str, last_user_speaker: str
     ) -> Result[int]:
         """
-        Generates a response using the multi-model pipeline and adds it to the conversation.
+        Generates and adds an assistant response using the multi-model pipeline.
 
-        Orchestrates the flow through Lightweight, Affective/Lexical, and Identity models.
+        Orchestrates the flow: Context Prep -> Reflexive -> Lightweight ->
+        Affective/Lexical -> Identity -> Add Response. Handles errors at each stage.
 
         Args:
-            conversation_id: The ID of the current conversation.
-            last_user_text: The text of the last user message that triggered this response.
-            last_user_speaker: The speaker of the last user message.
+            conversation_id: ID of the current conversation.
+            last_user_text: Text of the last message triggering the response.
+            last_user_speaker: Speaker of the last message triggering the response.
 
         Returns:
-            Result containing the ID of the added assistant message or an error detailing
-            which stage of the pipeline failed.
+            Result[int]: Contains the ID of the added assistant message on success,
+                         or an Error object detailing the failure on error.
         """
         try:
-            # 1. Prepare Context
-            # Fetch full conversation data, including messages with emotions
-            conversation_data = self.get_conversation(conversation_id)
-            if not conversation_data:  # Should not happen if called after add_message
-                return Result.failure(
-                    "CONVERSATION_NOT_FOUND",
-                    f"Conversation {conversation_id} not found during response generation.",
+            # --- 1. Prepare Context ---
+            print(f"[{conversation_id}] Preparing context...")
+            conv_result = self.get_conversation_if_exists(conversation_id)
+            if not conv_result:
+                return Result[int].failure(
+                    Error.create(
+                        "CONVERSATION_NOT_FOUND",
+                        f"Conversation {conversation_id} not found during response generation.",
+                        ErrorCategory.VALIDATION,
+                        ErrorSeverity.ERROR,
+                        {"conversation_id": conversation_id},
+                    )
                 )
+            conversation_data = conv_result
 
             context: ModelContext = {
                 "conversation_id": conversation_id,
-                "history": conversation_data["messages"],  # Use fetched history
+                "history": conversation_data["messages"][-20:],
                 "current_input": last_user_text,
                 "speaker": last_user_speaker,
                 "db_manager": self.db_manager,
                 "emotion_manager": self.emotion_manager,
                 "graph_manager": self.graph_manager,
                 "vector_store": self.vector_store,
+                "reflexive_output": None,
                 "intermediate_response": None,
                 "affective_state": None,
-                "identity_state": None,  # Will be populated if IdentityModel uses state
+                "identity_state": None,
+                "additional_data": {},
             }
-            print(f"Context prepared for conversation {conversation_id}")  # Added log
+            print(f"[{conversation_id}] Context prepared.")
 
-            # --- Model Pipeline ---
-            # 2. Lightweight Model Processing
-            print("Calling Lightweight Model...")  # Added log
+            # --- 2. Reflexive Model ---
+            print(f"[{conversation_id}] Calling Reflexive Model...")
+            reflexive_result = self.reflexive_model.generate_reflex(context)
+            if reflexive_result.is_failure:
+                print(
+                    f"[{conversation_id}] Warning: Reflexive model failed: {reflexive_result.error.message if reflexive_result.error else 'Unknown'}. Proceeding without reflex."
+                )
+            else:
+                context = reflexive_result.unwrap()
+                print(f"[{conversation_id}] Reflexive Model finished.")
+
+            # --- 3. Lightweight Model ---
+            print(f"[{conversation_id}] Calling Lightweight Model...")
             lightweight_result = self.lightweight_model.process(context)
             if lightweight_result.is_failure:
-                return Result.failure(
-                    "LIGHTWEIGHT_MODEL_ERROR",
-                    f"Lightweight model failed: {lightweight_result.error.message if lightweight_result.error else 'Unknown'}",
-                    (
-                        lightweight_result.error.context
-                        if lightweight_result.error
-                        else {}
-                    ),
+                print(
+                    f"[{conversation_id}] Error: Lightweight model failed: {lightweight_result.error.message if lightweight_result.error else 'Unknown'}"
                 )
+                return Result[int].failure(lightweight_result.error)
             context = lightweight_result.unwrap()
-            print("Lightweight Model finished.")  # Added log
+            print(f"[{conversation_id}] Lightweight Model finished.")
 
-            # 3. Affective/Lexical Model Processing
-            print("Calling Affective/Lexical Model...")  # Added log
+            # --- 4. Affective/Lexical Model ---
+            print(f"[{conversation_id}] Calling Affective/Lexical Model...")
             affective_result = self.affective_model.generate_core_response(context)
             if affective_result.is_failure:
-                return Result.failure(
-                    "AFFECTIVE_MODEL_ERROR",
-                    f"Affective model failed: {affective_result.error.message if affective_result.error else 'Unknown'}",
-                    affective_result.error.context if affective_result.error else {},
+                print(
+                    f"[{conversation_id}] Error: Affective model failed: {affective_result.error.message if affective_result.error else 'Unknown'}"
                 )
+                return Result[int].failure(affective_result.error)
             context = affective_result.unwrap()
             print(
-                f"Affective Model generated intermediate response: '{context.get('intermediate_response', '')[:50]}...'"
-            )  # Added log
+                f"[{conversation_id}] Affective Model generated intermediate response: '{context.get('intermediate_response', '')[:50]}...'"
+            )
 
-            # 4. Identity Model Processing
-            print("Calling Identity Model...")  # Added log
+            # --- 5. Identity Model ---
+            print(f"[{conversation_id}] Calling Identity Model...")
             identity_result = self.identity_model.refine_response(context)
             if identity_result.is_failure:
-                return Result.failure(
-                    "IDENTITY_MODEL_ERROR",
-                    f"Identity model failed: {identity_result.error.message if identity_result.error else 'Unknown'}",
-                    identity_result.error.context if identity_result.error else {},
+                print(
+                    f"[{conversation_id}] Error: Identity model failed: {identity_result.error.message if identity_result.error else 'Unknown'}"
                 )
+                return Result[int].failure(identity_result.error)
             final_response_text = identity_result.unwrap()
             print(
-                f"Identity Model produced final response: '{final_response_text[:50]}...'"
-            )  # Added log
-            # --- End Model Pipeline ---
+                f"[{conversation_id}] Identity Model produced final response: '{final_response_text[:50]}...'"
+            )
 
-            # 5. Add Assistant Response (use internal method to avoid recursion)
+            # --- 6. Add Assistant Response ---
+            print(f"[{conversation_id}] Adding final assistant response to DB...")
             assistant_message_id = self._add_assistant_message_internal(
                 conversation_id, final_response_text
             )
-            return Result.success(assistant_message_id)
+            print(
+                f"[{conversation_id}] Assistant message {assistant_message_id} added."
+            )
+            return Result[int].success(assistant_message_id)
 
         except Exception as e:
-            # Catch any unexpected errors during the pipeline execution
             print(
-                f"Unexpected error during response generation pipeline: {type(e).__name__} - {e}"
-            )  # Added log
-            return Result.failure(
-                "RESPONSE_GENERATION_PIPELINE_ERROR",
-                f"Unexpected error during response generation pipeline: {e}",
-                category=ErrorCategory.UNEXPECTED,
-                severity=ErrorSeverity.ERROR,
+                f"[{conversation_id}] Unexpected error during response generation pipeline: {type(e).__name__} - {e}"
             )
+            error = Error.create(
+                "RESPONSE_PIPELINE_ERROR",
+                f"Unexpected error in response pipeline: {e}",
+                ErrorCategory.UNEXPECTED,
+                ErrorSeverity.ERROR,
+                {
+                    "conversation_id": conversation_id,
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[int].failure(error)
 
     def _add_assistant_message_internal(self, conversation_id: int, text: str) -> int:
-        """Internal method to add an assistant message without triggering response generation."""
+        """
+        Internal helper to add an 'Assistant' message without recursion.
+
+        Handles database insertion, timestamp update, and emotion processing
+        for the assistant's message.
+
+        Args:
+            conversation_id: The ID of the conversation.
+            text: The assistant's message text.
+
+        Returns:
+            int: The ID of the newly added assistant message.
+
+        Raises:
+            ConversationError: If the database operation fails.
+        """
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
@@ -441,7 +502,6 @@ class ConversationManager:
                 conn.commit()
                 if message_id is None:
                     raise ConversationError("Failed to retrieve assistant message ID.")
-                # Process emotion for the assistant's message
                 try:
                     self.emotion_manager.process_message(message_id, text)
                 except Exception as emotion_e:
@@ -454,22 +514,24 @@ class ConversationManager:
 
     def get_conversation(self, conversation_id: int) -> ConversationDict:
         """
-        Returns conversation info, including messages with emotions, if found.
+        Retrieves full conversation details, including messages and emotions.
+
+        Fetches the conversation metadata and all associated messages, joining
+        with emotion data where available. Messages are ordered chronologically.
 
         Args:
             conversation_id: The ID of the conversation to retrieve.
 
         Returns:
-            Dictionary containing conversation data and messages.
+            ConversationDict: A dictionary representing the conversation and its messages.
 
         Raises:
-            ConversationNotFoundError: If the conversation doesn't exist.
-            ConversationError: If the database operation fails.
+            ConversationNotFoundError: If no conversation with the given ID exists.
+            ConversationError: If a database error occurs during retrieval.
         """
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                # Fetch conversation row
                 cursor.execute(SQL_GET_CONVERSATION, (conversation_id,))
                 row: Optional[sqlite3.Row] = cursor.fetchone()
 
@@ -478,7 +540,6 @@ class ConversationManager:
                         f"Conversation with ID {conversation_id} not found"
                     )
 
-                # Use cast for type safety with sqlite3.Row
                 conv_data: ConversationDict = {
                     "id": int(cast(int, row["id"])),
                     "status": str(cast(str, row["status"])),
@@ -487,27 +548,31 @@ class ConversationManager:
                     "messages": [],
                 }
 
-                # Fetch messages with emotion data using LEFT JOIN
                 cursor.execute(SQL_GET_MESSAGES, (conversation_id,))
                 messages: List[sqlite3.Row] = cursor.fetchall()
 
-                for m in messages:
+                for m_row in messages:
                     message: MessageDict = {
-                        "id": int(cast(int, m["id"])),
-                        "speaker": str(cast(str, m["speaker"])),
-                        "text": str(cast(str, m["text"])),
-                        "timestamp": float(cast(float, m["timestamp"])),
-                        "emotion": None,  # Default to None
+                        "id": int(cast(int, m_row["id"])),
+                        "speaker": str(cast(str, m_row["speaker"])),
+                        "text": str(cast(str, m_row["text"])),
+                        "timestamp": float(cast(float, m_row["timestamp"])),
+                        "emotion": None,
                     }
 
-                    # Populate emotion if data exists from the JOIN
-                    emotion_label = m["emotion_label"]
-                    emotion_confidence = m["emotion_confidence"]
+                    emotion_label = m_row["emotion_label"]
+                    emotion_confidence = m_row["emotion_confidence"]
                     if emotion_label is not None and emotion_confidence is not None:
-                        message["emotion"] = {
-                            "emotion_label": str(emotion_label),
-                            "confidence": float(emotion_confidence),
-                        }
+                        try:
+                            confidence_float = float(emotion_confidence)
+                            message["emotion"] = {
+                                "emotion_label": str(emotion_label),
+                                "confidence": confidence_float,
+                            }
+                        except (ValueError, TypeError):
+                            print(
+                                f"Warning: Invalid emotion data for message {message['id']} - Label: {emotion_label}, Confidence: {emotion_confidence}"
+                            )
 
                     conv_data["messages"].append(message)
 
@@ -522,21 +587,23 @@ class ConversationManager:
         self, conversation_id: int
     ) -> Optional[ConversationDict]:
         """
-        Returns conversation info if it exists, None otherwise.
+        Retrieves conversation details only if the conversation exists.
+
+        A convenience wrapper around `get_conversation` that returns None
+        instead of raising `ConversationNotFoundError`.
 
         Args:
-            conversation_id: The ID of the conversation to retrieve.
+            conversation_id: The ID of the conversation to attempt retrieval for.
 
         Returns:
-            Dictionary containing conversation data or None if not found.
+            Optional[ConversationDict]: The conversation data if found, otherwise None.
 
         Raises:
-            ConversationError: If the database operation fails (excluding NotFound).
+            ConversationError: If a database error occurs (other than not found).
         """
         try:
             return self.get_conversation(conversation_id)
         except ConversationNotFoundError:
             return None
         except ConversationError as e:
-            # Re-raise other conversation errors
             raise e

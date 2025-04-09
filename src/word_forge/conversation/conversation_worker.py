@@ -29,19 +29,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from threading import Event, Lock, RLock, Thread
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Protocol,
-    Tuple,
-    TypedDict,
-    Union,
-    cast,
-    final,
-)
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union, cast, final
 
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.database.database_manager import DBManager
@@ -132,37 +120,24 @@ class ConversationWorkerStatus(TypedDict):
     recent_errors: List[str]
     next_poll: Optional[float]
     conversation_metrics: Dict[str, Any]
+    retry_queue_size: int
 
 
 class ConversationTask(TypedDict, total=False):
-    """Type definition for a conversation task."""
+    """
+    Type definition for a conversation task placed on the queue.
 
-    task_id: str
-    conversation_id: Optional[int]
-    message: str
-    speaker: str
-    timestamp: float
-    priority: int
-    context: Dict[str, Any]
-    completion_callback: Optional[Callable[[Dict[str, Any]], None]]
-
-
-class ConversationWorkerInterface(Protocol):
-    """Protocol defining the required interface for conversation workers."""
-
-    def start(self) -> None: ...
-    def stop(self) -> None: ...
-    def restart(self) -> None: ...
-    def pause(self) -> None: ...
-    def resume(self) -> None: ...
-    def get_status(self) -> ConversationWorkerStatus: ...
-    def get_metrics(self) -> Dict[str, Any]: ...  # Added get_metrics
-    def is_alive(self) -> bool: ...
-    def process_task(self, task: ConversationTask) -> bool: ...
-    def submit_message(
-        self, conversation_id: int, message: str, speaker: str
-    ) -> Optional[str]: ...
-    def run(self) -> None: ...
+    Attributes:
+        task_id: Unique identifier for this task instance.
+        conversation_id: ID of the conversation this task belongs to (optional for new convos).
+        message: The textual content of the message to process or respond to.
+        speaker: Identifier of the message speaker.
+        timestamp: Time the task was created or the message occurred.
+        priority: Task priority for queue management.
+        context: Dictionary containing additional processing instructions or data
+                 (e.g., `generate_response: True`).
+        completion_callback: Optional function to call upon task completion.
+    """
 
 
 @dataclass
@@ -182,12 +157,16 @@ class ProcessingMetrics:
 
     def record_processed(self) -> None:
         """Increment the processed count thread-safely."""
-        with self._lock:
+        self._lock.acquire()
+        try:
             self.processed_count += 1
+        finally:
+            self._lock.release()
 
     def record_result(self, result: TaskResult, processing_time: float) -> None:
         """Record a processing result with timing information."""
-        with self._lock:
+        self._lock.acquire()
+        try:
             if result == TaskResult.SUCCESS:
                 self.success_count += 1
             elif result == TaskResult.FAILURE:
@@ -203,16 +182,24 @@ class ProcessingMetrics:
             # Keep only the last 100 processing times
             if len(self.processing_times) > 100:
                 self.processing_times = self.processing_times[-100:]
+        finally:
+            self._lock.release()
 
     def record_task_type(self, task_type: str) -> None:
         """Record a task type for distribution analysis."""
-        with self._lock:
+        self._lock.acquire()
+        try:
             self.task_types[task_type] = self.task_types.get(task_type, 0) + 1
+        finally:
+            self._lock.release()
 
     def record_error(self, error_type: str) -> None:
         """Record an error type for error distribution analysis."""
-        with self._lock:
+        self._lock.acquire()
+        try:
             self.error_types[error_type] = self.error_types.get(error_type, 0) + 1
+        finally:
+            self._lock.release()
 
     def get_avg_processing_time(self) -> Optional[float]:
         """Calculate the average processing time with timeout protection."""
@@ -232,7 +219,18 @@ class ProcessingMetrics:
             return None
 
     def get_metrics_dict(self) -> Dict[str, Any]:
-        """Return a dictionary of all metrics."""
+        """
+        Return a dictionary of all metrics, calculated thread-safely.
+
+        Includes counts for processed, success, error, timeout, deferred,
+        and invalid tasks, average processing time, task type distribution,
+        error type distribution, and overall success rate. Handles potential
+        deadlocks during acquisition with timeouts.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing aggregated metrics. Returns
+                            minimal info with an error message if lock acquisition fails.
+        """
         try:
             # Use a timeout to prevent deadlocks
             if not self._lock.acquire(timeout=1.0):
@@ -275,7 +273,13 @@ class ProcessingMetrics:
 
 
 class StateTracker:
-    """Manages worker state with thread-safe operations."""
+    """
+    Manages worker state transitions and status reporting thread-safely.
+
+    Tracks the current lifecycle state (RUNNING, STOPPED, PAUSED, etc.),
+    uptime, last update time, next scheduled poll time, and recent errors.
+    Uses an RLock to ensure atomic updates and reads.
+    """
 
     def __init__(self) -> None:
         """Initialize state tracker with default values."""
@@ -387,20 +391,36 @@ class StateTracker:
             ]
 
     def to_dict(
-        self, queue_size: int, metrics: Dict[str, Any]
+        self, queue_size: int, retry_queue_size: int, metrics: Dict[str, Any]
     ) -> ConversationWorkerStatus:
-        """Convert current state to status dictionary."""
+        """
+        Convert current state and metrics into a status dictionary.
+
+        Args:
+            queue_size: Current size of the main processing queue.
+            retry_queue_size: Current size of the internal retry queue.
+            metrics: Dictionary of performance metrics from ProcessingMetrics.
+
+        Returns:
+            ConversationWorkerStatus: A dictionary summarizing the worker's current state.
+        """
         with self._lock:
+            uptime_val = self.uptime
             return ConversationWorkerStatus(
                 running=self.is_running,
                 state=str(self._state),
-                processed_count=metrics["processed_count"],
-                success_count=metrics["success_count"],
-                error_count=metrics["error_count"],
+                processed_count=metrics.get(
+                    "processed_count", 0
+                ),  # Use .get for safety
+                success_count=metrics.get("success_count", 0),
+                error_count=metrics.get("error_count", 0),
                 last_update=self._last_update,
-                uptime=self.uptime,
+                uptime=(
+                    round(uptime_val, 2) if uptime_val is not None else None
+                ),  # Round uptime
                 queue_size=queue_size,
-                recent_errors=self.recent_errors[:5],
+                retry_queue_size=retry_queue_size,  # Include retry queue size
+                recent_errors=self.recent_errors[:5],  # Limit recent errors shown
                 next_poll=self._next_poll,
                 conversation_metrics=metrics,
             )
@@ -409,25 +429,15 @@ class StateTracker:
 @final
 class ConversationWorker(Thread):
     """
-    Thread-based worker for processing conversation tasks from a queue.
+    Asynchronous worker thread for processing conversation tasks.
 
-    Manages the lifecycle of conversation processing, including message generation,
-    context tracking, and asynchronous conversation management. Implements
-    comprehensive state management with start, stop, pause, resume functionality
-    and detailed metrics tracking.
+    Continuously monitors a queue for incoming `ConversationTask` items.
+    Processes tasks by interacting with the `ConversationManager` to add
+    messages and trigger the multi-model response generation pipeline.
+    Handles lifecycle management (start, stop, pause, resume), error recovery
+    with retries and backoff, and detailed metrics tracking.
 
-    Attributes:
-        parser_refiner: Parser for lexical processing and response generation
-        queue_manager: Queue system for conversation tasks
-        conversation_manager: Manager for conversation persistence
-        db_manager: Database access for word and message storage
-        emotion_manager: Optional manager for emotional analysis
-        metrics: Processing statistics and metrics
-        state_tracker: Thread-safe state management
-        poll_interval: Seconds between queue polling attempts
-        processing_timeout: Maximum seconds to process a task
-        _stop_event: Threading event to signal worker shutdown
-        _pause_event: Threading event to signal worker pause
+    Designed for robust, continuous operation within the Word Forge system.
     """
 
     def __init__(
@@ -586,8 +596,10 @@ class ConversationWorker(Thread):
         """
         Main execution loop for the worker thread.
 
-        Continuously polls the queue for tasks and processes them until
-        signaled to stop. Handles pausing, error recovery, and metrics tracking.
+        Continuously polls the queue, processes tasks in batches, handles
+        retries, manages pause/stop states, implements error recovery with
+        exponential backoff, and logs activity. Terminates when the stop
+        event is set.
         """
         if self.logger:
             self.logger.info("Conversation worker thread started")
@@ -663,10 +675,14 @@ class ConversationWorker(Thread):
 
     def _process_retry_queue(self) -> int:
         """
-        Process tasks in the retry queue.
+        Attempts to re-process tasks currently in the retry queue.
+
+        Iterates through tasks marked for retry. If a task succeeds, it's
+        removed. If it fails again, its retry count is incremented. Tasks
+        exceeding `max_retries` are discarded.
 
         Returns:
-            int: Number of tasks processed from the retry queue
+            int: The number of retry tasks attempted in this cycle.
         """
         if not self._retry_queue:
             return 0
@@ -711,7 +727,16 @@ class ConversationWorker(Thread):
         return processed
 
     def _process_queue_batch(self) -> int:
-        """Process a batch of tasks from the queue."""
+        """
+        Dequeues and processes a batch of tasks from the main queue.
+
+        Attempts to dequeue up to `batch_size` tasks. Handles different
+        task item types (ConversationTask dicts, simple strings) and logs
+        errors during dequeuing or processing.
+
+        Returns:
+            int: The number of tasks successfully dequeued and initiated for processing.
+        """
         processed_count = 0
 
         for _ in range(self.batch_size):
@@ -775,16 +800,21 @@ class ConversationWorker(Thread):
 
     def _process_task(self, task: ConversationTask) -> TaskResult:
         """
-        Process a single conversation task.
+        Processes a single conversation task.
+
+        Validates the task, interacts with the `ConversationManager` to add
+        the message, potentially triggers response generation via the manager,
+        and executes any completion callback. Records metrics and handles errors.
 
         Args:
-            task: The conversation task to process
+            task: The `ConversationTask` dictionary to process.
 
         Returns:
-            TaskResult: The result status of the processing attempt
+            TaskResult: Enum indicating the outcome (SUCCESS, FAILURE, INVALID, etc.).
 
         Raises:
-            ConversationProcessingError: If task processing fails
+            ConversationProcessingError: If an unrecoverable error occurs during processing.
+                                         The original exception is attached as the cause.
         """
         task_id = task.get("task_id", str(id(task)))
         start_time = time.time()
@@ -808,36 +838,44 @@ class ConversationWorker(Thread):
             context = task.get("context", {})
 
             # Process based on task type (determine by context and existence of conversation_id)
-            if conversation_id is None:
+            task_type = "add_message"  # Default task type
+            if conversation_id is None and message:
+                task_type = "start_conversation_and_add"
+            elif context.get("generate_response", False):
+                task_type = "add_message_and_respond"
+
+            self.metrics.record_task_type(task_type)  # Record task type
+
+            if task_type == "start_conversation_and_add":
                 # Create new conversation
                 conversation_id = self.conversation_manager.start_conversation()
                 if self.logger:
-                    self.logger.info(f"Created new conversation {conversation_id}")
+                    self.logger.info(
+                        f"Task {task_id}: Started new conversation {conversation_id}"
+                    )
 
-            # Add message to conversation
+            # Ensure conversation_id is valid before proceeding
+            if conversation_id is None:
+                raise ConversationProcessingError(
+                    f"Task {task_id}: Missing conversation ID for processing."
+                )
+
+            # Add message to conversation - response generation is handled by the manager now
+            # if generate_response is True in the context.
             message_id = self.conversation_manager.add_message(
-                conversation_id, speaker, message
+                conversation_id,
+                speaker,
+                message,
+                generate_response=context.get("generate_response", False),
             )
 
             if self.logger:
                 self.logger.debug(
-                    f"Added message {message_id} to conversation {conversation_id}"
+                    f"Task {task_id}: Added message {message_id} to conversation {conversation_id}. Response generation handled by manager."
                 )
 
-            # Generate response if needed
-            if context.get("generate_response", False) and speaker != "assistant":
-                response = self._generate_response(conversation_id, message, context)
-
-                if response:
-                    # Add response to conversation
-                    self.conversation_manager.add_message(
-                        conversation_id, "assistant", response
-                    )
-
-                    if self.logger:
-                        self.logger.info(
-                            f"Generated response for conversation {conversation_id}"
-                        )
+            # Response generation is now implicitly handled within add_message if requested.
+            # No need for explicit _generate_response call here.
 
             # Execute callback if provided
             completion_callback = task.get("completion_callback")
@@ -890,93 +928,13 @@ class ConversationWorker(Thread):
                 context=context,
             )
 
-    def _generate_response(
-        self, conversation_id: int, message: str, context: Dict[str, Any]
-    ) -> Optional[str]:
-        """
-        Generate a response to a conversation message.
-
-        Args:
-            conversation_id: ID of the conversation
-            message: The message to respond to
-            context: Additional context for response generation
-
-        Returns:
-            Optional[str]: Generated response or None if generation fails
-        """
-        try:
-            # Get conversation history if needed
-            if context.get("use_history", True):
-                conversation = self.conversation_manager.get_conversation(
-                    conversation_id
-                )
-                messages = conversation["messages"]
-
-                # Build conversation history string
-                history = "\n".join(
-                    [
-                        f"{msg['speaker']}: {msg['text']}"
-                        for msg in messages[-context.get("history_length", 5) :]
-                    ]
-                )
-
-                # Cache conversation for later use
-                self._conversation_cache[conversation_id] = {
-                    "updated_at": time.time(),
-                    "messages": messages,
-                }
-            else:
-                history = f"user: {message}"
-
-            # Use parser_refiner to generate a response
-            # This is a simplified version - in a real implementation,
-            # you would use a more sophisticated method using ParserRefiner
-            # to leverage lexical knowledge
-
-            # Simple response generation
-            # (would be replaced by actual parser_refiner logic)
-            # Use history to analyze the conversation context
-            input_text = history if context.get("use_history", True) else message
-            topic_words = self.parser_refiner.term_extractor.extract_terms(
-                input_text, [], ""
-            )[0]
-
-            if topic_words:
-                # Get the most relevant topic words
-                topic = topic_words[0]
-
-                # Try to use the parser to generate a meaningful response
-                # based on lexical knowledge
-                try:
-                    # Process the topic word to ensure it's in the database
-                    self.parser_refiner.process_word(topic)
-
-                    # Get word entry from database for knowledge
-                    word_entry = self.db_manager.get_word_entry(topic)
-
-                    if word_entry and word_entry.get("definition"):
-                        definition = word_entry["definition"]
-                        response = f"About '{topic}': {definition}"
-                    else:
-                        response = f"I've noted your interest in '{topic}'. Could you tell me more?"
-                except Exception:
-                    # Fallback response if parsing fails
-                    response = (
-                        f"That's interesting! Can you tell me more about {topic}?"
-                    )
-            else:
-                # Generic fallback
-                response = "I'm processing that. Could you provide more details?"
-
-            return response
-
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Error generating response: {str(e)}", exc_info=True)
-            return "I'm sorry, I'm having trouble processing that right now."
-
     def _clear_stale_processing(self) -> None:
-        """Clear any stale processing entries that have timed out."""
+        """
+        Identifies and removes tracking entries for tasks that have exceeded the timeout.
+
+        Iterates through the `_processing_times` dictionary and removes entries
+        older than `processing_timeout` seconds, logging a warning for each.
+        """
         current_time = time.time()
         stale_tasks: List[str] = []
 
@@ -991,36 +949,44 @@ class ConversationWorker(Thread):
 
     def get_status(self) -> ConversationWorkerStatus:
         """
-        Get current worker status information.
+        Retrieves the current operational status and metrics of the worker.
+
+        Combines state information from `StateTracker` with metrics from
+        `ProcessingMetrics` and current queue sizes.
 
         Returns:
-            ConversationWorkerStatus: Current status of the worker
+            ConversationWorkerStatus: A dictionary summarizing the worker's status.
         """
         queue_size = self.queue_manager.size
+        retry_queue_size = len(self._retry_queue)
         metrics_dict = self.metrics.get_metrics_dict()
 
-        return self.state_tracker.to_dict(queue_size, metrics_dict)
+        return self.state_tracker.to_dict(queue_size, retry_queue_size, metrics_dict)
 
     def get_metrics(self) -> Dict[str, Any]:
         """
-        Get current worker performance metrics.
+        Retrieves the current performance metrics collected by the worker.
+
+        Returns the dictionary generated by `ProcessingMetrics.get_metrics_dict()`.
 
         Returns:
-            Dict[str, Any]: Dictionary containing performance metrics.
+            Dict[str, Any]: A dictionary containing detailed performance metrics.
         """
         return self.metrics.get_metrics_dict()
 
     def process_task(self, task: ConversationTask) -> bool:
         """
-        Process a conversation task directly (synchronously).
+        Processes a single task synchronously, bypassing the queue.
 
-        Useful for immediate processing without queueing.
+        Useful for immediate execution needs or testing. Directly calls the
+        internal `_process_task` method.
 
         Args:
-            task: The conversation task to process
+            task: The `ConversationTask` to process.
 
         Returns:
-            bool: True if processing was successful, False otherwise
+            bool: True if the task completed successfully (TaskResult.SUCCESS),
+                  False otherwise.
         """
         try:
             result = self._process_task(task)
@@ -1036,17 +1002,18 @@ class ConversationWorker(Thread):
         self, conversation_id: Optional[int], message: str, speaker: str
     ) -> Optional[str]:
         """
-        Submit a message for processing and return a task ID.
+        Creates and enqueues a standard conversation task to add a message.
 
-        This is a convenience method that creates a task and enqueues it.
+        Sets the task context to trigger response generation by default.
 
         Args:
-            conversation_id: ID of the conversation, or None for a new conversation
-            message: The message to process
-            speaker: The speaker of the message
+            conversation_id: The target conversation ID, or None to start a new one.
+            message: The message text.
+            speaker: The speaker identifier.
 
         Returns:
-            Optional[str]: Task ID if successfully queued, None otherwise
+            Optional[str]: The generated unique task ID if enqueuing was successful,
+                           otherwise None.
         """
         try:
             task_id = f"task_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"

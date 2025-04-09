@@ -34,6 +34,16 @@ class ModelState:
     _failure_threshold_reached: bool = False
 
     @classmethod
+    def get_model_name(cls) -> str:
+        """Returns the configured model name."""
+        return cls._model_name
+
+    @classmethod
+    def is_initialized(cls) -> bool:
+        """Checks if the model and tokenizer are initialized."""
+        return cls._initialized
+
+    @classmethod
     def set_model(cls, model_name: str) -> None:
         """
         Set the model to use for text generation.
@@ -52,41 +62,50 @@ class ModelState:
         Returns:
             True if initialization was successful, False otherwise
         """
-        if cls._initialized:
+        if cls.is_initialized():
             return True
 
         if cls._failure_threshold_reached:
+            print(
+                f"Model initialization skipped: Failure threshold ({cls._max_failures}) reached."
+            )
             return False
 
         try:
             # Load tokenizer with explicit type annotation
-            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)  # type: ignore
-            assert cls.tokenizer is not None
+            cls.tokenizer = AutoTokenizer.from_pretrained(cls._model_name)
+            assert cls.tokenizer is not None, "Tokenizer loading returned None"
 
             # Load model with appropriate configuration
-            cls.model = AutoModelForCausalLM.from_pretrained(  # type: ignore
+            cls.model = AutoModelForCausalLM.from_pretrained(
                 cls._model_name,
-                device_map=cls._device,
+                device_map=str(cls._device),
                 torch_dtype=(
                     torch.float16 if cls._device.type == "cuda" else torch.float32
                 ),
             )
+            assert cls.model is not None, "Model loading returned None"
+
             cls._initialized = True
+            print(
+                f"Model '{cls._model_name}' initialized successfully on {cls._device}."
+            )
             return True
         except Exception as e:
-            print(f"Model initialization failed: {str(e)}")
+            print(f"Model initialization failed for '{cls._model_name}': {str(e)}")
             cls._inference_failures += 1
             if cls._inference_failures >= cls._max_failures:
                 cls._failure_threshold_reached = True
+                print(
+                    f"Failure threshold ({cls._max_failures}) reached. Disabling model."
+                )
             return False
 
     @classmethod
     def generate_text(
         cls,
         prompt: str,
-        max_new_tokens: Optional[
-            int
-        ] = 64,  # using 64 during testing to ensure reasonable performance time
+        max_new_tokens: Optional[int] = 64,
         temperature: float = 0.7,
         num_beams: int = 3,
     ) -> Optional[str]:
@@ -107,85 +126,63 @@ class ModelState:
 
         # Safety check - both must be initialized
         if cls.tokenizer is None or cls.model is None:
+            print("Error: Tokenizer or model is None after initialization attempt.")
             return None
 
         try:
             # Create input tensors
             input_tokens = cls.tokenizer(prompt, return_tensors="pt")
             input_ids = input_tokens["input_ids"]
-            input_ids = (
-                input_ids.to(cls._device)
-                if isinstance(input_ids, torch.Tensor)
-                else torch.tensor(input_ids, device=cls._device)
-            )
+            input_ids = input_ids.to(cls._device)
 
-            # Handle attention mask if present
             attention_mask = None
             if "attention_mask" in input_tokens:
-                attention_mask = input_tokens["attention_mask"]
-                attention_mask = (
-                    attention_mask.to(cls._device)
-                    if isinstance(attention_mask, torch.Tensor)
-                    else torch.tensor(attention_mask, device=cls._device)
-                )
+                attention_mask = input_tokens["attention_mask"].to(cls._device)
 
             # Configure generation parameters
             gen_kwargs: Dict[str, Any] = {
                 "temperature": temperature,
                 "num_beams": num_beams,
+                "do_sample": temperature > 0,
             }
-            # Use model's max length if max_new_tokens is None
-            if max_new_tokens is None:
-                if hasattr(cls.model.config, "max_position_embeddings"):  # type: ignore
-                    # Account for context length by subtracting input length
-                    input_length = input_ids.shape[1]
-                    model_max_length = getattr(
-                        cls.model.config, "max_position_embeddings", 2048  # type: ignore
-                    )
-                    gen_kwargs["max_new_tokens"] = model_max_length - input_length
-                else:
-                    # Fallback to a reasonable default if max length not specified
-                    gen_kwargs["max_new_tokens"] = 1024
-            else:
-                gen_kwargs["max_new_tokens"] = max_new_tokens
 
-            # Set pad_token_id if eos_token_id exists and is usable
-            if (
-                hasattr(cls.tokenizer, "eos_token_id")
-                and getattr(cls.tokenizer, "eos_token_id", None) is not None
-            ):
-                # Handle different possible types of eos_token_id
-                eos_token_id: Any = cls.tokenizer.eos_token_id  # type: ignore
-                if isinstance(eos_token_id, int):
-                    gen_kwargs["pad_token_id"] = eos_token_id
-                elif isinstance(eos_token_id, str) and eos_token_id.isdigit():
-                    gen_kwargs["pad_token_id"] = int(eos_token_id)
-                elif (
-                    isinstance(eos_token_id, list)
-                    and eos_token_id
-                    and isinstance(eos_token_id[0], int)
-                ):
-                    gen_kwargs["pad_token_id"] = eos_token_id[0]
+            # Calculate max_length carefully
+            input_length = input_ids.shape[1]
+            model_max_length = 2048
+            if hasattr(cls.model.config, "max_position_embeddings"):
+                model_max_length = getattr(
+                    cls.model.config, "max_position_embeddings", model_max_length
+                )
+
+            if max_new_tokens is None:
+                gen_kwargs["max_length"] = model_max_length
+            else:
+                gen_kwargs["max_length"] = min(
+                    input_length + max_new_tokens, model_max_length
+                )
+
+            # Handle pad_token_id carefully
+            if cls.tokenizer.pad_token_id is None:
+                if cls.tokenizer.eos_token_id is not None:
+                    cls.tokenizer.pad_token_id = cls.tokenizer.eos_token_id
+                    gen_kwargs["pad_token_id"] = cls.tokenizer.eos_token_id
+                else:
+                    print(
+                        "Warning: Tokenizer has no pad_token_id or eos_token_id. Generation might be unstable."
+                    )
+            else:
+                gen_kwargs["pad_token_id"] = cls.tokenizer.pad_token_id
 
             # Generate text
-            outputs = cls.model.generate(  # type: ignore
-                input_ids=input_ids, attention_mask=attention_mask, **gen_kwargs
-            )
+            with torch.no_grad():
+                outputs = cls.model.generate(
+                    input_ids=input_ids, attention_mask=attention_mask, **gen_kwargs
+                )
 
             # Process the output
-            result = ""
-            if isinstance(outputs, torch.Tensor):
-                output_ids = outputs[0].tolist()  # type: ignore[attr-defined]
-                result = cls.tokenizer.decode(  # type: ignore
-                    output_ids, skip_special_tokens=True
-                )
-            else:
-                # For other output types
-                result = cls.tokenizer.decode(outputs[0], skip_special_tokens=True)  # type: ignore
-
-            # Remove the prompt from the result
-            if result.startswith(prompt):
-                result = result[len(prompt) :]
+            output_ids = outputs[0] if outputs.ndim > 1 else outputs
+            newly_generated_ids = output_ids[input_length:]
+            result = cls.tokenizer.decode(newly_generated_ids, skip_special_tokens=True)
 
             return result.strip()
 
@@ -193,7 +190,10 @@ class ModelState:
             cls._inference_failures += 1
             if cls._inference_failures >= cls._max_failures:
                 cls._failure_threshold_reached = True
-            print(f"Text generation failed: {str(e)}")
+                print(
+                    f"Failure threshold ({cls._max_failures}) reached. Disabling model."
+                )
+            print(f"Text generation failed: {str(e)}", exc_info=True)
             return None
 
     def query(

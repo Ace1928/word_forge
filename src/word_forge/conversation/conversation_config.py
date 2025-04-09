@@ -18,6 +18,7 @@ Architecture:
     └─────┴─────┴─────┴───────┴─────┘
 """
 
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cached_property
@@ -70,14 +71,14 @@ class ConversationConfig:
     # Status tracking
     status_values: ConversationStatusMap = field(
         default_factory=lambda: {
-            "active": "ACTIVE",
-            "pending": "PENDING REVIEW",
-            "completed": "COMPLETED",
-            "archived": "ARCHIVED",
-            "deleted": "DELETED",
+            "active": ConversationStatusValue.ACTIVE,
+            "pending": ConversationStatusValue.PENDING,
+            "completed": ConversationStatusValue.COMPLETED,
+            "archived": ConversationStatusValue.ARCHIVED,
+            "deleted": ConversationStatusValue.DELETED,
         }
     )
-    default_status: ConversationStatusValue = "active"
+    default_status: ConversationStatusValue = ConversationStatusValue.ACTIVE
 
     # Metadata schema
     required_metadata: Set[str] = field(
@@ -114,7 +115,10 @@ class ConversationConfig:
     ENV_VARS: ClassVar[EnvMapping] = {
         "WORD_FORGE_CONVERSATION_MAX_HISTORY": ("max_history_length", int),
         "WORD_FORGE_CONVERSATION_DEFAULT_STATUS": ("default_status", str),
-        "WORD_FORGE_CONVERSATION_AUTO_ARCHIVE": ("enable_auto_archiving", bool),
+        "WORD_FORGE_CONVERSATION_AUTO_ARCHIVE": (
+            "enable_auto_archiving",
+            lambda v: v.lower() == "true",
+        ),
         "WORD_FORGE_CONVERSATION_RETENTION_POLICY": (
             "default_retention_policy",
             ConversationRetentionPolicy,
@@ -172,7 +176,12 @@ class ConversationConfig:
         Returns:
             ConversationMetadataSchema: Template with all required fields
         """
-        return {field: None for field in self.required_metadata}
+        defaults: Dict[str, Any] = {
+            "conversation_id": None,
+            "created_at": time.time(),
+            "user_id": None,
+        }
+        return {field: defaults.get(field) for field in self.required_metadata}
 
     def with_retention_policy(
         self, policy: ConversationRetentionPolicy

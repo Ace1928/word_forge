@@ -1,18 +1,26 @@
+import logging  # Import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, cast
 
 import nltk  # type: ignore
+from nltk import Tree  # type: ignore
 from nltk.corpus import wordnet as wn  # type: ignore
+from nltk.corpus.reader.wordnet import Lemma as WordNetLemma  # type: ignore
+from nltk.corpus.reader.wordnet import Synset as WordNetSynset
+from nltk.stem import WordNetLemmatizer  # type: ignore
 
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.database_manager import DBManager
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset
 from word_forge.queue.queue_manager import QueueManager
+
+# Configure logger for this module
+logger = logging.getLogger(__name__)
 
 # Download required NLTK resources preemptively and silently
 REQUIRED_NLTK_RESOURCES = frozenset(
@@ -101,7 +109,7 @@ class TermExtractor:
     def __init__(self) -> None:
         """Initialize the term extractor with necessary NLP components."""
         self._stop_words: FrozenSet[str] = frozenset(
-            nltk.corpus.stopwords.words("english")
+            nltk.corpus.stopwords.words("english")  # type: ignore
         )
         self._common_words: FrozenSet[str] = frozenset(
             [
@@ -129,7 +137,7 @@ class TermExtractor:
                 "than",
             ]
         )
-        self._lemmatizer = nltk.stem.WordNetLemmatizer()
+        self._lemmatizer: WordNetLemmatizer = nltk.stem.WordNetLemmatizer()  # type: ignore
 
     @lru_cache(maxsize=1024)
     def _get_wordnet_pos(self, treebank_tag: str) -> str:
@@ -176,7 +184,7 @@ class TermExtractor:
 
         try:
             # Process text with advanced NLP techniques
-            sentences = nltk.sent_tokenize(text_to_parse)  # type: ignore
+            sentences: List[str] = nltk.sent_tokenize(text_to_parse)  # type: ignore
             for sentence in sentences:
                 self._process_sentence(
                     sentence, discovered_terms, multiword_expressions, named_entities
@@ -188,7 +196,10 @@ class TermExtractor:
 
         except Exception as e:
             # Fallback to regex-only results if NLP processing fails
-            print(f"Advanced NLP processing failed, using regex fallback: {str(e)}")
+            logger.warning(
+                f"Advanced NLP processing failed, using regex fallback: {str(e)}",
+                exc_info=True,
+            )
 
         # Filter out problematic terms
         filtered_terms = self._filter_terms(
@@ -259,27 +270,24 @@ class TermExtractor:
             discovered_terms: Set to add component terms to
         """
         try:
-            # Type annotation to help the type checker with nltk.ne_chunk
-            from typing import List, Tuple, cast
-
-            from nltk import Tree  # type: ignore
-
-            chunked = nltk.ne_chunk(tagged)  # type: ignore
-            for subtree in chunked:  # type: ignore
-                if isinstance(subtree, Tree):
-                    # Explicitly cast the leaves to the correct type
-                    leaves = cast(List[Tuple[str, str]], subtree.leaves())
+            chunked: Tree = nltk.ne_chunk(tagged)  # type: ignore
+            for subtree in chunked:
+                if isinstance(subtree, Tree) and hasattr(subtree, "label"):
+                    leaves: List[Tuple[str, str]] = cast(
+                        List[Tuple[str, str]], subtree.leaves()
+                    )
                     entity = " ".join(word for word, _ in leaves)
                     if len(entity) > 3:  # Filter out very short entities
                         entity_lower = entity.lower()
                         named_entities.add(entity_lower)
                         # Also add individual terms from the entity
                         for word in entity_lower.split():
-                            if len(word) >= 3 and word not in self._stop_words:
-                                discovered_terms.add(word)
+                            lemma = self._lemmatizer.lemmatize(word)
+                            if len(lemma) >= 3 and lemma not in self._stop_words:
+                                discovered_terms.add(lemma)
         except Exception as e:
             # Soft fail for NER - continue with other extraction methods
-            print(f"Named entity recognition failed: {str(e)}")
+            logger.warning(f"Named entity recognition failed: {str(e)}", exc_info=True)
 
     def _extract_multiword_expressions(
         self, tagged: List[Tuple[str, str]], multiword_expressions: Set[str]
@@ -342,15 +350,10 @@ class TermExtractor:
             - Limits result set size to 200 terms to prevent downstream overload
             - Silently continues on WordNet lookup failures (term not found, etc.)
         """
-        # Import with type annotations for the type checker
-        from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
-
         semantic_terms: Set[str] = set()
-        # Process only a subset of terms to prevent excessive computation
         term_sample = list(base_terms)[:75]
 
-        # Local helper function for processing WordNet lemmas consistently
-        def _process_lemma(lemma: Lemma) -> None:
+        def _process_lemma(lemma: WordNetLemma) -> None:
             """Extract and normalize a lemma name, adding to results if valid."""
             lemma_name = lemma.name()
             if not isinstance(lemma_name, str):
@@ -360,14 +363,14 @@ class TermExtractor:
             processed_name = lemma_name.replace("_", " ").lower()
 
             # Only include terms meeting minimum length requirement
-            if len(processed_name) >= 3:
+            if len(processed_name) >= 3 and processed_name.replace(" ", "").isalpha():
                 semantic_terms.add(processed_name)
 
         # Process each base term
         for base_term in term_sample:
             try:
                 # Retrieve all synsets (word senses) for the term
-                synsets: List[Synset] = wn.synsets(base_term)  # type: ignore
+                synsets: List[WordNetSynset] = wn.synsets(base_term)  # type: ignore
                 for synset in synsets:
                     # 1. Process direct synonyms from the synset
                     for lemma in synset.lemmas():  # type: ignore
@@ -383,13 +386,17 @@ class TermExtractor:
                         for lemma in hyponym.lemmas():  # type: ignore
                             _process_lemma(lemma)  # type: ignore
 
-            except (LookupError, AttributeError, ValueError):
-                # Common failures: term not in WordNet, invalid synset structure
-                # Silently continue to process remaining terms
+            except (LookupError, AttributeError, ValueError, TypeError):
+                continue
+            except Exception as unexpected_e:
+                logger.warning(
+                    f"Unexpected error during WordNet lookup for '{base_term}': {unexpected_e}",
+                    exc_info=True,
+                )
                 continue
 
         # Limit returned set to prevent overwhelming downstream processing
-        return set(sorted(semantic_terms)[:200])
+        return set(list(semantic_terms)[:200])
 
     def _filter_terms(
         self,
@@ -543,7 +550,9 @@ class ParserRefiner:
 
         except Exception as e:
             self.stats.increment_error()
-            print(f"Error processing word '{term_lower}': {str(e)}")
+            logger.error(
+                f"Error processing word '{term_lower}': {str(e)}", exc_info=True
+            )
             return False
 
     def _extract_all_definitions(self, dataset: LexicalDataset) -> List[str]:
@@ -559,22 +568,30 @@ class ParserRefiner:
         combined_definitions: Set[str] = set()
 
         # WordNet definitions
-        for wn_data in dataset["wordnet_data"]:
+        for wn_data in dataset.get("wordnet_data", []):  # Use .get for safety
             defn = wn_data.get("definition", "")
             if defn:
                 combined_definitions.add(defn)
 
         # ODict / OpenDictData
-        odict_def = dataset["odict_data"].get("definition", "")
+        odict_data = dataset.get("odict_data", {})  # Use .get
+        odict_def = (
+            odict_data.get("definition", "") if isinstance(odict_data, dict) else ""
+        )
         if odict_def and odict_def != "Not Found":
             combined_definitions.add(odict_def)
 
-        open_dict_def = dataset["opendict_data"].get("definition", "")
+        opendict_data = dataset.get("opendict_data", {})  # Use .get
+        open_dict_def = (
+            opendict_data.get("definition", "")
+            if isinstance(opendict_data, dict)
+            else ""
+        )
         if open_dict_def and open_dict_def != "Not Found":
             combined_definitions.add(open_dict_def)
 
         # Dbnary definitions
-        for item in dataset["dbnary_data"]:
+        for item in dataset.get("dbnary_data", []):  # Use .get
             defn = item.get("definition", "")
             if defn:
                 combined_definitions.add(defn)
@@ -591,8 +608,9 @@ class ParserRefiner:
         Returns:
             Part of speech string, or empty string if not available
         """
-        if dataset["wordnet_data"]:
-            return dataset["wordnet_data"][0].get("part_of_speech", "")
+        wordnet_data = dataset.get("wordnet_data", [])  # Use .get
+        if wordnet_data and isinstance(wordnet_data, list) and wordnet_data[0]:
+            return wordnet_data[0].get("part_of_speech", "")
         return ""
 
     def _extract_usage_examples(self, dataset: LexicalDataset) -> List[str]:
@@ -608,13 +626,13 @@ class ParserRefiner:
         usage_examples: Set[str] = set()
 
         # WordNet examples
-        for wn_data in dataset["wordnet_data"]:
+        for wn_data in dataset.get("wordnet_data", []):  # Use .get
             for ex in wn_data.get("examples", []):
                 if ex:
                     usage_examples.add(ex)
 
         # Add auto-generated example sentence
-        auto_ex = dataset["example_sentence"]
+        auto_ex = dataset.get("example_sentence", "")  # Use .get
         if auto_ex and "No example available" not in auto_ex:
             usage_examples.add(auto_ex)
 
@@ -628,25 +646,19 @@ class ParserRefiner:
             term: The base term
             dataset: Comprehensive lexical dataset for the term
         """
-        # Counter for deduplication of identical relationship types
         relationship_cache: Dict[Tuple[str, str, str], bool] = {}
-
-        # Track discovered terms for batch processing
         discovered_terms: Set[str] = set()
 
         # Process WordNet relationships
-        for wn_data in dataset["wordnet_data"]:
-            # Synonyms
+        for wn_data in dataset.get("wordnet_data", []):
             for syn in wn_data.get("synonyms", []):
                 syn_lower = syn.lower()
-                if syn_lower != term:  # Skip self-references
+                if syn_lower != term:
                     rel_key = (term, syn_lower, "synonym")
                     if rel_key not in relationship_cache:
                         self.db_manager.insert_relationship(term, syn_lower, "synonym")
                         relationship_cache[rel_key] = True
                         discovered_terms.add(syn_lower)
-
-            # Antonyms
             for ant in wn_data.get("antonyms", []):
                 ant_lower = ant.lower()
                 rel_key = (term, ant_lower, "antonym")
@@ -656,7 +668,7 @@ class ParserRefiner:
                     discovered_terms.add(ant_lower)
 
         # OpenThesaurus synonyms
-        for s in dataset["openthesaurus_synonyms"]:
+        for s in dataset.get("openthesaurus_synonyms", []):
             s_lower = s.lower()
             if s_lower != term:
                 rel_key = (term, s_lower, "synonym")
@@ -666,7 +678,7 @@ class ParserRefiner:
                     discovered_terms.add(s_lower)
 
         # Thesaurus synonyms
-        for s in dataset["thesaurus_synonyms"]:
+        for s in dataset.get("thesaurus_synonyms", []):
             s_lower = s.lower()
             if s_lower != term:
                 rel_key = (term, s_lower, "synonym")
@@ -676,7 +688,7 @@ class ParserRefiner:
                     discovered_terms.add(s_lower)
 
         # Translations from DBnary
-        for item in dataset["dbnary_data"]:
+        for item in dataset.get("dbnary_data", []):
             translation = item.get("translation", "")
             if translation:
                 trans_lower = translation.lower()
@@ -703,7 +715,6 @@ class ParserRefiner:
             definition: The term's consolidated definition
             examples: List of usage examples for the term
         """
-        # Extract valuable terms
         priority_terms, standard_terms = self.term_extractor.extract_terms(
             definition, examples, term
         )
@@ -725,9 +736,17 @@ class ParserRefiner:
         Returns:
             Dictionary containing processing statistics
         """
+        queue_size = self.queue_manager.size if self.queue_manager else 0
+        unique_words = 0
+        if self.queue_manager and hasattr(self.queue_manager, "_seen_items"):
+            try:
+                unique_words = len(self.queue_manager._seen_items)  # type: ignore
+            except TypeError:
+                pass
+
         return self.stats.as_dict(
-            queue_size=self.queue_manager.size,
-            unique_words=len(list(self.queue_manager._seen_items)),  # type: ignore
+            queue_size=queue_size,
+            unique_words=unique_words,
         )
 
     def shutdown(self) -> None:
