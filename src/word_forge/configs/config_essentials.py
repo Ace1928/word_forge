@@ -102,8 +102,8 @@ E = TypeVar("E")  # Error type for Result pattern
 # Project Paths
 # ==========================================
 
-# Define project paths with explicit typing for better IDE support
-PROJECT_ROOT: Final[Path] = Path("/home/lloyd/eidosian_forge/word_forge")
+# Define project paths relative to this file for portability
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 DATA_ROOT: Final[Path] = PROJECT_ROOT / "data"
 LOGS_ROOT: Final[Path] = PROJECT_ROOT / "logs"
 
