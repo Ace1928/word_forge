@@ -3,8 +3,6 @@
 import importlib
 from pathlib import Path
 
-import pytest
-
 
 def test_get_full_path_joins_data_dir(monkeypatch, tmp_path):
     """Verify :func:`Config.get_full_path` joins ``parser.data_dir`` with a relative path."""

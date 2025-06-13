@@ -1,3 +1,4 @@
+
 # Ignore SQLite databases and temp files created during demos
 word_forge.sqlite
 **/word_forge.sqlite

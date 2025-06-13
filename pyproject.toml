@@ -46,6 +46,9 @@ target-version = [ "py38" ]
 profile     = "black"
 line_length = 88
 
+[tool.ruff]
+line-length = 88
+
 [tool.mypy]
 python_version           = "3.8"
 warn_return_any          = true
