@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [ "black", "isort", "mypy", "pytest", "pytest-cov" ]
+dev = [ "numpy>=1.23.0", "black", "isort", "mypy", "pytest", "pytest-cov" ]
 
 [tool.setuptools.packages.find]
 where   = [ "src" ]
