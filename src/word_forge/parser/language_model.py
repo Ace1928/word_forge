@@ -1,8 +1,6 @@
 # Import PathLike for model paths
 from os import PathLike
 from typing import Any, Dict, List, Optional, Union, cast
-
-import nltk  # type: ignore
 import torch
 from transformers import (  # type: ignore
     AutoModelForCausalLM,
@@ -13,9 +11,6 @@ from transformers import (  # type: ignore
     PreTrainedTokenizerFast,
 )
 
-# Download NLTK data quietly
-nltk.download("wordnet", quiet=True)  # type: ignore
-nltk.download("omw-1.4", quiet=True)  # type: ignore
 
 
 class ModelState:

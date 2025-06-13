@@ -151,15 +151,8 @@ def read_jsonl_file(
 # ============================================================================
 @functools.lru_cache(maxsize=1024)
 def get_synsets(word: str) -> List[Synset]:
-    """
-    Retrieve synsets from WordNet for a given word with efficient caching.
-
-    Args:
-        word: Word to look up in WordNet
-
-    Returns:
-        List of WordNet synsets for the word
-    """
+    """Retrieve synsets from WordNet for a given word with efficient caching."""
+    ensure_nltk_data()
     return wn.synsets(word)  # type: ignore
 
 
