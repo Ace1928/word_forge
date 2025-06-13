@@ -25,7 +25,7 @@ from word_forge.conversation.conversation_types import (
     ModelContext,
     ReflexiveModel,  # Import ReflexiveModel protocol
 )
-from word_forge.parser.language_model import ModelState as LLMInterface
+from word_forge.parser.language_model import ModelState
 
 # --- Mock Implementations ---
 
@@ -166,7 +166,11 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
     stylistic adjustments.
     """
 
-    def __init__(self, initial_state: Optional[EidosianIdentityState] = None):
+    def __init__(
+        self,
+        initial_state: Optional[EidosianIdentityState] = None,
+        llm_state: Optional[ModelState] = None,
+    ):
         """Initializes the identity model with an optional starting state.
 
         Args:
@@ -174,8 +178,8 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
                            If None, a default state is created.
         """
         self.state = initial_state or EidosianIdentityState()
-        # Ensure LLM is initialized (or attempt initialization)
-        if not LLMInterface.initialize():
+        self.llm_state = llm_state or ModelState()
+        if not self.llm_state.initialize():
             print(
                 "Warning: EidosianIdentityModel requires LLM, but initialization failed."
             )
@@ -214,13 +218,13 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
                 error.code, error.message, error.context, error.category, error.severity
             )
 
-        if not LLMInterface.is_initialized():
+        if not self.llm_state.is_initialized():
             error = Error.create(
                 message="LLM required for EidosianIdentityModel refinement is not available.",
                 code="LLM_NOT_INITIALIZED",
                 category=ErrorCategory.RESOURCE,
                 severity=ErrorSeverity.ERROR,
-                context={"model_name": LLMInterface.get_model_name()},
+                context={"model_name": self.llm_state.get_model_name()},
             )
             return Result[str].failure(
                 error.code, error.message, error.context, error.category, error.severity
@@ -370,7 +374,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         self, prompt: str, max_tokens_factor: float = 1.2, temperature: float = 0.5
     ) -> Result[str]:
         """Helper method to call the LLM and handle potential errors."""
-        if not LLMInterface.is_initialized():
+        if not self.llm_state.is_initialized():
             error = Error.create(
                 message="LLM is not available.",
                 code="LLM_NOT_INITIALIZED",
@@ -385,7 +389,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         estimated_max_tokens = int(len(prompt.split()) * max_tokens_factor) + 50
         final_max_tokens = max(50, estimated_max_tokens)
 
-        llm_result = LLMInterface.generate_text(
+        llm_result = self.llm_state.generate_text(
             prompt, max_new_tokens=final_max_tokens, temperature=temperature
         )
 
@@ -466,7 +470,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             print(
                 f"EidosianIdentity: Performing periodic self-reflection (Interaction #{self.state.interaction_count})..."
             )
-            if not LLMInterface.is_initialized():
+            if not self.llm_state.is_initialized():
                 error = Error.create(
                     message="LLM needed for state update is not available.",
                     code="LLM_NOT_INITIALIZED",
