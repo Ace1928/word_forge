@@ -13,7 +13,12 @@ import networkx as nx
 
 from word_forge.config import config  # Import global config
 from word_forge.database.database_manager import DBManager
-from word_forge.exceptions import GraphError, GraphVisualizationError, NodeNotFoundError
+from word_forge.exceptions import (
+    GraphAnalysisError,
+    GraphError,
+    GraphVisualizationError,
+    NodeNotFoundError,
+)
 from word_forge.graph.graph_manager import GraphManager
 
 # Define type aliases for clarity
