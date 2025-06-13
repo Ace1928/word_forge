@@ -183,7 +183,7 @@ class StateTracker:
         """Record a successful word processing."""
         with self._lock:
             self.processed_count += 1
-            self.last_update = time.time()
+            self._last_update = time.time()
 
     def record_error(self, error_type: str) -> None:
         """Record an error occurrence."""
@@ -218,6 +218,12 @@ class StateTracker:
         """Get the current worker state."""
         with self._lock:
             return self._state
+
+    @property
+    def last_update(self) -> Optional[float]:
+        """Timestamp of the last successful processing operation."""
+        with self._lock:
+            return self._last_update
 
 
 class ErrorTracker:
