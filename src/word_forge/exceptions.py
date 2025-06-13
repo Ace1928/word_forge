@@ -5,19 +5,20 @@ This module provides base exceptions used throughout the Word Forge system,
 ensuring consistent error handling and avoiding circular imports.
 """
 
+from typing import Optional
+
 # Generic Exception Classes
 
 
 class WordForgeError(Exception):
     """Base exception for all Word Forge errors."""
 
-    def __init__(self, message: str, cause: Exception) -> None:
-        """
-        Initialize with detailed error message and optional cause.
+    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+        """Initialize with detailed error message and optional cause.
 
         Args:
             message: Error description with context
-            cause: Original exception that caused this error
+            cause: Optional; original exception that caused this error
         """
         super().__init__(message)
         self.__cause__ = cause
