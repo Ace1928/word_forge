@@ -1,3 +1,13 @@
+# Ignore SQLite databases and temp files created during demos
+word_forge.sqlite
+**/word_forge.sqlite
+**/test_database.sqlite
+**/demo.sqlite
+**/temp*_demo_db.sqlite*
+*.sqlite-shm
+*.sqlite-wal
+vector_demo/
+db_worker_demo/
 *.egg-info/
 
 # Ignore Python cache and compiled files
