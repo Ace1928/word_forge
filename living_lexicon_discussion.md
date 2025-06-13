@@ -945,7 +945,7 @@ first of all it should be made in /home/lloyd/eidosian_forge/word_forge
 We also want the repo structure to be set up like /word_forge/src/word_forge
 
 So that in the main repo folder we can have all sorts of stuff
-And so that if we want to implement in other langauges we can have it in another fodler in the src directory.
+And so that if we want to implement in other languages we can have it in another folder in the src directory.
 
 We also already have a venv
 
