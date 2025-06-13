@@ -18,7 +18,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install black
+          # Ensure required dev tools are available even when not
+          # listed in requirements.txt
+          pip install black pytest
       - name: Lint
         run: black --check .
       - name: Test
