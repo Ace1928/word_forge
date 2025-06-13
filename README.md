@@ -1,5 +1,11 @@
 # Word Forge
 
+Word Forge is a lexical data processing and enrichment system designed to analyze and transform textual datasets. The project focuses on modular and documented components that follow functional design principles.
+
+## License
+
+This project is licensed under the terms of the [MIT License](LICENSE).
+=======
 Word Forge is a modular system for building and enriching a lexical database. It integrates multiple resources, including WordNet, OpenThesaurus and transformer-based models, to collect definitions, examples and semantic relations.
 
 ## NLTK Data
@@ -58,3 +64,4 @@ pytest
 ```
 
 Tests live in the `tests/` directory and use `pytest`. Configuration for pytest is stored in `pyproject.toml`.
+
