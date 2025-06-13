@@ -1,11 +1,24 @@
 # Word Forge
+Word Forge is a lexical data processing and enrichment system.
+
+## Packaging
+
+The project relies on **setuptools** to build distribution artifacts. Running
+
+```bash
+python -m build
+```
+
+will create the standard `src/word_forge.egg-info` directory along with wheel
+and source distributions. Because this directory is generated automatically, it
+is excluded from version control via `.gitignore`.
 
 Word Forge is a lexical data processing and enrichment system designed to analyze and transform textual datasets. The project focuses on modular and documented components that follow functional design principles.
 
 ## License
 
 This project is licensed under the terms of the [MIT License](LICENSE).
-=======
+
 Word Forge is a modular system for building and enriching a lexical database. It integrates multiple resources, including WordNet, OpenThesaurus and transformer-based models, to collect definitions, examples and semantic relations.
 
 ## NLTK Data
