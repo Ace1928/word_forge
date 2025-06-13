@@ -24,11 +24,6 @@ class DummyEmotionManager:
         pass
 emotion_module.EmotionManager = DummyEmotionManager
 sys.modules["word_forge.emotion.emotion_manager"] = emotion_module
-graph_module = types.ModuleType("word_forge.graph.graph_manager")
-class DummyGraphManager:
-    pass
-graph_module.GraphManager = DummyGraphManager
-sys.modules["word_forge.graph.graph_manager"] = graph_module
 
 from types import SimpleNamespace
 
@@ -63,10 +58,22 @@ class StubEmotionManager:
 
 
 class StubGraphManager:
+    """Lightweight stand-in for :class:`GraphManager` used in tests."""
+
     pass
 
 
-def create_manager(tmp_path):
+def create_manager(tmp_path, monkeypatch):
+    """Instantiate :class:`ConversationManager` with stub dependencies.
+
+    The real :class:`GraphManager` is patched to ``StubGraphManager`` to avoid
+    heavy initialization during unit tests while leaving other tests untouched.
+    """
+
+    import word_forge.conversation.conversation_manager as cm_module
+
+    monkeypatch.setattr(cm_module, "GraphManager", StubGraphManager, raising=False)
+
     db_path = tmp_path / "conv.db"
     dbm = DBManager(db_path=db_path)
     return ConversationManager(
@@ -81,8 +88,8 @@ def create_manager(tmp_path):
     )
 
 
-def test_conversation_flow(tmp_path):
-    cm = create_manager(tmp_path)
+def test_conversation_flow(tmp_path, monkeypatch):
+    cm = create_manager(tmp_path, monkeypatch)
     conv_id = cm.start_conversation().unwrap()
     add_res = cm.add_message(conv_id, "User", "Hello", generate_response=False)
     assert add_res.is_success
@@ -93,15 +100,15 @@ def test_conversation_flow(tmp_path):
     assert end_res.is_success
 
 
-def test_end_nonexistent_conversation(tmp_path):
-    cm = create_manager(tmp_path)
+def test_end_nonexistent_conversation(tmp_path, monkeypatch):
+    cm = create_manager(tmp_path, monkeypatch)
     res = cm.end_conversation(999)
     assert res.is_failure
     assert res.error and res.error.code == "CONVERSATION_NOT_FOUND"
 
 
-def test_add_message_empty(tmp_path):
-    cm = create_manager(tmp_path)
+def test_add_message_empty(tmp_path, monkeypatch):
+    cm = create_manager(tmp_path, monkeypatch)
     conv_id = cm.start_conversation().unwrap()
     with pytest.raises(ValueError):
         cm.add_message(conv_id, "User", " ")
