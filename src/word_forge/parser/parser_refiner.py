@@ -473,6 +473,7 @@ class ParserRefiner:
         queue_manager: Optional[QueueManager[str]] = None,
         data_dir: str = "data",
         model_name: Optional[str] = None,
+        llm_state: Optional[ModelState] = None,
     ):
         """
         Initialize the ParserRefiner with database and queue managers.
@@ -489,9 +490,9 @@ class ParserRefiner:
         self.term_extractor = TermExtractor()
         self.stats = ProcessingStatistics()
 
-        # Configure model if specified
-        if model_name:
-            ModelState.set_model(model_name)
+        self.llm_state = llm_state or ModelState(
+            model_name or "qwen/qwen2.5-0.5b-instruct"
+        )
 
         # Initialize thread pool for parallel processing
         self._executor = ThreadPoolExecutor(max_workers=5)
@@ -523,6 +524,7 @@ class ParserRefiner:
                 dbnary_path=self.resources.get_path("dbnary"),
                 opendict_path=self.resources.get_path("opendict"),
                 thesaurus_path=self.resources.get_path("thesaurus"),
+                model_state=self.llm_state,
             )
 
             # Extract and consolidate word information
