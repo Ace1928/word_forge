@@ -20,4 +20,3 @@ def test_get_full_path_joins_data_dir(monkeypatch, tmp_path):
     importlib.reload(cfg)
     result = cfg.config.get_full_path("example.txt")
     assert result == Path(tmp_path) / "example.txt"
-
