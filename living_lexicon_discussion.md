@@ -1396,6 +1396,7 @@ This script integrates multiple open-source lexical resources including WordNet,
 OpenThesaurus, ODict, Dbnary, OpenDictData, and Thesaurus by Zaibacu to create a
 comprehensive lexical dataset for a given word. It also generates example sentences
 using the transformer model (qwen2.5-0.5b-instruct).
+WordNet data is retrieved automatically on first use via `ensure_nltk_data()`.
 
 EIDOSIAN CODE POLISHING PROTOCOL v3.14.15 applied.
 """

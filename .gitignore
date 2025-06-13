@@ -1,1 +1,23 @@
 *.egg-info/
+
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+
+# Ignore SQLite database files and logs
+*.sqlite
+*-wal
+*-shm
+
+# Ignore backups produced by database workers
+# (db_worker_demo/backups/ directory)
+db_worker_demo/backups/*
+
+# Ignore IDE/editor settings
+*.code-workspace
+.vscode/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.code-workspace
