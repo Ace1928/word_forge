@@ -18,6 +18,8 @@ from rdflib import Graph
 from rdflib import Literal as RdfLiteral  # Import Literal and URIRef
 from rdflib.query import ResultRow  # Import ResultRow for type hinting
 
+from word_forge.utils.nltk_utils import ensure_nltk_data
+
 from word_forge.configs.config_essentials import (
     DbnaryEntry,
     DictionaryEntry,
