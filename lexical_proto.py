@@ -32,12 +32,12 @@ from typing import (
 )
 
 # Type ignores for external libraries without type stubs
-import nltk  # type: ignore
 import torch
 from nltk.corpus import wordnet as wn  # type: ignore
 from nltk.corpus.reader.wordnet import Lemma as WNLemma  # type: ignore
 from nltk.corpus.reader.wordnet import Synset as WNSynset  # type: ignore
 from rdflib import Graph, Literal, URIRef  # type: ignore
+from word_forge.utils.nltk_utils import ensure_nltk_data
 from transformers import (  # type: ignore
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -106,17 +106,6 @@ class LexicalResourceError(Exception):
     pass
 
 
-# Ensure required NLTK data is available
-def download_nltk_data() -> None:
-    """Download required NLTK data packages if not already available."""
-    nltk.download("wordnet", quiet=True)  # type: ignore
-    nltk.download("omw-1.4", quiet=True)  # type: ignore
-
-
-# Download required data
-download_nltk_data()
-
-
 def get_synsets(
     word: str,
     pos: Optional[str] = None,
@@ -135,6 +124,7 @@ def get_synsets(
     Returns:
         List of synsets for the word.
     """
+    ensure_nltk_data()
     # The type of the result from wn.synsets is not well-defined,
     # but we know it's a list of synset objects
     result = wn.synsets(word, pos, lang, check_exceptions)

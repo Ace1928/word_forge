@@ -1,5 +1,13 @@
 # Word Forge
 
+Word Forge is a modular system for building and enriching a lexical database. It integrates multiple resources, including WordNet, OpenThesaurus and transformer-based models, to collect definitions, examples and semantic relations.
+
+## NLTK Data
+
+Several components rely on datasets distributed with NLTK. These files are downloaded automatically the first time Word Forge accesses WordNet or related features via `ensure_nltk_data()`.
+
+Ensure the running environment has internet access on the initial run so these resources can be retrieved.
+
 Word Forge is a modular lexical processing and enrichment toolkit. It builds a comprehensive lexical network while providing vector search, emotion analysis, and graph capabilities. The project embraces the "Eidosian" design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.
 
 ## Installation
@@ -50,4 +58,3 @@ pytest
 ```
 
 Tests live in the `tests/` directory and use `pytest`. Configuration for pytest is stored in `pyproject.toml`.
-
