@@ -405,7 +405,12 @@ def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
 #                       EXAMPLE GENERATION FUNCTIONS
 # ============================================================================
 def generate_example_usage(
-    word: str, definition: str, synonyms: List[str], antonyms: List[str], pos: str
+    word: str,
+    definition: str,
+    synonyms: List[str],
+    antonyms: List[str],
+    pos: str,
+    model_state: ModelState,
 ) -> str:
     """
     Generate an example sentence for a word using a language model.
@@ -416,6 +421,7 @@ def generate_example_usage(
         synonyms: List of word synonyms
         antonyms: List of word antonyms
         pos: Part of speech
+        model_state: Initialized :class:`ModelState` instance to use for text generation
 
     Returns:
         A generated example sentence or an error message
@@ -431,8 +437,8 @@ def generate_example_usage(
         f"Example Sentence: "
     )
 
-    # Use the improved model generation method
-    full_text = ModelState.generate_text(prompt)
+    # Use the provided model state for generation
+    full_text = model_state.generate_text(prompt)
 
     if not full_text:
         return f"Could not generate example for '{word}'."
@@ -469,6 +475,7 @@ def create_lexical_dataset(
     dbnary_path: str = "data/dbnary.ttl",
     opendict_path: str = "data/opendict.json",
     thesaurus_path: str = "data/thesaurus.jsonl",
+    model_state: ModelState = None,
 ) -> LexicalDataset:
     """
     Create a comprehensive dataset of lexical information for a word.
@@ -480,10 +487,14 @@ def create_lexical_dataset(
         dbnary_path: Path to DBnary data
         opendict_path: Path to OpenDict data
         thesaurus_path: Path to Thesaurus data
+        model_state: Optional :class:`ModelState` used to generate example sentences
 
     Returns:
         Dictionary containing comprehensive lexical data from all sources
     """
+    if model_state is None:
+        model_state = ModelState()
+
     wordnet_data = get_wordnet_data(word)
 
     dataset: LexicalDataset = {
@@ -506,6 +517,7 @@ def create_lexical_dataset(
             synonyms=dataset["openthesaurus_synonyms"],
             antonyms=first_entry.get("antonyms", []),
             pos=first_entry.get("part_of_speech", ""),
+            model_state=model_state,
         )
         dataset["example_sentence"] = example
     else:

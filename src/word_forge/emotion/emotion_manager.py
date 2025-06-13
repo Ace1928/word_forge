@@ -60,7 +60,7 @@ from word_forge.emotion.emotion_types import (
 )
 
 # LLM Interface
-from word_forge.parser.language_model import ModelState as LLMInterface
+from word_forge.parser.language_model import ModelState
 
 logger = logging.getLogger(__name__)
 VADER_AVAILABLE = True
@@ -185,11 +185,10 @@ class EmotionManager:
         # Initialize LLM if available
         try:
             if LLM_AVAILABLE:
-                # Actually test LLM initialization rather than just assuming
-                if LLMInterface.initialize():
-                    self.llm_interface = LLMInterface()
+                self.llm_interface = ModelState()
+                if self.llm_interface.initialize():
                     logger.info(
-                        f"LLM initialized successfully: {LLMInterface.model_name}"
+                        f"LLM initialized successfully: {self.llm_interface.model_name}"
                     )
                 else:
                     self.llm_interface = None
