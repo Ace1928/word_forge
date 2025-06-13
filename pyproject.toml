@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A lexical data processing and enrichment system"
 readme = "README.md"
 authors = [ { name = "Eidosian Forge Team", email = "info@example.com" } ]
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [ "black", "isort", "mypy", "pytest", "pytest-cov", "ruff" ]
+dev = [ "numpy>=1.23.0", "black", "isort", "mypy", "pytest", "pytest-cov" ]
 
 [tool.setuptools.packages.find]
 where   = [ "src" ]
