@@ -661,6 +661,21 @@ class GraphAnalysis:
         )  # Create a new graph to add filtered nodes/edges
         emotional_subgraph.add_nodes_from(base_subgraph.nodes(data=True))  # Copy nodes
 
+        context_weights_local: Optional[Dict[str, float]] = None
+        if context:
+            if isinstance(context, str):
+                context_weights_local = self.manager._emotional_contexts.get(
+                    context, {}
+                )
+                if not context_weights_local:
+                    self.logger.warning(
+                        f"Context '{context}' not found. Proceeding without weights."
+                    )
+            elif isinstance(context, dict):
+                context_weights_local = context
+            else:
+                raise TypeError("context must be a string or a dictionary of weights")
+
         for u, v, data in base_subgraph.edges(data=True):
             is_emotional = data.get("dimension") == "emotional"
             if not is_emotional:
@@ -671,15 +686,19 @@ class GraphAnalysis:
             if emotional_types is not None and rel_type not in emotional_types:
                 continue
 
-            # Filter by minimum intensity (weight)
+            # Determine weight, possibly modified by context
             weight = data.get("weight", 0.0)
+            if context_weights_local:
+                modifier = context_weights_local.get(
+                    rel_type, context_weights_local.get("default", 1.0)
+                )
+                weight *= modifier
+                data = dict(data)
+                data["weight"] = weight
+
+            # Filter by minimum intensity (after applying context)
             if weight < min_intensity:
                 continue
-
-            # TODO: Apply context filtering/weighting here when implemented
-            # if context:
-            #    apply_context_logic(data, context)
-            #    if should_exclude_based_on_context(data): continue
 
             # If all filters pass, add the edge
             emotional_subgraph.add_edge(u, v, **data)
