@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [ "black", "isort", "mypy", "pytest", "pytest-cov" ]
+dev = [ "black", "isort", "mypy", "pytest", "pytest-cov", "ruff" ]
 
 [tool.setuptools.packages.find]
 where   = [ "src" ]
@@ -45,6 +45,9 @@ target-version = [ "py38" ]
 [tool.isort]
 profile     = "black"
 line_length = 88
+
+[tool.ruff]
+line-length = 88
 
 [tool.mypy]
 python_version           = "3.8"
