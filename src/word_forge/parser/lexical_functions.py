@@ -204,7 +204,6 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
         # Cast the result to Optional[str]
         pos_result: Optional[str] = typing.cast(Optional[str], synset.pos())
         pos: str = pos_result if pos_result is not None else ""
-        pos: str = pos_result if pos_result is not None else ""
 
         results.append(
             WordnetEntry(
