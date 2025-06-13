@@ -387,7 +387,7 @@ class GraphManager:
             edge_dimension = dimension or self._determine_dimension(relationship)
             edge_weight = weight if weight is not None else rel_props.get("weight", 1.0)
             edge_color = color or rel_props.get(
-                "color", self._config.get_relationship_color(relationship)
+                "color", self.config.get_relationship_color(relationship)
             )
             edge_bidirectional = (
                 bidirectional

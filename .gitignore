@@ -15,3 +15,8 @@ db_worker_demo/backups/*
 *.code-workspace
 .vscode/
 
+# Python artifacts
+__pycache__/
+*.pyc
+*.code-workspace
+

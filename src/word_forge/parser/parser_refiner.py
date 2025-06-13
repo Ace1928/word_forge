@@ -18,8 +18,8 @@ from word_forge.database.database_manager import DBManager
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset
 from word_forge.queue.queue_manager import QueueManager
+from word_forge.utils.nltk_utils import ensure_nltk_data
 
-# Configure logger for this module
 logger = logging.getLogger(__name__)
 
 # Download required NLTK resources preemptively and silently
@@ -36,14 +36,23 @@ REQUIRED_NLTK_RESOURCES = frozenset(
 )
 
 
+_initialized = False
+
+
 def _ensure_nltk_resources() -> None:
     """Initialize all required NLTK resources silently."""
+    global _initialized
+    if _initialized:
+        return
+    ensure_nltk_data()
     for resource in REQUIRED_NLTK_RESOURCES:
+        if resource in {"wordnet", "omw-1.4"}:
+            continue
         nltk.download(resource, quiet=True)  # type: ignore
+    _initialized = True
 
 
-# Preload NLTK resources at module initialization
-_ensure_nltk_resources()
+# Resources will be initialized on first use
 
 
 @dataclass
@@ -108,6 +117,7 @@ class TermExtractor:
 
     def __init__(self) -> None:
         """Initialize the term extractor with necessary NLP components."""
+        _ensure_nltk_resources()
         self._stop_words: FrozenSet[str] = frozenset(
             nltk.corpus.stopwords.words("english")  # type: ignore
         )
@@ -350,6 +360,7 @@ class TermExtractor:
             - Limits result set size to 200 terms to prevent downstream overload
             - Silently continues on WordNet lookup failures (term not found, etc.)
         """
+        ensure_nltk_data()
         semantic_terms: Set[str] = set()
         term_sample = list(base_terms)[:75]
 
@@ -473,6 +484,7 @@ class ParserRefiner:
         queue_manager: Optional[QueueManager[str]] = None,
         data_dir: str = "data",
         model_name: Optional[str] = None,
+        llm_state: Optional[ModelState] = None,
     ):
         """
         Initialize the ParserRefiner with database and queue managers.
@@ -489,9 +501,9 @@ class ParserRefiner:
         self.term_extractor = TermExtractor()
         self.stats = ProcessingStatistics()
 
-        # Configure model if specified
-        if model_name:
-            ModelState.set_model(model_name)
+        self.llm_state = llm_state or ModelState(
+            model_name or "qwen/qwen2.5-0.5b-instruct"
+        )
 
         # Initialize thread pool for parallel processing
         self._executor = ThreadPoolExecutor(max_workers=5)
@@ -523,6 +535,7 @@ class ParserRefiner:
                 dbnary_path=self.resources.get_path("dbnary"),
                 opendict_path=self.resources.get_path("opendict"),
                 thesaurus_path=self.resources.get_path("thesaurus"),
+                model_state=self.llm_state,
             )
 
             # Extract and consolidate word information

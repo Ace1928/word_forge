@@ -150,25 +150,50 @@ class GraphLayout:
             self.logger.debug("No new nodes provided for incremental layout update.")
             return
 
-        # Current simple strategy: Recompute the full layout.
-        # This is often necessary for force-directed layouts to stabilize.
-        # TODO: Explore true incremental layouts for specific algorithms if performance demands.
         self.logger.info(
-            f"Received {len(new_node_ids)} new nodes. Recomputing full layout for stability."
+            f"Received {len(new_node_ids)} new nodes. Updating layout incrementally."
         )
+
+        default_algo = self._config.default_layout
+        algo_str = (
+            default_algo.value if hasattr(default_algo, "value") else default_algo
+        )
+
+        if algo_str != "force_directed" or not self.manager._positions:
+            # Fallback to full recompute for unsupported algorithms or missing positions
+            self.logger.debug(
+                "Incremental update not supported for this layout. Recomputing full layout."
+            )
+            self.compute_layout(algorithm=algo_str)
+            return
+
         try:
-            # Ensure the default layout from config is used correctly
-            default_algo = self._config.default_layout
-            algo_str = (
-                default_algo.value if hasattr(default_algo, "value") else default_algo
+            fixed_nodes = [n for n in self.manager.g.nodes if n not in new_node_ids]
+            pos_init = {
+                n: self.manager._positions[n]
+                for n in fixed_nodes
+                if n in self.manager._positions
+            }
+            k_value = getattr(self._config, "layout_k", None)
+            iterations = getattr(self._config, "layout_iterations", 50)
+            updated_pos = nx.spring_layout(
+                self.manager.g,
+                pos=pos_init,
+                fixed=fixed_nodes,
+                dim=self.manager.dimensions,
+                k=k_value,
+                iterations=iterations,
             )
-            self.compute_layout(algorithm=algo_str)  # Pass string value
-        except GraphLayoutError as e:
+            self.manager._positions.update(cast(PositionDict, updated_pos))
+            self.logger.info(
+                f"Incremental layout update complete. Total nodes positioned: {len(self.manager._positions)}."
+            )
+        except Exception as e:
             self.logger.error(
-                f"Incremental layout update (via full recompute) failed: {e}"
+                f"Incremental layout update failed: {e}",
+                exc_info=True,
             )
-            # Re-raise or handle as needed
-            raise
+            raise GraphLayoutError(f"Incremental layout update failed: {e}") from e
 
     def _get_layout_function(self, algorithm_name: str, dimensions: int) -> callable:
         """
