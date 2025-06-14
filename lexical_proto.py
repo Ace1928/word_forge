@@ -577,18 +577,35 @@ def create_lexical_dataset(
         A dictionary with combined lexical data from all sources.
     """
     # Get WordNet data first as it's the core component
+    print("[1/5] Loading WordNet data...")
     wordnet_data = get_wordnet_data(word)
+    print(f"Loaded {len(wordnet_data)} WordNet entries")
 
     # Create the dataset with data from all sources
     data: LexicalDataset = {
         "word": word,
         "wordnet_data": wordnet_data,
-        "openthesaurus_synonyms": get_openthesaurus_data(word, openthesaurus_path),
-        "odict_data": get_odict_data(word, odict_path),
-        "dbnary_data": get_dbnary_data(word, dbnary_path),
-        "opendict_data": get_opendictdata(word, opendict_path),
-        "thesaurus_synonyms": get_thesaurus_data(word, thesaurus_path),
+        "openthesaurus_synonyms": [],
+        "odict_data": {},
+        "dbnary_data": {},
+        "opendict_data": {},
+        "thesaurus_synonyms": [],
     }
+
+    print("[2/5] Loading OpenThesaurus synonyms...")
+    data["openthesaurus_synonyms"] = get_openthesaurus_data(word, openthesaurus_path)
+    print(f"Loaded {len(data['openthesaurus_synonyms'])} OpenThesaurus synonyms")
+
+    print("[3/5] Loading ODict definitions...")
+    data["odict_data"] = get_odict_data(word, odict_path)
+
+    print("[4/5] Loading Dbnary data...")
+    data["dbnary_data"] = get_dbnary_data(word, dbnary_path)
+
+    print("[5/5] Loading OpenDictData definitions...")
+    data["opendict_data"] = get_opendictdata(word, opendict_path)
+
+    data["thesaurus_synonyms"] = get_thesaurus_data(word, thesaurus_path)
 
     # Only generate example if we have WordNet data available
     if wordnet_data:
