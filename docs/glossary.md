@@ -14,3 +14,4 @@ should be added in alphabetical order.
 - **ChromaDB** — vector database used for embedding storage and similarity search.
 - **WordNet** — lexical database from Princeton that supplies synonyms and sense relationships.
 
+

@@ -10,4 +10,6 @@ This guide provides a high-level overview of Word Forge's components.
 - **queue** — orchestrates worker tasks for asynchronous processing.
 
 Refer to `upgrade_plan.md` for planned improvements and the `docs/migration` directory for historical notes.
+
 See `glossary.md` for definitions of key terms. Docstring templates for new code reside in the `docs/templates` directory.
+

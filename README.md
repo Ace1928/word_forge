@@ -27,6 +27,8 @@ A `requirements.txt` file is also provided if your tooling requires it:
 ```bash
 pip install -r requirements.txt
 ```
+The runtime requirements include `networkx` for graph operations and `numpy` for
+vector math.
 
 Runtime packages include `networkx` for graph operations and `numpy` for vector
 math.
