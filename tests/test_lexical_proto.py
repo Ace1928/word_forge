@@ -93,7 +93,6 @@ from lexical_proto import (
 )
 
 
-
 def test_file_exists(tmp_path):
     p = tmp_path / "t.txt"
     assert not file_exists(p)
