@@ -12,7 +12,6 @@ from transformers import (  # type: ignore
 )
 
 
-
 class ModelState:
     """Encapsulates a language model and tokenizer instance.
 

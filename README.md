@@ -43,6 +43,28 @@ from word_forge.config import config
 print(config.database_url)
 ```
 
+### Command Line Interface
+
+The package installs a `word_forge` executable. Launch the
+automatic parser and worker pool by running:
+
+```bash
+word_forge start
+```
+
+Use `--help` to see available options. For example, to run for five
+minutes with custom seed words:
+
+```bash
+word_forge start apple banana --minutes 5
+```
+
+You can also control the number of worker threads:
+
+```bash
+word_forge start apple --minutes 5 --workers 2
+```
+
 ## Development and Contributing
 
 Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.
