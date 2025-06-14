@@ -38,6 +38,9 @@ def _setup_logging(level: str = "INFO") -> None:
 
 
 def start(
+    seed_words: Optional[Iterable[str]] = None,
+    run_minutes: Optional[float] = None,
+    worker_count: int = 4,
     seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[float] = None
 ) -> None:
     """Launch the Word Forge processing pipeline.
@@ -55,6 +58,12 @@ def start(
     from word_forge.database.database_manager import DBManager
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager
+    from word_forge.queue.queue_worker import (
+        ParallelWordProcessor,
+        WordProcessor,
+        WorkerPoolConfig,
+    )
+    from word_forge.configs.config_essentials import measure_execution
     from word_forge.queue.queue_worker import ParallelWordProcessor, WordProcessor
 
     _setup_logging()
@@ -66,7 +75,8 @@ def start(
     processor = WordProcessor(
         db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER
     )
-    worker_pool = ParallelWordProcessor(processor, logger=LOGGER)
+    pool_config = WorkerPoolConfig(worker_count=worker_count)
+    worker_pool = ParallelWordProcessor(processor, config=pool_config, logger=LOGGER)
 
     seeds = (
         list(seed_words)
@@ -76,6 +86,13 @@ def start(
     for term in seeds:
         queue_manager.enqueue(term)
 
+    with measure_execution("forge.start", {"workers": worker_count}) as metrics:
+        worker_pool.start()
+    LOGGER.info(
+        "Worker pool started with %d workers in %.1fms",
+        worker_count,
+        metrics.duration_ms,
+    )
     worker_pool.start()
 
     start_time = time.time()
@@ -113,11 +130,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         help="Run for a limited number of minutes",
     )
+    start_parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of worker threads",
+    )
+
 
     args = parser.parse_args(argv)
 
     if args.command == "start":
-        start(args.words, run_minutes=args.minutes)
+        start(args.words, run_minutes=args.minutes, worker_count=args.workers)
     else:
         parser.print_help()
 

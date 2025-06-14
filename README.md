@@ -59,6 +59,12 @@ minutes with custom seed words:
 word_forge start apple banana --minutes 5
 ```
 
+You can also control the number of worker threads:
+
+```bash
+word_forge start apple --minutes 5 --workers 2
+```
+
 ## Development and Contributing
 
 Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.

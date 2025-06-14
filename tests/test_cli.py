@@ -61,3 +61,18 @@ def test_cli_start_exists():
     assert callable(module.start)
     assert hasattr(module, "main")
     assert callable(module.main)
+
+def test_cli_argument_parsing(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    captured = {}
+
+    def fake_start(words=None, run_minutes=None, worker_count=4):
+        captured["args"] = {
+            "words": words,
+            "minutes": run_minutes,
+            "workers": worker_count,
+        }
+
+    monkeypatch.setattr(module, "start", fake_start)
+    module.main(["start", "test", "--minutes", "1", "--workers", "2"])
+    assert captured["args"] == {"words": ["test"], "minutes": 1.0, "workers": 2}
