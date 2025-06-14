@@ -1,9 +1,31 @@
 import sys
 from pathlib import Path
+import types
+
+# Stub numpy before importing project modules
+numpy_stub = types.ModuleType("numpy")
+
+
+def _zeros(size, dtype=None):
+    length = size if isinstance(size, int) else size[0]
+    return [0.0] * length
+
+
+def _allclose(a, b, **_):
+    return a == b
+
+
+numpy_stub.float32 = float
+numpy_stub.zeros = _zeros
+numpy_stub.allclose = _allclose
+
+sys.modules["numpy"] = numpy_stub
+numpy_typing = types.ModuleType("numpy.typing")
+numpy_typing.NDArray = object
+numpy_stub.typing = numpy_typing
+sys.modules["numpy.typing"] = numpy_typing
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import types
 
 chromadb = types.ModuleType("chromadb")
 chromadb.Client = lambda *a, **k: None
