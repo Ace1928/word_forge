@@ -7,5 +7,7 @@ This package contains the core modules of the Word Forge project.
 - `emotion`: emotional analysis utilities
 - `graph`: semantic network utilities
 - `parser`: text parsing tools
+- `vectorizer`: embedding generation utilities
+- `queue`: worker coordination helpers
 
 All modules aim to be self-documenting and follow the Eidosian pattern of modular, functional design.

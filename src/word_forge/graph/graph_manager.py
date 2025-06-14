@@ -335,6 +335,9 @@ class GraphManager:
         if not relationship or not isinstance(relationship, str):
             raise ValueError("Relationship type must be a non-empty string.")
 
+        # Placeholder for future incremental layout support
+        # new_nodes_added: List[WordId] = []
+
         with self._graph_lock:
             # --- Resolve Source Node ---
             if isinstance(source_term_or_id, str):
