@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -11,8 +12,14 @@ nltk = types.ModuleType("nltk")
 corpus = types.ModuleType("nltk.corpus")
 wordnet_mod = types.ModuleType("nltk.corpus.wordnet")
 reader_mod = types.ModuleType("nltk.corpus.reader.wordnet")
+
+
 class Lemma: ...
+
+
 class Synset: ...
+
+
 reader_mod.Lemma = Lemma
 reader_mod.Synset = Synset
 corpus.wordnet = wordnet_mod
@@ -26,15 +33,27 @@ sys.modules["nltk.corpus.reader.wordnet"] = reader_mod
 
 sys.modules["torch"] = types.ModuleType("torch")
 rdflib_mod = types.ModuleType("rdflib")
+
+
 class Graph: ...
+
+
 class Literal: ...
+
+
 class URIRef: ...
+
+
 rdflib_mod.Graph = Graph
 rdflib_mod.Literal = Literal
 rdflib_mod.URIRef = URIRef
 sys.modules["rdflib"] = rdflib_mod
 transformers_mod = types.ModuleType("transformers")
+
+
 class Dummy: ...
+
+
 transformers_mod.AutoModelForCausalLM = Dummy
 transformers_mod.AutoTokenizer = Dummy
 transformers_mod.PreTrainedModel = Dummy
@@ -43,10 +62,20 @@ transformers_mod.PreTrainedTokenizerFast = Dummy
 sys.modules["transformers"] = transformers_mod
 transformers_mod.generation = types.ModuleType("transformers.generation")
 utils_mod = types.ModuleType("transformers.generation.utils")
+
+
 class GenerateBeamDecoderOnlyOutput: ...
+
+
 class GenerateBeamEncoderDecoderOutput: ...
+
+
 class GenerateDecoderOnlyOutput: ...
+
+
 class GenerateEncoderDecoderOutput: ...
+
+
 utils_mod.GenerateBeamDecoderOnlyOutput = GenerateBeamDecoderOnlyOutput
 utils_mod.GenerateBeamEncoderDecoderOutput = GenerateBeamEncoderDecoderOutput
 utils_mod.GenerateDecoderOnlyOutput = GenerateDecoderOnlyOutput

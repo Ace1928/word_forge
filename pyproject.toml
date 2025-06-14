@@ -40,6 +40,9 @@ include = [ "word_forge*" ]
 [tool.setuptools.package-data]
 "word_forge" = [ "py.typed", "*.json", "*.jsonl", "*.ttl" ]
 
+[project.scripts]
+word_forge = "word_forge.forge:main"
+
 [tool.black]
 line-length    = 88
 target-version = [ "py38" ]
