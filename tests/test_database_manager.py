@@ -28,3 +28,10 @@ def test_insert_word_empty_term(tmp_path):
     dbm = DBManager(db_path=db_path)
     with pytest.raises(ValueError):
         dbm.insert_or_update_word("")
+
+
+def test_word_exists(tmp_path):
+    dbm = DBManager(db_path=tmp_path / "test.db")
+    assert not dbm.word_exists("alpha")
+    dbm.insert_or_update_word("alpha")
+    assert dbm.word_exists("alpha")

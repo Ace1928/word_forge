@@ -92,9 +92,6 @@ from lexical_proto import (
     read_jsonl_file,
 )
 
-import os
-import pytest
-
 
 def test_file_exists(tmp_path):
     p = tmp_path / "t.txt"

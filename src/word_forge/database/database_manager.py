@@ -784,6 +784,16 @@ class DBManager:
         except QueryError as e:
             raise QueryError(f"Database error while retrieving ID for term '{term}'", e)
 
+    def word_exists(self, term: str) -> bool:
+        """Return ``True`` if the given term already exists in the database."""
+
+        self.ensure_tables_exist()
+        try:
+            result = self.execute_scalar(SQL_GET_WORD_ID, (term,))
+            return result is not None
+        except QueryError:
+            return False
+
     def insert_relationship(
         self, base_term: str, related_term: str, relationship_type: str
     ) -> bool:
