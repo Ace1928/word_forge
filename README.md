@@ -80,6 +80,8 @@ Style and tooling are managed through **Black** and **Ruff**. Tests are implemen
 
 - Format code with `black`.
 - Lint with `ruff`.
+- Install `pre-commit` and run `pre-commit install` to automatically format and
+  lint changed files on each commit.
 - Run tests with `pytest`.
 
 Pull requests should pass all checks in the CI workflow.

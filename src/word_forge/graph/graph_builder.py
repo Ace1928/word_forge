@@ -105,9 +105,7 @@ class GraphBuilder:
                     f"Skipping node with ID {word_id} due to missing term."
                 )
             if idx % max(total_words // 10, 1) == 0:
-                self.logger.info(
-                    "Node build progress: %d/%d", idx, total_words
-                )
+                self.logger.info("Node build progress: %d/%d", idx, total_words)
 
         # --- Edge Addition ---
         total_edges = len(relationships)
@@ -135,9 +133,7 @@ class GraphBuilder:
             # Add edge with calculated properties
             self._add_relationship_edge(word_id, related_id, rel_type)
             if idx % max(total_edges // 10, 1) == 0:
-                self.logger.info(
-                    "Edge build progress: %d/%d", idx, total_edges
-                )
+                self.logger.info("Edge build progress: %d/%d", idx, total_edges)
 
         self.logger.info(
             f"Graph built: {self.manager.g.number_of_nodes()} nodes, {self.manager.g.number_of_edges()} edges."

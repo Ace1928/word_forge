@@ -1,10 +1,9 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import pytest
 from word_forge.queue.queue_manager import QueueManager, TaskPriority
-from word_forge.configs.config_essentials import Result
 
 
 def test_enqueue_and_dequeue_basic():
@@ -30,4 +29,3 @@ def test_priority_order():
     assert qm.enqueue("high", priority=TaskPriority.HIGH).unwrap()
     assert qm.dequeue().unwrap() == "high"
     assert qm.dequeue().unwrap() == "low"
-
