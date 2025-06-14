@@ -62,6 +62,11 @@ def start(
         WordProcessor,
         WorkerPoolConfig,
     )
+    from word_forge.queue.worker_manager import WorkerManager
+    from word_forge.graph.graph_manager import GraphManager
+    from word_forge.graph.graph_worker import GraphWorker
+    from word_forge.vectorizer.vector_store import VectorStore
+    from word_forge.vectorizer.vector_worker import VectorWorker
     from word_forge.configs.config_essentials import measure_execution
 
     _setup_logging()
@@ -76,6 +81,17 @@ def start(
     pool_config = WorkerPoolConfig(worker_count=worker_count)
     worker_pool = ParallelWordProcessor(processor, config=pool_config, logger=LOGGER)
 
+    graph_manager = GraphManager(db_manager=db_manager)
+    graph_worker = GraphWorker(graph_manager=graph_manager)
+
+    vector_store = VectorStore(db_manager=db_manager)
+    vector_worker = VectorWorker(db=db_manager, vector_store=vector_store, embedder="MiniLM")
+
+    manager = WorkerManager(logger=LOGGER)
+    manager.register(worker_pool)
+    manager.register(graph_worker)
+    manager.register(vector_worker)
+
     seeds = (
         list(seed_words)
         if seed_words is not None
@@ -85,10 +101,9 @@ def start(
         queue_manager.enqueue(term)
 
     with measure_execution("forge.start", {"workers": worker_count}) as metrics:
-        worker_pool.start()
+        manager.start_all()
         LOGGER.info(
-            "Worker pool started with %d workers in %.1fms",
-            worker_count,
+            "Workers started in %.1fms",
             metrics.duration_ms,
         )
 
@@ -113,13 +128,12 @@ def start(
                 and (time.time() - start_time) > run_minutes * 60
             ):
                 break
-            if queue_manager.is_empty and not worker_pool._active:
-                # Nothing left to process and workers stopped
+            if queue_manager.is_empty and not manager.any_alive():
                 break
     except KeyboardInterrupt:
         LOGGER.info("Interrupted by user")
     finally:
-        worker_pool.stop()
+        manager.stop_all()
         parser_refiner.shutdown()
         db_manager.close()
         LOGGER.info("Word Forge stopped")
