@@ -23,7 +23,11 @@ class _Graph:
         return list(self._nodes.items()) if data else list(self._nodes.keys())
 
     def edges(self, data=False):
-        return [(*k, v) for k, v in self._edges.items()] if data else list(self._edges.keys())
+        return (
+            [(*k, v) for k, v in self._edges.items()]
+            if data
+            else list(self._edges.keys())
+        )
 
     def number_of_nodes(self):
         return len(self._nodes)
@@ -101,6 +105,7 @@ alg_comm.louvain_communities = lambda *a, **k: []
 alg_mod.community = alg_comm
 networkx_stub.algorithms = alg_mod
 
+
 def set_node_attributes(G, attr_dict):
     for node, attrs in attr_dict.items():
         if node in G._nodes:
@@ -115,6 +120,7 @@ sys.modules["networkx.algorithms.community"] = alg_comm
 sys.modules["networkx.nx_agraph"] = nx_agraph
 
 numpy_stub = types.ModuleType("numpy")
+
 
 def _zeros(size, dtype=None):
     length = size if isinstance(size, int) else size[0]

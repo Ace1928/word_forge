@@ -7,3 +7,4 @@ rdflib>=6.0.0
 transformers>=4.15.0
 networkx>=2.8.0
 numpy>=1.23.0
+pre-commit
