@@ -62,7 +62,6 @@ def test_cli_start_exists():
     assert hasattr(module, "main")
     assert callable(module.main)
 
-
 def test_cli_argument_parsing(monkeypatch):
     module = importlib.import_module("word_forge.forge")
     captured = {}
