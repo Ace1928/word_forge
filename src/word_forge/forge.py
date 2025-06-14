@@ -93,9 +93,21 @@ def start(
         )
 
     start_time = time.time()
+    last_report = start_time
     try:
         while True:
             time.sleep(0.5)
+            if time.time() - last_report >= 5:
+                status = worker_pool.get_status()
+                stats = status["stats"]
+                LOGGER.info(
+                    "Progress - processed:%d success:%d errors:%d queue:%d",
+                    stats.get("processed_count", 0),
+                    stats.get("success_count", 0),
+                    stats.get("error_count", 0),
+                    status.get("queue_size", 0),
+                )
+                last_report = time.time()
             if (
                 run_minutes is not None
                 and (time.time() - start_time) > run_minutes * 60
