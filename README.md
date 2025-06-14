@@ -9,7 +9,7 @@ methods:
 
 1. **Clone and install locally**
    ```bash
-   git clone https://github.com/EidosianForge/word_forge.git
+   git clone https://github.com/Ace1928/word_forge.git
    cd word_forge
    pip install -e .
    ```
