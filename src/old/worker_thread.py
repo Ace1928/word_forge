@@ -10,7 +10,7 @@ import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
+from typing import Any, Callable, Dict, List, Optional, TypedDict, Union, cast
 
 from word_forge.database.database_manager import DBManager
 from word_forge.graph.graph_manager import GraphManager
@@ -403,7 +403,6 @@ class WordForgeWorker(threading.Thread):
                     word_entry = self.db_manager.get_word_if_exists(term)
                     if word_entry:
                         relationships = word_entry.get("relationships", [])
-                        relationship_count = len(relationships)
                         relationship_counts = self._categorize_relationships(
                             relationships
                         )

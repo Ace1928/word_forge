@@ -3048,7 +3048,6 @@ class GraphManager:
 
         # Analyze paths between emotional nodes
         for source in emotional_nodes:
-            source_term = self.g.nodes[source].get("term", "")
             source_valence = self.g.nodes[source].get("valence", 0)
             source_arousal = self.g.nodes[source].get("arousal", 0)
 

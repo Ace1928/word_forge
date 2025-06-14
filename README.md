@@ -1,8 +1,10 @@
 # Word Forge
 
-Word Forge is an experimental lexical data processing framework. It aggregates natural language resources, analyzes emotional context, and builds a semantic graph for advanced text exploration.
+Word Forge is an experimental lexical data processing framework. It aggregates natural language resources, analyzes emotional context, and builds a semantic graph for advanced text exploration. The project follows **Eidosian** principles: clear layering, self-documenting modules, and functional, testable components.
 
 ## Installation
+
+Word Forge targets Python 3.8 or newer. Install dependencies with:
 
 ```bash
 pip install -r requirements.txt
@@ -18,7 +20,9 @@ from word_forge.config import config
 print(config.database_url)
 ```
 
-## Contributing
+## Development and Contributing
+
+Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.
 
 - Format code with `black`.
 - Lint with `ruff`.
