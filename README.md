@@ -65,6 +65,10 @@ You can also control the number of worker threads:
 word_forge start apple --minutes 5 --workers 2
 ```
 
+While running, the CLI prints periodic progress reports indicating how many
+words have been processed, how many succeeded or failed, and the remaining
+queue size. This provides real‑time insight into long running operations.
+
 ## Development and Contributing
 
 Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.
