@@ -9,6 +9,8 @@ Word Forge targets Python 3.8 or newer. Install dependencies with:
 ```bash
 pip install -r requirements.txt
 ```
+The runtime requirements include `networkx` for graph operations and `numpy` for
+vector math.
 
 ## Usage
 
@@ -29,6 +31,11 @@ Style and tooling are managed through **Black** and **Ruff**. Tests are implemen
 - Run tests with `pytest`.
 
 Pull requests should pass all checks in the CI workflow.
+
+Additional documentation resides in `docs/`. See `glossary.md` for
+terminology. Preferred docstring formats are provided in
+`templates/function_template.md`, `templates/class_template.md`, and
+`templates/module_template.md`.
 
 Word Forge is a collection of tools and demos for building and exploring a lexical knowledge base. The project relies on SQLite for persistent storage but the repository does not ship any generated databases.
 

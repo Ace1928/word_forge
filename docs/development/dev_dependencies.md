@@ -5,6 +5,9 @@
 The following packages are required only for development and testing. They are
 not needed for running Word Forge in production environments.
 
+The main `requirements.txt` lists runtime packages such as `networkx` and
+`numpy` that are needed for graph and vector features.
+
 ```text
 black
 isort
