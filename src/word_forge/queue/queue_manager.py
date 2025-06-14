@@ -18,7 +18,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 from typing import (
     Any,  # Keep Any for ErrorContext context
     Dict,
@@ -110,7 +110,7 @@ class QueueFullError(QueueError):
         self.max_size = max_size
 
 
-class TaskPriority(Enum):
+class TaskPriority(IntEnum):
     """
     Priority levels for queue items.
 
