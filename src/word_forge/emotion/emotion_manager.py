@@ -38,8 +38,17 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
-from textblob import TextBlob  # type: ignore
+try:  # Optional dependencies
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
+    VADER_AVAILABLE = True
+except Exception:  # pragma: no cover - allow missing VADER
+    SentimentIntensityAnalyzer = None  # type: ignore
+    VADER_AVAILABLE = False
+
+try:
+    from textblob import TextBlob  # type: ignore
+except Exception:  # pragma: no cover - allow missing TextBlob
+    TextBlob = None  # type: ignore
 
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_config import (
@@ -63,7 +72,6 @@ from word_forge.emotion.emotion_types import (
 from word_forge.parser.language_model import ModelState
 
 logger = logging.getLogger(__name__)
-VADER_AVAILABLE = True
 LLM_AVAILABLE = True
 
 # Set of positive emotion categories for efficient categorization
