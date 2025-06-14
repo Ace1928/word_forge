@@ -15,7 +15,7 @@ methods:
    ```
 2. **Install directly from Git without cloning**
    ```bash
-   pip install git+https://github.com/EidosianForge/word_forge.git
+   pip install git+https://github.com/Ace1928/word_forge.git
    ```
 
 Development tools (formatter, linter, tests) are available via:
