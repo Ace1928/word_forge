@@ -311,7 +311,6 @@ class GraphManager:
 
         Handles resolving terms to IDs, determining relationship properties
         (dimension, weight, color, etc.), and adding the edge with attributes.
-        Triggers incremental layout update if new nodes were implicitly added.
         Thread-safe.
 
         Args:
@@ -346,8 +345,7 @@ class GraphManager:
                 if source_id is None:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Source term '{source_term_or_id}' not found, adding implicitly.")
-                    # source_id = self.add_word_node(source_term_or_id) # add_word_node handles locking
-                    # new_nodes_added.append(source_id)
+                    # source_id = self.add_word_node(source_term_or_id)  # add_word_node handles locking
                     raise NodeNotFoundError(
                         f"Source term '{source_term_or_id}' not found."
                     )
@@ -364,8 +362,7 @@ class GraphManager:
                 if target_id is None:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Target term '{target_term_or_id}' not found, adding implicitly.")
-                    # target_id = self.add_word_node(target_term_or_id) # add_word_node handles locking
-                    # new_nodes_added.append(target_id)
+                    # target_id = self.add_word_node(target_term_or_id)  # add_word_node handles locking
                     raise NodeNotFoundError(
                         f"Target term '{target_term_or_id}' not found."
                     )
@@ -424,10 +421,6 @@ class GraphManager:
                 self.logger.info(
                     f"Added relationship '{relationship}' between {source_id} and {target_id}."
                 )
-
-            # Trigger layout update if new nodes were added implicitly (if that feature is enabled)
-            # if new_nodes_added:
-            #     self.layout.update_layout_incrementally(new_nodes_added)
 
             return True
 
