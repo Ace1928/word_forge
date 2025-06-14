@@ -11,4 +11,7 @@ should be added in alphabetical order.
   terms with vector search and emotion analysis.
 - **NetworkX** — library used for graph operations and network analysis.
 - **NumPy** — array library providing efficient numeric computation used by vector features.
+- **ChromaDB** — vector database used for embedding storage and similarity search.
+- **WordNet** — lexical database from Princeton that supplies synonyms and sense relationships.
+
 

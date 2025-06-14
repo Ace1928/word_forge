@@ -4,13 +4,34 @@ Word Forge is an experimental lexical data processing framework. It aggregates n
 
 ## Installation
 
-Word Forge targets Python 3.8 or newer. Install dependencies with:
+Word Forge targets Python 3.8 or newer. Choose one of the following install
+methods:
 
+1. **Clone and install locally**
+   ```bash
+   git clone https://github.com/EidosianForge/word_forge.git
+   cd word_forge
+   pip install -e .
+   ```
+2. **Install directly from Git without cloning**
+   ```bash
+   pip install git+https://github.com/EidosianForge/word_forge.git
+   ```
+
+Development tools (formatter, linter, tests) are available via:
+```bash
+pip install -e .[dev]
+```
+
+A `requirements.txt` file is also provided if your tooling requires it:
 ```bash
 pip install -r requirements.txt
 ```
 The runtime requirements include `networkx` for graph operations and `numpy` for
 vector math.
+
+Runtime packages include `networkx` for graph operations and `numpy` for vector
+math.
 
 ## Usage
 
@@ -65,27 +86,21 @@ manager = DBManager(db_path="my_word_forge.sqlite")
 manager.create_tables()
 ```
 
-Word Forge is a lexical data processing and enrichment system.
-
 ## Packaging
 
-The project relies on **setuptools** to build distribution artifacts. Running
+The project relies on **setuptools** to build distribution artifacts.
 
 ```bash
 python -m build
 ```
 
-will create the standard `src/word_forge.egg-info` directory along with wheel
-and source distributions. Because this directory is generated automatically, it
-is excluded from version control via `.gitignore`.
-
-Word Forge is a lexical data processing and enrichment system designed to analyze and transform textual datasets. The project focuses on modular and documented components that follow functional design principles.
+Running this command creates the standard `src/word_forge.egg-info` directory
+along with wheel and source distributions. Because this directory is generated
+automatically, it is excluded from version control via `.gitignore`.
 
 ## License
 
 This project is licensed under the terms of the [MIT License](LICENSE).
-
-Word Forge is a modular system for building and enriching a lexical database. It integrates multiple resources, including WordNet, OpenThesaurus and transformer-based models, to collect definitions, examples and semantic relations.
 
 ## NLTK Data
 
@@ -94,26 +109,6 @@ Several components rely on datasets distributed with NLTK. These files are downl
 Ensure the running environment has internet access on the initial run so these resources can be retrieved.
 
 Word Forge is a modular lexical processing and enrichment toolkit. It builds a comprehensive lexical network while providing vector search, emotion analysis, and graph capabilities. The project embraces the "Eidosian" design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.
-
-## Installation
-
-1. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   ```
-2. Install dependencies using the project metadata:
-   ```bash
-   pip install -e .
-   ```
-   Development tools (formatter, linter, tests) are available via:
-   ```bash
-   pip install -e .[dev]
-   ```
-   A `requirements.txt` file is also provided for environments that require it:
-   ```bash
-   pip install -r requirements.txt
-   ```
 
 ## Quick Start Examples
 
