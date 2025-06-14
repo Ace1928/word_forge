@@ -32,10 +32,14 @@ LOGGER = logging.getLogger("word_forge")
 def _setup_logging(level: str = "INFO") -> None:
     """Configure basic console logging."""
     numeric_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(level=numeric_level, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(
+        level=numeric_level, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
 
 
-def start(seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[float] = None) -> None:
+def start(
+    seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[float] = None
+) -> None:
     """Launch the Word Forge processing pipeline.
 
     Parameters
@@ -59,10 +63,16 @@ def start(seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[floa
     db_manager = DBManager()
     queue_manager: QueueManager[str] = QueueManager()
     parser_refiner = ParserRefiner(db_manager=db_manager, queue_manager=queue_manager)
-    processor = WordProcessor(db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER)
+    processor = WordProcessor(
+        db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER
+    )
     worker_pool = ParallelWordProcessor(processor, logger=LOGGER)
 
-    seeds = list(seed_words) if seed_words is not None else ["language", "knowledge", "system"]
+    seeds = (
+        list(seed_words)
+        if seed_words is not None
+        else ["language", "knowledge", "system"]
+    )
     for term in seeds:
         queue_manager.enqueue(term)
 
@@ -72,7 +82,10 @@ def start(seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[floa
     try:
         while True:
             time.sleep(0.5)
-            if run_minutes is not None and (time.time() - start_time) > run_minutes * 60:
+            if (
+                run_minutes is not None
+                and (time.time() - start_time) > run_minutes * 60
+            ):
                 break
             if queue_manager.is_empty and not worker_pool._active:
                 # Nothing left to process and workers stopped
@@ -94,7 +107,12 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     start_parser = subparsers.add_parser("start", help="Start processing seed words")
     start_parser.add_argument("words", nargs="*", help="Optional seed words")
-    start_parser.add_argument("--minutes", type=float, default=None, help="Run for a limited number of minutes")
+    start_parser.add_argument(
+        "--minutes",
+        type=float,
+        default=None,
+        help="Run for a limited number of minutes",
+    )
 
     args = parser.parse_args(argv)
 

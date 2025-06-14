@@ -11,8 +11,14 @@ nltk = types.ModuleType("nltk")
 corpus = types.ModuleType("nltk.corpus")
 wordnet_mod = types.ModuleType("nltk.corpus.wordnet")
 reader_mod = types.ModuleType("nltk.corpus.reader.wordnet")
+
+
 class Lemma: ...
+
+
 class Synset: ...
+
+
 reader_mod.Lemma = Lemma
 reader_mod.Synset = Synset
 corpus.wordnet = wordnet_mod
@@ -20,7 +26,11 @@ nltk.corpus = corpus
 nltk.download = lambda *a, **k: None
 nltk.Tree = object
 stem_mod = types.ModuleType("nltk.stem")
+
+
 class WordNetLemmatizer: ...
+
+
 stem_mod.WordNetLemmatizer = WordNetLemmatizer
 nltk.stem = stem_mod
 sys.modules["nltk"] = nltk
@@ -33,7 +43,11 @@ sys.modules["nltk.stem"] = stem_mod
 sys.modules.setdefault("torch", types.ModuleType("torch"))
 sys.modules.setdefault("rdflib", types.ModuleType("rdflib"))
 transformers_mod = types.ModuleType("transformers")
+
+
 class Dummy: ...
+
+
 transformers_mod.AutoModelForCausalLM = Dummy
 transformers_mod.AutoTokenizer = Dummy
 transformers_mod.PreTrainedModel = Dummy

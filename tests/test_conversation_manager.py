@@ -1,27 +1,40 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import types
+
 chromadb = types.ModuleType("chromadb")
 chromadb.Client = lambda *a, **k: None
 chromadb.PersistentClient = lambda *a, **k: None
 sys.modules["chromadb"] = chromadb
 sentence_module = types.ModuleType("sentence_transformers")
+
+
 class DummyModel:
     def __init__(self, *a, **k):
         pass
+
     def get_sentence_embedding_dimension(self):
         return 5
+
     def encode(self, *a, **k):
         import numpy as np
+
         return np.zeros(5, dtype=np.float32)
+
+
 sentence_module.SentenceTransformer = DummyModel
 sys.modules["sentence_transformers"] = sentence_module
 
 emotion_module = types.ModuleType("word_forge.emotion.emotion_manager")
+
+
 class DummyEmotionManager:
     def process_message(self, message_id, text):
         pass
+
+
 emotion_module.EmotionManager = DummyEmotionManager
 sys.modules["word_forge.emotion.emotion_manager"] = emotion_module
 
