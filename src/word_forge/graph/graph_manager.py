@@ -278,7 +278,8 @@ class GraphManager:
                 # Node doesn't exist, create new ID and add
                 # Simple ID strategy: max_id + 1 (ensure graph isn't empty)
                 if self.g:
-                    new_id = max(self.g.nodes) + 1 if self.g.nodes else 1
+                    nodes = list(self.g.nodes())
+                    new_id = max(nodes) + 1 if nodes else 1
                 else:
                     new_id = 1
 
@@ -351,7 +352,7 @@ class GraphManager:
                     )
             elif isinstance(source_term_or_id, int):
                 source_id = source_term_or_id
-                if source_id not in self.g:
+                if source_id not in self.g.nodes():
                     raise NodeNotFoundError(f"Source node ID {source_id} not found.")
             else:
                 raise TypeError("source_term_or_id must be str or int.")
@@ -368,7 +369,7 @@ class GraphManager:
                     )
             elif isinstance(target_term_or_id, int):
                 target_id = target_term_or_id
-                if target_id not in self.g:
+                if target_id not in self.g.nodes():
                     raise NodeNotFoundError(f"Target node ID {target_id} not found.")
             else:
                 raise TypeError("target_term_or_id must be str or int.")
@@ -408,9 +409,12 @@ class GraphManager:
             }
 
             # --- Add Edge ---
-            if self.g.has_edge(source_id, target_id):
-                # Handle existing edge (update? ignore? error? depends on policy)
-                # For now, update attributes if edge exists
+            has_edge = (
+                self.g.has_edge(source_id, target_id)
+                if hasattr(self.g, "has_edge")
+                else (source_id, target_id) in self.g.edges()
+            )
+            if has_edge:
                 nx.set_edge_attributes(self.g, {(source_id, target_id): edge_attrs})
                 self.logger.debug(
                     f"Updated existing edge between {source_id} and {target_id}."

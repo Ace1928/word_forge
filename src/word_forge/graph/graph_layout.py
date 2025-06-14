@@ -168,7 +168,7 @@ class GraphLayout:
             return
 
         try:
-            fixed_nodes = [n for n in self.manager.g.nodes if n not in new_node_ids]
+            fixed_nodes = [n for n in self.manager.g.nodes() if n not in new_node_ids]
             pos_init = {
                 n: self.manager._positions[n]
                 for n in fixed_nodes

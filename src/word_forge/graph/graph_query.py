@@ -156,9 +156,9 @@ class GraphQuery:
             Optional[Term]: The term string if the node exists and has a 'term'
                             attribute, else None.
         """
-        if word_id in self.manager.g:
-            term_attr = self.manager.g.nodes[word_id].get("term")
-            # Ensure the attribute is a string
+        if word_id in self.manager.g.nodes():
+            node_attrs = dict(self.manager.g.nodes(data=True))
+            term_attr = node_attrs.get(word_id, {}).get("term")
             return str(term_attr) if term_attr is not None else None
         return None
 

@@ -342,6 +342,7 @@ class VectorWorker(threading.Thread):
         self._current_state = VectorState.STOPPED
         self._status_lock = threading.RLock()
         self._start_time: Optional[float] = None
+        self.last_processed: Optional[float] = None
 
         self.logger = logger or logging.getLogger(__name__)
         self.stats = ProcessingStats()
@@ -370,6 +371,9 @@ class VectorWorker(threading.Thread):
 
                 # Log summary of this processing cycle
                 self._log_cycle_summary()
+
+                # Record completion time
+                self.last_processed = time.time()
 
                 # Wait before next cycle
                 time.sleep(self.poll_interval)
@@ -424,7 +428,7 @@ class VectorWorker(threading.Thread):
 
     def _get_all_words(self) -> List[Word]:
         """
-        Fetch all words from the database.
+        Fetch new or updated words from the database.
 
         Returns:
             List of Word objects containing term, definition, and usage examples
@@ -433,7 +437,10 @@ class VectorWorker(threading.Thread):
             DatabaseError: If database operations fail
         """
         try:
-            rows = self.db.get_all_words()
+            if self.last_processed is None:
+                rows = self.db.get_all_words()
+            else:
+                rows = self.db.get_updated_words(self.last_processed)
             return [self._convert_row_to_word(row) for row in rows]
         except Exception as e:
             self.logger.error(f"Failed to fetch words from database: {str(e)}")

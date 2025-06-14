@@ -519,9 +519,14 @@ class VectorStore:
         Raises:
             DimensionMismatchError: If vector dimensions are incorrect
         """
-        if len(vector.shape) != 1 or vector.shape[0] != self.dimension:
+        length = (
+            len(vector)
+            if not hasattr(vector, "shape")
+            else (vector.shape[0] if len(getattr(vector, "shape")) > 0 else 0)
+        )
+        if length != self.dimension:
             raise DimensionMismatchError(
-                f"{context} dimension {vector.shape[0]} doesn't match expected {self.dimension}"
+                f"{context} dimension {length} doesn't match expected {self.dimension}"
             )
 
     def format_with_instruction(

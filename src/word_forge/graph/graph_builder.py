@@ -111,7 +111,7 @@ class GraphBuilder:
         total_edges = len(relationships)
         for idx, (word_id, related_term, rel_type) in enumerate(relationships, start=1):
             # Validate source node exists
-            if word_id not in self.manager.g:
+            if word_id not in self.manager.g.nodes():
                 self.logger.debug(f"Skipping edge from non-existent node ID {word_id}.")
                 continue
 
@@ -119,7 +119,7 @@ class GraphBuilder:
             related_id = self.manager._term_to_id.get(related_term.lower())
 
             # Validate target node exists
-            if related_id is None or related_id not in self.manager.g:
+            if related_id is None or related_id not in self.manager.g.nodes():
                 self.logger.debug(
                     f"Skipping edge to non-existent term '{related_term}'."
                 )
@@ -252,12 +252,9 @@ class GraphBuilder:
         dimension = self.manager._determine_dimension(rel_type)
 
         # Safely get term text for title, providing defaults
-        source_term_text = self.manager.g.nodes[source_id].get(
-            "term", f"ID:{source_id}"
-        )
-        target_term_text = self.manager.g.nodes[target_id].get(
-            "term", f"ID:{target_id}"
-        )
+        node_attrs = dict(self.manager.g.nodes(data=True))
+        source_term_text = node_attrs.get(source_id, {}).get("term", f"ID:{source_id}")
+        target_term_text = node_attrs.get(target_id, {}).get("term", f"ID:{target_id}")
 
         # Construct edge attributes
         edge_attrs = {

@@ -418,6 +418,12 @@ SQL_GET_ALL_WORDS = """
 SELECT id, term, definition, usage_examples FROM words
 """
 
+SQL_GET_UPDATED_WORDS = """
+SELECT id, term, definition, usage_examples
+FROM words
+WHERE last_refreshed > ?
+"""
+
 SQL_CHECK_RELATIONSHIPS_TABLE = """
 SELECT name FROM sqlite_master WHERE type='table' AND name='relationships'
 """
@@ -1035,6 +1041,27 @@ class DBManager:
             ]
         except QueryError as e:
             raise QueryError("Failed to retrieve word list", e, SQL_GET_ALL_WORDS)
+
+    def get_updated_words(self, since: float) -> List[WordDataDict]:
+        """Return words updated after the given timestamp."""
+        try:
+            rows = self.execute_query(SQL_GET_UPDATED_WORDS, (since,))
+            return [
+                {
+                    "id": row["id"],
+                    "term": row["term"],
+                    "definition": row["definition"] or "",
+                    "usage_examples": row["usage_examples"] or "",
+                }
+                for row in rows
+            ]
+        except QueryError as e:
+            raise QueryError(
+                "Failed to retrieve updated words",
+                e,
+                SQL_GET_UPDATED_WORDS,
+                (since,),
+            )
 
     def close(self) -> None:
         """Close the database connection for the current thread."""
