@@ -92,7 +92,8 @@ class GraphBuilder:
             raise GraphDataError(f"Unexpected error fetching data: {e}", e) from e
 
         # --- Node Addition ---
-        for word_id, term in words:
+        total_words = len(words)
+        for idx, (word_id, term) in enumerate(words, start=1):
             # Ensure term is not None or empty before adding
             if term:
                 # Add node with term and ID attributes for consistency
@@ -103,9 +104,14 @@ class GraphBuilder:
                 self.logger.warning(
                     f"Skipping node with ID {word_id} due to missing term."
                 )
+            if idx % max(total_words // 10, 1) == 0:
+                self.logger.info(
+                    "Node build progress: %d/%d", idx, total_words
+                )
 
         # --- Edge Addition ---
-        for word_id, related_term, rel_type in relationships:
+        total_edges = len(relationships)
+        for idx, (word_id, related_term, rel_type) in enumerate(relationships, start=1):
             # Validate source node exists
             if word_id not in self.manager.g:
                 self.logger.debug(f"Skipping edge from non-existent node ID {word_id}.")
@@ -128,6 +134,10 @@ class GraphBuilder:
 
             # Add edge with calculated properties
             self._add_relationship_edge(word_id, related_id, rel_type)
+            if idx % max(total_edges // 10, 1) == 0:
+                self.logger.info(
+                    "Edge build progress: %d/%d", idx, total_edges
+                )
 
         self.logger.info(
             f"Graph built: {self.manager.g.number_of_nodes()} nodes, {self.manager.g.number_of_edges()} edges."

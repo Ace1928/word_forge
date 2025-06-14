@@ -69,6 +69,11 @@ While running, the CLI prints periodic progress reports indicating how many
 words have been processed, how many succeeded or failed, and the remaining
 queue size. This provides real‑time insight into long running operations.
 
+Other commands such as `python lexical_proto.py word` or the graph builder demos
+emit step-by-step progress messages while fetching data, embedding vectors, and
+constructing the knowledge graph. These updates appear on the console so you can
+track exactly which stage is running.
+
 ## Development and Contributing
 
 Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.
