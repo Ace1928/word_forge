@@ -55,3 +55,36 @@ def test_search_requires_input():
     vs = object.__new__(VectorStore)
     with pytest.raises(SearchError):
         vs.search()
+
+
+class DummyCollection:
+    def __init__(self, client):
+        self.client = client
+    def upsert(self, *a, **k):
+        pass
+    def query(self, *a, **k):
+        return {"ids": [], "distances": []}
+    def delete(self, *a, **k):
+        pass
+
+
+class DummyClient:
+    def __init__(self):
+        self.persist_called = False
+    def get_or_create_collection(self, *a, **k):
+        return DummyCollection(self)
+    def persist(self):
+        self.persist_called = True
+
+
+def test_persist_called_for_disk_storage():
+    from word_forge.configs.config_essentials import StorageType
+    vs = object.__new__(VectorStore)
+    vs.dimension = 5
+    vs.client = DummyClient()
+    vs.collection = DummyCollection(vs.client)
+    vs.storage_type = StorageType.DISK
+    vs._persist_if_needed()
+    assert vs.client.persist_called
+
+
