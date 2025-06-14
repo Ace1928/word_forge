@@ -192,39 +192,11 @@ class GraphWorker(threading.Thread):
                     f"Cannot resume worker in state: {self._current_state}"
                 )
 
-    def restart(self) -> None:
-        """
-        Restart the worker thread gracefully.
+    def restart(self) -> "GraphWorker":
+        """Restart the worker and return the new running instance."""
+        from .worker_factory import restart_worker
 
-        Stops the current thread if running, waits for it to terminate,
-        resets internal state, and starts a new thread instance.
-        Note: This creates a *new* thread object. The old one cannot be restarted.
-        """
-        self.logger.info("GraphWorker restart requested...")
-        if self.is_alive():
-            self.stop()
-            self.join(
-                timeout=self.poll_interval + 5.0
-            )  # Wait a bit longer than poll interval
-            if self.is_alive():
-                self.logger.warning(
-                    "Worker thread did not terminate cleanly during restart."
-                )
-                # Cannot truly force stop a thread, but proceed with creating a new one
-
-        # Reset state for a *conceptual* restart (a new instance would be needed)
-        # This method is problematic for standard threading. A manager process
-        # would typically handle creating a new worker instance.
-        # For now, log the limitation.
-        self.logger.warning(
-            "Thread restart requires creating a new GraphWorker instance. This method only stops the current thread."
-        )
-        # If this instance were to be reused (not standard):
-        # self._stop_event.clear()
-        # self._pause_event.clear()
-        # self._last_update = None
-        # ... reset other state ...
-        # self.start() # This would raise RuntimeError if called on same thread object
+        return restart_worker(self)
 
     def run(self) -> None:
         """
