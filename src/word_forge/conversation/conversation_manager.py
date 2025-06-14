@@ -25,6 +25,8 @@ from word_forge.database.database_manager import DatabaseError, DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
 from word_forge.vectorizer.vector_store import VectorStore
+from word_forge.queue.queue_manager import QueueManager
+from word_forge.parser.parser_refiner import TermExtractor
 
 
 # --- Custom Exceptions ---
@@ -168,6 +170,8 @@ class ConversationManager:
         lightweight_model: LightweightModel,
         affective_model: AffectiveLexicalModel,
         identity_model: IdentityModel,
+        queue_manager: Optional[QueueManager[str]] = None,
+        term_extractor: Optional[TermExtractor] = None,
     ) -> None:
         """
         Initializes the ConversationManager with dependencies and models.
@@ -183,6 +187,8 @@ class ConversationManager:
             lightweight_model: The routing/basic processing model instance.
             affective_model: The core understanding and response model instance.
             identity_model: The personality and refinement model instance.
+            queue_manager: Optional queue for discovered terms.
+            term_extractor: Custom term extractor instance.
 
         Raises:
             ConversationError: If initialization fails, particularly during table creation.
@@ -195,6 +201,8 @@ class ConversationManager:
         self.lightweight_model = lightweight_model
         self.affective_model = affective_model
         self.identity_model = identity_model
+        self.queue_manager = queue_manager
+        self.term_extractor = term_extractor or TermExtractor()
         try:
             self._create_tables()
         except ConversationError as e:
@@ -260,6 +268,17 @@ class ConversationManager:
                 f"Unexpected error initializing conversation tables: {e}",
                 original_exception=e,
             ) from e
+
+    def _queue_terms_from_text(self, text: str) -> None:
+        """Extract words from ``text`` and enqueue unseen terms for processing."""
+
+        if not self.queue_manager:
+            return
+
+        priority, standard = self.term_extractor.extract_terms(text, [], "")
+        for term in priority + standard:
+            if not self.db_manager.word_exists(term):
+                self.queue_manager.enqueue(term)
 
     def start_conversation(self) -> Result[int]:
         """
@@ -488,6 +507,9 @@ class ConversationManager:
                         f"Warning: Failed to process emotion for message {message_id} "
                         f"in conversation {conversation_id}: {emotion_e}"
                     )
+
+                if speaker.lower() != "assistant":
+                    self._queue_terms_from_text(text)
 
             if generate_response and speaker.lower() != "assistant":
                 print(

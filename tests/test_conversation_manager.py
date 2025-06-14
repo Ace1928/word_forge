@@ -10,6 +10,29 @@ chromadb.PersistentClient = lambda *a, **k: None
 sys.modules["chromadb"] = chromadb
 sentence_module = types.ModuleType("sentence_transformers")
 
+nltk = types.ModuleType("nltk")
+nltk.corpus = types.SimpleNamespace(stopwords=types.SimpleNamespace(words=lambda x: []))
+nltk.Tree = lambda *a, **k: None
+nltk.word_tokenize = lambda t: t.split()
+nltk.pos_tag = lambda tokens: [(t, "NN") for t in tokens]
+nltk.download = lambda *a, **k: None
+nltk.corpus.wordnet = types.ModuleType("nltk.corpus.wordnet")
+nltk.corpus.reader = types.ModuleType("nltk.corpus.reader")
+nltk.corpus.reader.wordnet = types.ModuleType("nltk.corpus.reader.wordnet")
+nltk.corpus.reader.wordnet.Lemma = type("Lemma", (), {})
+nltk.corpus.reader.wordnet.Synset = type("Synset", (), {})
+nltk.corpus.reader.wordnet.WordNetError = Exception
+nltk.corpus.wordnet.Lemma = nltk.corpus.reader.wordnet.Lemma
+nltk.corpus.wordnet.Synset = nltk.corpus.reader.wordnet.Synset
+nltk.stem = types.ModuleType("nltk.stem")
+nltk.stem.WordNetLemmatizer = lambda *a, **k: None
+sys.modules["nltk"] = nltk
+sys.modules["nltk.corpus"] = nltk.corpus
+sys.modules["nltk.corpus.wordnet"] = nltk.corpus.wordnet
+sys.modules["nltk.corpus.reader"] = nltk.corpus.reader
+sys.modules["nltk.corpus.reader.wordnet"] = nltk.corpus.reader.wordnet
+sys.modules["nltk.stem"] = nltk.stem
+
 
 class DummyModel:
     def __init__(self, *a, **k):
@@ -26,6 +49,50 @@ class DummyModel:
 
 sentence_module.SentenceTransformer = DummyModel
 sys.modules["sentence_transformers"] = sentence_module
+
+torch_mod = types.ModuleType("torch")
+torch_mod.device = lambda *a, **k: "cpu"
+torch_mod.cuda = types.SimpleNamespace(is_available=lambda: False)
+sys.modules["torch"] = torch_mod
+transformers_mod = types.ModuleType("transformers")
+
+
+class DummyConfig: ...
+
+
+transformers_mod.AutoModelForCausalLM = DummyModel
+transformers_mod.AutoTokenizer = DummyModel
+transformers_mod.PreTrainedModel = DummyModel
+transformers_mod.PreTrainedTokenizer = DummyModel
+transformers_mod.PreTrainedTokenizerFast = DummyModel
+transformers_mod.PretrainedConfig = DummyConfig
+sys.modules["transformers"] = transformers_mod
+
+rdflib_mod = types.ModuleType("rdflib")
+
+
+class Graph: ...
+
+
+class Literal: ...
+
+
+class URIRef: ...
+
+
+rdflib_mod.Graph = Graph
+rdflib_mod.Literal = Literal
+rdflib_mod.URIRef = URIRef
+rdflib_mod.query = types.ModuleType("rdflib.query")
+
+
+class ResultRow(tuple):
+    pass
+
+
+rdflib_mod.query.ResultRow = ResultRow
+sys.modules["rdflib"] = rdflib_mod
+sys.modules["rdflib.query"] = rdflib_mod.query
 
 emotion_module = types.ModuleType("word_forge.emotion.emotion_manager")
 
@@ -45,6 +112,7 @@ import pytest
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.configs.config_essentials import Result
 from word_forge.database.database_manager import DBManager
+from word_forge.queue.queue_manager import QueueManager
 
 
 class StubModel:
@@ -86,9 +154,24 @@ def create_manager(tmp_path, monkeypatch):
     import word_forge.conversation.conversation_manager as cm_module
 
     monkeypatch.setattr(cm_module, "GraphManager", StubGraphManager, raising=False)
+    import word_forge.utils.nltk_utils as nltk_utils
+
+    monkeypatch.setattr(nltk_utils, "ensure_nltk_data", lambda: None)
+    import word_forge.parser.parser_refiner as pr
+
+    monkeypatch.setattr(pr, "ensure_nltk_data", lambda: None, raising=False)
+
+    class StubExtractor:
+        def extract_terms(self, definition, examples, original_term):
+            tokens = definition.split()
+            return [t.lower() for t in tokens], []
+
+    monkeypatch.setattr(pr, "TermExtractor", StubExtractor)
+    monkeypatch.setattr(cm_module, "TermExtractor", StubExtractor, raising=False)
 
     db_path = tmp_path / "conv.db"
     dbm = DBManager(db_path=db_path)
+    queue_manager = QueueManager[str]()
     return ConversationManager(
         db_manager=dbm,
         emotion_manager=StubEmotionManager(),
@@ -98,6 +181,7 @@ def create_manager(tmp_path, monkeypatch):
         lightweight_model=StubModel(),
         affective_model=StubModel(),
         identity_model=StubModel(),
+        queue_manager=queue_manager,
     )
 
 

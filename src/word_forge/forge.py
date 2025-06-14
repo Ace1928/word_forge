@@ -41,7 +41,6 @@ def start(
     seed_words: Optional[Iterable[str]] = None,
     run_minutes: Optional[float] = None,
     worker_count: int = 4,
-    seed_words: Optional[Iterable[str]] = None, run_minutes: Optional[float] = None
 ) -> None:
     """Launch the Word Forge processing pipeline.
 
@@ -64,7 +63,6 @@ def start(
         WorkerPoolConfig,
     )
     from word_forge.configs.config_essentials import measure_execution
-    from word_forge.queue.queue_worker import ParallelWordProcessor, WordProcessor
 
     _setup_logging()
     LOGGER.info("Starting Word Forge")
@@ -88,12 +86,11 @@ def start(
 
     with measure_execution("forge.start", {"workers": worker_count}) as metrics:
         worker_pool.start()
-    LOGGER.info(
-        "Worker pool started with %d workers in %.1fms",
-        worker_count,
-        metrics.duration_ms,
-    )
-    worker_pool.start()
+        LOGGER.info(
+            "Worker pool started with %d workers in %.1fms",
+            worker_count,
+            metrics.duration_ms,
+        )
 
     start_time = time.time()
     try:
@@ -136,7 +133,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=4,
         help="Number of worker threads",
     )
-
 
     args = parser.parse_args(argv)
 
