@@ -1,15 +1,41 @@
 # Import PathLike for model paths
 from os import PathLike
 from typing import Any, Dict, List, Optional, Union, cast
-import torch
-from transformers import (  # type: ignore
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PretrainedConfig,  # Import PretrainedConfig
-    PreTrainedModel,
-    PreTrainedTokenizer,
-    PreTrainedTokenizerFast,
-)
+
+try:  # Optional heavy dependencies
+    import torch
+    from transformers import (  # type: ignore
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        PretrainedConfig,
+        PreTrainedModel,
+        PreTrainedTokenizer,
+        PreTrainedTokenizerFast,
+    )
+except Exception:  # pragma: no cover - optional dependency handling
+    class _FakeTorch:
+        """Minimal stub when PyTorch is unavailable."""
+
+        Tensor = Any
+
+        @staticmethod
+        def no_grad():  # type: ignore
+            class _Ctx:
+                def __enter__(self):
+                    return None
+
+                def __exit__(self, *exc: Any) -> None:
+                    pass
+
+            return _Ctx()
+
+    torch = cast(Any, _FakeTorch())
+    AutoModelForCausalLM = None  # type: ignore
+    AutoTokenizer = None  # type: ignore
+    PretrainedConfig = Any  # type: ignore
+    PreTrainedModel = Any  # type: ignore
+    PreTrainedTokenizer = Any  # type: ignore
+    PreTrainedTokenizerFast = Any  # type: ignore
 
 
 class ModelState:
@@ -24,12 +50,15 @@ class ModelState:
     def __init__(
         self,
         model_name: str = "qwen/qwen2.5-0.5b-instruct",
-        device: Optional[torch.device] = None,
+        device: Optional[Any] = None,
     ) -> None:
         self.model_name = model_name
-        self.device = device or torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        if torch is not None and hasattr(torch, "device"):
+            self.device = device or torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            self.device = "cpu"
         self.tokenizer: Optional[
             Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
         ] = None
@@ -69,6 +98,9 @@ class ModelState:
             return False
 
         try:
+            if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
+                raise ImportError("transformers or torch not available")
+
             # Load tokenizer with explicit type annotation
             self.tokenizer = cast(
                 Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
@@ -85,7 +117,7 @@ class ModelState:
                     cast(Union[str, PathLike], self.model_name),
                     device_map=str(self.device),
                     torch_dtype=(
-                        torch.float16 if self.device.type == "cuda" else torch.float32
+                        torch.float16 if getattr(self.device, "type", "cpu") == "cuda" else torch.float32
                     ),
                 ),
             )
@@ -127,6 +159,10 @@ class ModelState:
             Generated text or None if generation failed
         """
         if not self.initialize():
+            return None
+
+        if torch is None:
+            print("Text generation skipped: torch not available")
             return None
 
         # Safety check - both must be initialized

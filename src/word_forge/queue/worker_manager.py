@@ -62,7 +62,15 @@ class WorkerManager:
 
     def any_alive(self) -> bool:
         """Check if any managed worker is still running."""
-        return any(w.is_alive() for w in self._workers)
+        alive = False
+        for w in self._workers:
+            try:
+                if hasattr(w, "is_alive") and w.is_alive():
+                    alive = True
+                    break
+            except Exception:
+                continue
+        return alive
 
     def __iter__(self) -> Iterable[Worker]:
         return iter(self._workers)

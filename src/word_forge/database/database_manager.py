@@ -465,6 +465,8 @@ class DBManager:
 
         try:
             self._ensure_database_directory()
+            # Ensure schema exists on initialization for convenience
+            self.create_tables()
         except Exception as e:
             raise ConnectionError(
                 f"Failed to create database directory for {self.db_path}",

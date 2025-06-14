@@ -40,10 +40,15 @@ from typing import (
     overload,
 )
 
-import chromadb
+try:  # Optional heavy dependencies
+    import chromadb
+    from sentence_transformers import SentenceTransformer
+except Exception:  # pragma: no cover - allow running without chromadb
+    chromadb = None  # type: ignore
+    SentenceTransformer = None  # type: ignore
+
 import numpy as np
 from numpy.typing import NDArray
-from sentence_transformers import SentenceTransformer
 
 from word_forge.config import config
 from word_forge.database.database_manager import DatabaseError, DBManager, WordEntryDict
@@ -369,6 +374,20 @@ class VectorStore:
         """
         # Set up logging
         self.logger = logging.getLogger(__name__)
+
+        # Fallback if optional dependencies are missing
+        if chromadb is None or SentenceTransformer is None:
+            self.index_path = Path(index_path or "")
+            self.storage_type = StorageType.MEMORY
+            self.db_manager = db_manager
+            self.emotion_manager = emotion_manager
+            self.model_name = model_name or "simple"
+            self.dimension = dimension or 768
+            self.client = None
+            self.collection = {}  # type: ignore[var-annotated]
+            self.instruction_templates = {}
+            self.logger.warning("ChromaDB not available, using in-memory vector store")
+            return
 
         # Store configuration, using defaults from config object
         self.index_path = Path(index_path or config.vectorizer.index_path)
@@ -998,16 +1017,22 @@ class VectorStore:
         sanitized_metadata = self._sanitize_metadata(metadata or {})
 
         try:
-            # Upsert into collection
-            self.collection.upsert(
-                ids=[vec_id_str],
-                embeddings=[embedding.tolist()],
-                metadatas=[sanitized_metadata] if sanitized_metadata else None,
-                documents=[text] if text else None,
-            )
+            if isinstance(self.collection, dict):
+                self.collection[vec_id_str] = {
+                    "embedding": embedding,
+                    "metadata": sanitized_metadata,
+                    "text": text,
+                }
+            else:
+                self.collection.upsert(
+                    ids=[vec_id_str],
+                    embeddings=[embedding.tolist()],
+                    metadatas=[sanitized_metadata] if sanitized_metadata else None,
+                    documents=[text] if text else None,
+                )
 
-            # Persist to disk if using persistent storage
-            self._persist_if_needed()
+                # Persist to disk if using persistent storage
+                self._persist_if_needed()
 
         except Exception as e:
             raise UpsertError(f"Failed to store vector: {str(e)}") from e
