@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, cast
 
 # Import necessary components (adjust paths as needed)
@@ -38,6 +40,17 @@ from word_forge.relationships import RelationshipProperties
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
     from .graph_manager import GraphManager
+
+
+@dataclass(frozen=True)
+class GraphUpdateMetrics:
+    """Lightweight snapshot of the most recent graph update."""
+
+    new_nodes: int = 0
+    new_edges: int = 0
+    processed_words: int = 0
+    max_last_refreshed: float = 0.0
+    full_rebuild: bool = False
 
 
 class GraphBuilder:
@@ -65,6 +78,92 @@ class GraphBuilder:
         self.logger: logging.Logger = logging.getLogger(__name__)
         # Use config from manager for consistency
         self._config = self.manager.config
+        self._metadata_key = "graph_last_refresh"
+        self._last_update_metrics: GraphUpdateMetrics = GraphUpdateMetrics()
+        self._last_refresh_watermark: float = self._load_last_refresh_watermark()
+
+    @property
+    def last_update_metrics(self) -> GraphUpdateMetrics:
+        """Return metrics captured during the most recent update cycle."""
+
+        return self._last_update_metrics
+
+    def _set_last_update_metrics(
+        self,
+        *,
+        new_nodes: int,
+        new_edges: int,
+        processed_words: int,
+        max_last_refreshed: float,
+        full_rebuild: bool,
+    ) -> None:
+        self._last_update_metrics = GraphUpdateMetrics(
+            new_nodes=new_nodes,
+            new_edges=new_edges,
+            processed_words=processed_words,
+            max_last_refreshed=max_last_refreshed,
+            full_rebuild=full_rebuild,
+        )
+
+    def _ensure_metadata_table(self, conn: sqlite3.Connection) -> None:
+        """Ensure the metadata table needed for graph watermarks exists."""
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS graph_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+
+    def _load_last_refresh_watermark(self) -> float:
+        """Load the persisted watermark indicating the last processed timestamp."""
+
+        try:
+            with self.manager._db_connection() as conn:
+                self._ensure_metadata_table(conn)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT value FROM graph_metadata WHERE key = ?",
+                    (self._metadata_key,),
+                )
+                row = cursor.fetchone()
+                if row and row[0] is not None:
+                    return float(row[0])
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            self.logger.debug(
+                "Unable to load graph watermark from metadata table: %s", exc
+            )
+        return 0.0
+
+    def _persist_watermark(self, value: float) -> None:
+        """Persist the latest processed timestamp for incremental updates."""
+
+        if value <= self._last_refresh_watermark:
+            return
+
+        try:
+            with self.manager._db_connection() as conn:
+                self._ensure_metadata_table(conn)
+                conn.execute(
+                    """
+                    INSERT INTO graph_metadata (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value=excluded.value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (self._metadata_key, str(value), time.time()),
+                )
+                conn.commit()
+                self._last_refresh_watermark = value
+        except sqlite3.Error as exc:
+            self.logger.warning(
+                "Failed to persist graph watermark: %s", exc,
+                exc_info=self.logger.isEnabledFor(logging.DEBUG),
+            )
 
     def build_graph(self) -> None:
         """
@@ -86,7 +185,7 @@ class GraphBuilder:
         self.manager._relationship_counts.clear()  # Use clear() for consistency
 
         try:
-            words, relationships = self._fetch_data()
+            words, relationships, latest_refresh = self._fetch_data()
             self.logger.info(
                 f"Fetched {len(words)} words and {len(relationships)} relationships."
             )
@@ -166,6 +265,15 @@ class GraphBuilder:
         else:
             self.logger.info("Graph is empty, skipping layout computation.")
 
+        self._set_last_update_metrics(
+            new_nodes=self.manager.g.number_of_nodes(),
+            new_edges=self.manager.g.number_of_edges(),
+            processed_words=len(words),
+            max_last_refreshed=latest_refresh,
+            full_rebuild=True,
+        )
+        self._persist_watermark(latest_refresh)
+
     def update_graph(self) -> int:
         """
         Incrementally update the existing graph with new data from the database.
@@ -189,8 +297,13 @@ class GraphBuilder:
             return self.manager.g.number_of_nodes()
 
         self.logger.info("Initiating incremental graph update.")
+        since = self._last_refresh_watermark if self._last_refresh_watermark > 0 else None
+        if since is None:
+            self.logger.debug(
+                "No persisted watermark detected; falling back to full dataset fetch."
+            )
         try:
-            all_words, all_relationships = self._fetch_data()
+            all_words, all_relationships, latest_refresh = self._fetch_data(since=since)
         except sqlite3.Error as db_err:
             raise GraphDataError(
                 "Database error during data fetch for update.", db_err
@@ -262,6 +375,15 @@ class GraphBuilder:
         else:
             self.logger.info("Graph update: No new nodes or edges detected.")
 
+        self._set_last_update_metrics(
+            new_nodes=new_node_count,
+            new_edges=new_edges_added_count,
+            processed_words=len(all_words),
+            max_last_refreshed=latest_refresh,
+            full_rebuild=False,
+        )
+        self._persist_watermark(latest_refresh)
+
         return new_node_count
 
     def _add_relationship_edge(
@@ -324,15 +446,20 @@ class GraphBuilder:
         # Use Counter's update method for clarity
         self.manager._relationship_counts.update([rel_type])
 
-    def _fetch_data(self) -> Tuple[List[WordTuple], List[RelationshipTuple]]:
+    def _fetch_data(
+        self, since: Optional[float] = None
+    ) -> Tuple[List[WordTuple], List[RelationshipTuple], float]:
         """
         Fetch words and relationships from the database.
 
         Uses the manager's database connection context manager for safe access.
+        When ``since`` is provided, only rows newer than the watermark are
+        returned.
 
         Returns:
             Tuple containing a list of word tuples (id, term) and a list of
-            relationship tuples (word_id, related_term, relationship_type).
+            relationship tuples (word_id, related_term, relationship_type),
+            along with the highest ``last_refreshed`` timestamp observed.
 
         Raises:
             GraphDataError: If database tables are missing or query fails.
@@ -341,6 +468,7 @@ class GraphBuilder:
         self.logger.debug("Fetching graph data from database.")
         words: List[WordTuple] = []
         relationships: List[RelationshipTuple] = []
+        latest_refresh = self._last_refresh_watermark
 
         try:
             # Use manager's context manager for connection safety
@@ -355,13 +483,28 @@ class GraphBuilder:
                     )
 
                 # Fetch words: Ensure id and term are not NULL
-                cursor.execute(self._config.sql_templates["fetch_all_words"])
+                word_query_key = (
+                    "fetch_words_since" if since is not None else "fetch_all_words"
+                )
+                word_query = self._config.sql_templates.get(word_query_key)
+                if word_query is None:
+                    raise GraphDataError(
+                        f"SQL template '{word_query_key}' is missing."
+                    )
+                params: Tuple[float, ...] = (since,) if since is not None else tuple()
+                cursor.execute(word_query, params)
                 words_raw = cursor.fetchall()
                 words = [
                     cast(WordTuple, (row["id"], row["term"]))
                     for row in words_raw
                     if row["id"] is not None and row["term"] is not None
                 ]
+                for row in words_raw:
+                    try:
+                        refreshed = float(row["last_refreshed"] or 0.0)
+                        latest_refresh = max(latest_refresh, refreshed)
+                    except (TypeError, ValueError):
+                        continue
                 self.logger.debug(f"Fetched {len(words)} valid word entries.")
 
                 # Verify 'relationships' table exists
@@ -374,7 +517,19 @@ class GraphBuilder:
                     return words, []
 
                 # Fetch relationships: Ensure all parts are not NULL
-                cursor.execute(self._config.sql_templates["fetch_all_relationships"])
+                rel_query_key = (
+                    "fetch_relationships_since"
+                    if since is not None
+                    else "fetch_all_relationships"
+                )
+                rel_query = self._config.sql_templates.get(rel_query_key)
+                rel_params: Tuple[float, ...] = (
+                    (since,) if rel_query_key == "fetch_relationships_since" else tuple()
+                )
+                if rel_query is None:
+                    rel_query = self._config.sql_templates["fetch_all_relationships"]
+                    rel_params = tuple()
+                cursor.execute(rel_query, rel_params)
                 relationships_raw = cursor.fetchall()
                 lexical_relationships: List[RelationshipTuple] = [
                     cast(
@@ -398,9 +553,26 @@ class GraphBuilder:
                 # Fetch emotional relationships when the table exists
                 emotional_count = 0
                 try:
-                    cursor.execute(
-                        self._config.sql_templates["get_all_emotional_relationships"]
+                    emotional_query_key = (
+                        "get_emotional_relationships_since"
+                        if since is not None
+                        else "get_all_emotional_relationships"
                     )
+                    emotional_query = self._config.sql_templates.get(
+                        emotional_query_key
+                    )
+                    if emotional_query is None:
+                        emotional_query = self._config.sql_templates[
+                            "get_all_emotional_relationships"
+                        ]
+                        emotional_params: Tuple[float, ...] = tuple()
+                    else:
+                        emotional_params = (
+                            (since,)
+                            if emotional_query_key == "get_emotional_relationships_since"
+                            else tuple()
+                        )
+                    cursor.execute(emotional_query, emotional_params)
                     emotional_rows = cursor.fetchall()
                     emotional_relationships: List[RelationshipTuple] = [
                         cast(
@@ -432,7 +604,7 @@ class GraphBuilder:
                     emotional_count,
                 )
 
-                return words, relationships
+                return words, relationships, latest_refresh
         except sqlite3.Error as db_err:
             # Log specific DB error and re-raise as GraphDataError
             self.logger.error(f"Database query failed during data fetch: {db_err}")

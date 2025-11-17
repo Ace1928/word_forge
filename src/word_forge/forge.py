@@ -122,6 +122,16 @@ def start(
                     stats.get("error_count", 0),
                     status.get("queue_size", 0),
                 )
+                graph_status = graph_worker.get_status()
+                if graph_status.get("last_new_nodes") or graph_status.get(
+                    "last_new_edges"
+                ):
+                    LOGGER.info(
+                        "Graph updates - nodes:+%d edges:+%d state:%s",
+                        graph_status.get("last_new_nodes", 0),
+                        graph_status.get("last_new_edges", 0),
+                        graph_status.get("state", "unknown"),
+                    )
                 last_report = time.time()
             if (
                 run_minutes is not None

@@ -396,6 +396,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_emotional_relationship
 ON emotional_relationships(word_id, related_term, relationship_type)
 """
 
+SQL_CREATE_GRAPH_METADATA_TABLE = """
+CREATE TABLE IF NOT EXISTS graph_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+)
+"""
+
 SQL_CHECK_WORDS_TABLE = (
     "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
 )
@@ -548,6 +556,7 @@ class DBManager:
                 conn.execute(SQL_CREATE_WORDS_TABLE)
                 conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
                 conn.execute(SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE)
+                conn.execute(SQL_CREATE_GRAPH_METADATA_TABLE)
 
                 # Create indexes for performance
                 conn.execute(SQL_CREATE_WORD_ID_INDEX)
