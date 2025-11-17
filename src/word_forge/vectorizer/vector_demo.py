@@ -368,6 +368,7 @@ class VectorDemo:
             index_path=str(self.vector_path),
             storage_type=storage_type,
             db_manager=self.db_manager,
+            demo_mode=storage_type == StorageType.MEMORY,
         )
 
     def add_word(

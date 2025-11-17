@@ -21,8 +21,11 @@ Architecture:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import (
@@ -50,6 +53,14 @@ except Exception as import_error:  # pragma: no cover - allow running without ch
     _VECTOR_IMPORT_ERROR = import_error
 else:
     _VECTOR_IMPORT_ERROR = None
+
+try:  # Optional FAISS dependency for fallback persistence
+    import faiss  # type: ignore
+except Exception as faiss_error:  # pragma: no cover - allow running without faiss initially
+    faiss = None  # type: ignore
+    _FAISS_IMPORT_ERROR = faiss_error
+else:
+    _FAISS_IMPORT_ERROR = None
 
 import numpy as np
 from numpy.typing import NDArray
@@ -303,6 +314,298 @@ class ContentProcessingError(VectorStoreError):
     pass
 
 
+SQLITE_DB_FILENAME = "vector_store.sqlite3"
+
+
+class SQLiteFAISSCollection:
+    """Lightweight SQLite + FAISS collection used when Chroma is unavailable."""
+
+    def __init__(self, db_path: Path, dimension: int) -> None:
+        if faiss is None:
+            install_hint = 'pip install "word_forge[vector]"'
+            missing = _FAISS_IMPORT_ERROR or RuntimeError("faiss unavailable")
+            raise InitializationError(
+                "SQLite/FAISS persistence requires the faiss-cpu dependency. "
+                f"Install it via {install_hint}."
+            ) from missing
+
+        self.db_path = db_path
+        self.dimension = dimension
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._ensure_schema()
+
+    def count(self) -> int:
+        with self._lock:
+            cursor = self._conn.execute("SELECT COUNT(*) FROM vectors")
+            return int(cursor.fetchone()[0])
+
+    def persist(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def upsert(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[str]] = None,
+    ) -> None:
+        metadata_list = metadatas or [None] * len(ids)
+        documents_list = documents or [None] * len(ids)
+
+        with self._lock:
+            for idx, vec_id in enumerate(ids):
+                vector = np.asarray(embeddings[idx], dtype=np.float32)
+                if vector.shape[0] != self.dimension:
+                    raise DimensionMismatchError(
+                        f"Vector dimension {vector.shape[0]} does not match {self.dimension}"
+                    )
+
+                metadata_blob = json.dumps(metadata_list[idx]) if metadata_list[idx] else None
+                document_value = documents_list[idx]
+                payload = sqlite3.Binary(vector.tobytes())
+
+                self._conn.execute(
+                    """
+                    INSERT INTO vectors(id, embedding, metadata, document)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        embedding=excluded.embedding,
+                        metadata=excluded.metadata,
+                        document=excluded.document
+                    """,
+                    (vec_id, payload, metadata_blob, document_value),
+                )
+
+            self._conn.commit()
+
+    def query(
+        self,
+        query_embeddings: Optional[List[List[float]]] = None,
+        query_texts: Optional[List[str]] = None,
+        n_results: int = 10,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[Any]]:
+        if not query_embeddings:
+            raise SearchError("SQLite/FAISS backend requires query embeddings")
+
+        query_vector = np.asarray(query_embeddings[0], dtype=np.float32)
+        if query_vector.shape[0] != self.dimension:
+            raise DimensionMismatchError(
+                f"Query dimension {query_vector.shape[0]} does not match {self.dimension}"
+            )
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, embedding, metadata, document FROM vectors"
+            ).fetchall()
+
+        filtered_rows = self._filter_rows(rows, where)
+        if not filtered_rows:
+            return {"ids": [[]], "distances": [[]], "metadatas": [[]], "documents": [[]]}
+
+        dataset = np.vstack([self._row_to_vector(row) for row in filtered_rows])
+        metadatas = [self._deserialize_metadata(row["metadata"]) for row in filtered_rows]
+        documents = [row["document"] for row in filtered_rows]
+        ids = [row["id"] for row in filtered_rows]
+
+        # Normalize for cosine similarity and search with FAISS
+        faiss.normalize_L2(dataset)
+        query_vector = query_vector.reshape(1, -1)
+        faiss.normalize_L2(query_vector)
+        index = faiss.IndexFlatIP(self.dimension)
+        index.add(dataset)
+        top_k = min(n_results, len(ids))
+        distances, neighbors = index.search(query_vector, top_k)
+
+        ordered_ids = [ids[i] for i in neighbors[0]] if top_k else []
+        ordered_metadatas = [metadatas[i] for i in neighbors[0]] if top_k else []
+        ordered_documents = [documents[i] for i in neighbors[0]] if top_k else []
+        ordered_distances = distances[0].tolist() if top_k else []
+
+        return {
+            "ids": [ordered_ids],
+            "distances": [ordered_distances],
+            "metadatas": [ordered_metadatas],
+            "documents": [ordered_documents],
+        }
+
+    def delete(
+        self,
+        ids: Optional[List[str]] = None,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._lock:
+            if ids:
+                self._conn.executemany("DELETE FROM vectors WHERE id = ?", [(vec_id,) for vec_id in ids])
+            elif where:
+                rows = self._conn.execute("SELECT id, metadata FROM vectors").fetchall()
+                filtered_ids = [row["id"] for row in self._filter_rows(rows, where)]
+                if filtered_ids:
+                    self._conn.executemany(
+                        "DELETE FROM vectors WHERE id = ?",
+                        [(vec_id,) for vec_id in filtered_ids],
+                    )
+            self._conn.commit()
+
+    def _ensure_schema(self) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS vectors (
+                    id TEXT PRIMARY KEY,
+                    embedding BLOB NOT NULL,
+                    metadata TEXT,
+                    document TEXT
+                )
+                """
+            )
+            self._conn.commit()
+
+    def _row_to_vector(self, row: sqlite3.Row) -> NDArray[np.float32]:
+        return np.frombuffer(row["embedding"], dtype=np.float32)
+
+    def _deserialize_metadata(self, payload: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not payload:
+            return None
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+
+    def _filter_rows(
+        self, rows: List[sqlite3.Row], where: Optional[Dict[str, Any]]
+    ) -> List[sqlite3.Row]:
+        if not where:
+            return rows
+
+        filtered: List[sqlite3.Row] = []
+        for row in rows:
+            metadata = self._deserialize_metadata(row["metadata"]) or {}
+            if all(metadata.get(key) == value for key, value in where.items()):
+                filtered.append(row)
+        return filtered
+
+
+class InMemoryCollection:
+    """Simplified in-memory collection for explicit demo scenarios."""
+
+    def __init__(self, dimension: int) -> None:
+        self.dimension = dimension
+        self._store: Dict[str, Dict[str, Any]] = {}
+
+    def count(self) -> int:
+        return len(self._store)
+
+    def persist(self) -> None:
+        return None
+
+    def upsert(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[str]] = None,
+    ) -> None:
+        metadata_list = metadatas or [None] * len(ids)
+        documents_list = documents or [None] * len(ids)
+        for idx, vec_id in enumerate(ids):
+            vector = np.asarray(embeddings[idx], dtype=np.float32)
+            if vector.shape[0] != self.dimension:
+                raise DimensionMismatchError(
+                    f"Vector dimension {vector.shape[0]} does not match {self.dimension}"
+                )
+            self._store[vec_id] = {
+                "embedding": vector,
+                "metadata": metadata_list[idx],
+                "document": documents_list[idx],
+            }
+
+    def query(
+        self,
+        query_embeddings: Optional[List[List[float]]] = None,
+        query_texts: Optional[List[str]] = None,
+        n_results: int = 10,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[Any]]:
+        if not query_embeddings:
+            raise SearchError("Demo collection requires query embeddings")
+
+        query_vector = np.asarray(query_embeddings[0], dtype=np.float32)
+        if query_vector.shape[0] != self.dimension:
+            raise DimensionMismatchError(
+                f"Query dimension {query_vector.shape[0]} does not match {self.dimension}"
+            )
+
+        items = list(self._store.items())
+        if where:
+            items = [
+                (vec_id, payload)
+                for vec_id, payload in items
+                if payload.get("metadata")
+                and all(payload["metadata"].get(k) == v for k, v in where.items())
+            ]
+
+        if not items:
+            return {"ids": [[]], "distances": [[]], "metadatas": [[]], "documents": [[]]}
+
+        dataset = np.vstack([payload["embedding"] for _, payload in items])
+        top_k = min(n_results, len(items))
+
+        if faiss is not None:
+            faiss.normalize_L2(dataset)
+            query_norm = query_vector.reshape(1, -1)
+            faiss.normalize_L2(query_norm)
+            index = faiss.IndexFlatIP(self.dimension)
+            index.add(dataset)
+            distances, neighbors = index.search(query_norm, top_k)
+            ordered_indices = neighbors[0] if top_k else []
+            ordered_distances = distances[0].tolist() if top_k else []
+        else:  # pragma: no cover - fallback path when faiss missing
+            dataset_norm = dataset / np.linalg.norm(dataset, axis=1, keepdims=True)
+            dataset_norm[np.isnan(dataset_norm)] = 0.0
+            query_norm = query_vector / np.linalg.norm(query_vector)
+            if np.isnan(query_norm).any():
+                query_norm = np.zeros_like(query_norm)
+            similarities = dataset_norm @ query_norm.reshape(-1, 1)
+            ordered_indices = (
+                np.argsort(similarities[:, 0])[::-1][:top_k] if top_k else np.array([])
+            )
+            ordered_distances = (similarities[ordered_indices, 0].tolist() if top_k else [])
+
+        ordered = [items[int(i)] for i in ordered_indices] if top_k else []
+        ordered_ids = [vec_id for vec_id, _ in ordered]
+        ordered_metadatas = [payload.get("metadata") for _, payload in ordered]
+        ordered_documents = [payload.get("document") for _, payload in ordered]
+
+        return {
+            "ids": [ordered_ids],
+            "distances": [ordered_distances],
+            "metadatas": [ordered_metadatas],
+            "documents": [ordered_documents],
+        }
+
+    def delete(
+        self,
+        ids: Optional[List[str]] = None,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if ids:
+            for vec_id in ids:
+                self._store.pop(vec_id, None)
+            return
+
+        if where:
+            to_delete = [
+                vec_id
+                for vec_id, payload in self._store.items()
+                if payload.get("metadata")
+                and all(payload["metadata"].get(k) == v for k, v in where.items())
+            ]
+            for vec_id in to_delete:
+                self._store.pop(vec_id, None)
 # SQL query constants from centralized config
 SQL_GET_TERM_BY_ID = config.vectorizer.sql_templates["get_term_by_id"]
 SQL_GET_MESSAGE_TEXT = config.vectorizer.sql_templates["get_message_text"]
@@ -325,26 +628,30 @@ class VectorStore:
         model: SentenceTransformer model for generating embeddings
         dimension: Vector dimension size (typically 1024 for E5 models)
         model_name: Name of the embedding model being used
-        client: ChromaDB client for vector storage operations
-        collection: ChromaDB collection storing the vectors
+        client: Backend-specific client for vector storage operations
+        collection: Backend collection storing the vectors
         index_path: Path to persistent storage location
         storage_type: Whether using memory or disk storage
         db_manager: Optional database manager for content lookups
         emotion_manager: Optional emotion manager for sentiment analysis
+        backend_name: Name of the active storage backend
+        demo_mode: Whether the store is running in non-persistent demo mode
     """
 
     # Declare class attributes with type annotations
     dimension: int
     model: SentenceTransformer
     model_name: str
-    client: ChromaClient
-    collection: ChromaCollection
+    client: Union[ChromaClient, SQLiteFAISSCollection, InMemoryCollection]
+    collection: Union[ChromaCollection, SQLiteFAISSCollection, InMemoryCollection]
     index_path: Path
     storage_type: StorageType
     db_manager: Optional[DBManager]
     emotion_manager: Optional[EmotionManager]
     logger: logging.Logger
     instruction_templates: Dict[str, InstructionTemplate]
+    backend_name: str
+    demo_mode: bool
 
     def __init__(
         self,
@@ -355,6 +662,7 @@ class VectorStore:
         collection_name: Optional[str] = None,
         db_manager: Optional[DBManager] = None,
         emotion_manager: Optional[EmotionManager] = None,
+        demo_mode: bool = False,
     ):
         """
         Initialize the vector store with specified configuration.
@@ -371,6 +679,7 @@ class VectorStore:
             collection_name: Optional name for the vector collection. Defaults to config or 'word_forge_vectors'.
             db_manager: Optional database manager for content lookup.
             emotion_manager: Optional emotion manager for sentiment analysis.
+            demo_mode: Explicit flag to allow ephemeral in-memory demo storage.
 
         Raises:
             InitializationError: If initialization fails.
@@ -379,18 +688,12 @@ class VectorStore:
         # Set up logging
         self.logger = logging.getLogger(__name__)
 
-        # Fallback if optional dependencies are missing
-        if chromadb is None or SentenceTransformer is None:
+        # Ensure core embedding dependency exists
+        if SentenceTransformer is None:
             install_hint = 'pip install "word_forge[vector]"'
-            missing_parts = []
-            if chromadb is None:
-                missing_parts.append("chromadb")
-            if SentenceTransformer is None:
-                missing_parts.append("sentence-transformers")
-            missing_str = ", ".join(missing_parts)
             raise InitializationError(
-                "VectorStore requires optional vector dependencies. "
-                f"Install missing packages ({missing_str}) via {install_hint} to enable semantic search."
+                "VectorStore requires sentence-transformers for embedding support. "
+                f"Install it via {install_hint} to enable semantic search."
             ) from _VECTOR_IMPORT_ERROR
 
         # Store configuration, using defaults from config object
@@ -399,6 +702,18 @@ class VectorStore:
         self.db_manager = db_manager
         self.emotion_manager = emotion_manager
         self.model_name = model_name or config.vectorizer.model_name
+
+        self.demo_mode = bool(demo_mode)
+        if self.storage_type == StorageType.MEMORY and not self.demo_mode:
+            raise InitializationError(
+                "In-memory vector storage is reserved for explicit demo usage. "
+                "Set demo_mode=True to acknowledge that vectors will not persist."
+            )
+        if self.storage_type != StorageType.MEMORY and self.demo_mode:
+            self.logger.warning(
+                "demo_mode flag was provided but persistent storage is enabled; ignoring demo mode"
+            )
+            self.demo_mode = False
 
         # Validate and create storage directory if needed
         if self.storage_type != StorageType.MEMORY:
@@ -445,18 +760,42 @@ class VectorStore:
                 f"Failed to determine vector dimension: {str(e)}"
             ) from e
 
-        # Initialize ChromaDB client and collection *after* dimension is set
-        try:
-            self.client = self._create_client()
-            collection_name = collection_name or (
-                config.vectorizer.collection_name or "word_forge_vectors"
-            )
-            # Pass the determined dimension to the collection metadata
-            self.collection = self._initialize_collection(collection_name)
-        except Exception as e:
-            raise InitializationError(
-                f"Failed to initialize vector store backend: {str(e)}"
-            ) from e
+        # Initialize storage backend after dimension is set
+        self.backend_name = ""
+        backend_errors: List[str] = []
+
+        if self.storage_type == StorageType.MEMORY:
+            self.collection = InMemoryCollection(self.dimension)
+            self.client = self.collection
+            self.backend_name = "memory-demo"
+        else:
+            chroma_ready = False
+            if chromadb is not None:
+                try:
+                    self.client = self._create_client()
+                    collection_name = collection_name or (
+                        config.vectorizer.collection_name or "word_forge_vectors"
+                    )
+                    self.collection = self._initialize_collection(collection_name)
+                    self.backend_name = "chromadb"
+                    chroma_ready = True
+                except Exception as e:
+                    backend_errors.append(f"Chroma backend failed: {e}")
+
+            if not chroma_ready:
+                try:
+                    sqlite_path = self.index_path / SQLITE_DB_FILENAME
+                    self.collection = SQLiteFAISSCollection(sqlite_path, self.dimension)
+                    self.client = self.collection
+                    self.backend_name = "sqlite-faiss"
+                except Exception as e:
+                    backend_errors.append(f"SQLite/FAISS backend failed: {e}")
+
+            if not self.backend_name:
+                combined_error = " | ".join(backend_errors)
+                raise InitializationError(
+                    "Failed to initialize persistent vector store. " + combined_error
+                )
 
         # Load instruction templates if available
         self.instruction_templates: Dict[str, InstructionTemplate] = {}
@@ -473,7 +812,7 @@ class VectorStore:
         self.logger.info(
             f"VectorStore initialized: model={self.model_name}, "
             f"dimension={self.dimension}, storage={self.storage_type.name.lower()}, "
-            f"path={self.index_path}"
+            f"backend={self.backend_name}, path={self.index_path}, demo_mode={self.demo_mode}"
         )
 
     def _create_client(self) -> ChromaClient:
