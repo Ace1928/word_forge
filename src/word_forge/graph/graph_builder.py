@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, Dict, List, Set, Tuple, cast
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, cast
 
 # Import necessary components (adjust paths as needed)
 from word_forge.exceptions import GraphDataError, GraphError
-from word_forge.graph.graph_config import RelationshipTuple, RelType, WordId, WordTuple
+from word_forge.graph.graph_config import (
+    RelationshipDimension,
+    RelationshipTuple,
+    RelType,
+    WordId,
+    WordTuple,
+)
 from word_forge.relationships import RelationshipProperties
 
 # Type hint for the main GraphManager to avoid circular imports
@@ -109,7 +115,14 @@ class GraphBuilder:
 
         # --- Edge Addition ---
         total_edges = len(relationships)
-        for idx, (word_id, related_term, rel_type) in enumerate(relationships, start=1):
+        for idx, (
+            word_id,
+            related_term,
+            rel_type,
+            dimension,
+            valence,
+            arousal,
+        ) in enumerate(relationships, start=1):
             # Validate source node exists
             if word_id not in self.manager.g.nodes():
                 self.logger.debug(f"Skipping edge from non-existent node ID {word_id}.")
@@ -131,7 +144,14 @@ class GraphBuilder:
                 continue
 
             # Add edge with calculated properties
-            self._add_relationship_edge(word_id, related_id, rel_type)
+            self._add_relationship_edge(
+                word_id,
+                related_id,
+                rel_type,
+                dimension=dimension,
+                valence=valence,
+                arousal=arousal,
+            )
             if idx % max(total_edges // 10, 1) == 0:
                 self.logger.info("Edge build progress: %d/%d", idx, total_edges)
 
@@ -194,7 +214,14 @@ class GraphBuilder:
         new_node_count = len(new_nodes_added)
 
         # --- Add New Edges ---
-        for word_id, related_term, rel_type in all_relationships:
+        for (
+            word_id,
+            related_term,
+            rel_type,
+            dimension,
+            valence,
+            arousal,
+        ) in all_relationships:
             related_id = self.manager._term_to_id.get(related_term.lower())
             # Ensure both nodes exist in the potentially updated graph
             if (
@@ -207,7 +234,14 @@ class GraphBuilder:
                     # Prevent self-loops
                     if word_id == related_id:
                         continue
-                    self._add_relationship_edge(word_id, related_id, rel_type)
+                    self._add_relationship_edge(
+                        word_id,
+                        related_id,
+                        rel_type,
+                        dimension=dimension,
+                        valence=valence,
+                        arousal=arousal,
+                    )
                     new_edges_added_count += 1
 
         # --- Post-Update Actions ---
@@ -231,7 +265,14 @@ class GraphBuilder:
         return new_node_count
 
     def _add_relationship_edge(
-        self, source_id: WordId, target_id: WordId, rel_type: RelType
+        self,
+        source_id: WordId,
+        target_id: WordId,
+        rel_type: RelType,
+        *,
+        dimension: Optional[RelationshipDimension] = None,
+        valence: Optional[float] = None,
+        arousal: Optional[float] = None,
     ) -> None:
         """
         Adds a single relationship edge to the graph with calculated attributes.
@@ -249,7 +290,7 @@ class GraphBuilder:
         rel_props: RelationshipProperties = self.manager._get_relationship_properties(
             rel_type
         )
-        dimension = self.manager._determine_dimension(rel_type)
+        resolved_dimension = dimension or self.manager._determine_dimension(rel_type)
 
         # Safely get term text for title, providing defaults
         node_attrs = dict(self.manager.g.nodes(data=True))
@@ -266,10 +307,15 @@ class GraphBuilder:
             "bidirectional": rel_props.get(
                 "bidirectional", False
             ),  # Default directionality
-            "dimension": dimension,
+            "dimension": resolved_dimension,
             # Ensure title generation handles potential None terms gracefully
             "title": f"{rel_type}: {source_term_text or '?'} {'↔' if rel_props.get('bidirectional', False) else '→'} {target_term_text or '?'}",
         }
+
+        if valence is not None:
+            edge_attrs["valence"] = valence
+        if arousal is not None:
+            edge_attrs["arousal"] = arousal
 
         # Add the edge to the manager's graph
         self.manager.g.add_edge(source_id, target_id, **edge_attrs)
@@ -330,18 +376,60 @@ class GraphBuilder:
                 # Fetch relationships: Ensure all parts are not NULL
                 cursor.execute(self._config.sql_templates["fetch_all_relationships"])
                 relationships_raw = cursor.fetchall()
-                relationships = [
+                lexical_relationships: List[RelationshipTuple] = [
                     cast(
                         RelationshipTuple,
-                        (row["word_id"], row["related_term"], row["relationship_type"]),
+                        (
+                            row["word_id"],
+                            row["related_term"],
+                            row["relationship_type"],
+                            "lexical",
+                            None,
+                            None,
+                        ),
                     )
                     for row in relationships_raw
                     if row["word_id"] is not None
                     and row["related_term"] is not None
                     and row["relationship_type"] is not None
                 ]
+                relationships.extend(lexical_relationships)
+
+                # Fetch emotional relationships when the table exists
+                emotional_count = 0
+                try:
+                    cursor.execute(
+                        self._config.sql_templates["get_all_emotional_relationships"]
+                    )
+                    emotional_rows = cursor.fetchall()
+                    emotional_relationships: List[RelationshipTuple] = [
+                        cast(
+                            RelationshipTuple,
+                            (
+                                row["word_id"],
+                                row["related_term"],
+                                row["relationship_type"],
+                                "emotional",
+                                row["valence"],
+                                row["arousal"],
+                            ),
+                        )
+                        for row in emotional_rows
+                        if row["word_id"] is not None
+                        and row["related_term"] is not None
+                        and row["relationship_type"] is not None
+                    ]
+                    relationships.extend(emotional_relationships)
+                    emotional_count = len(emotional_relationships)
+                except sqlite3.Error as emotional_err:
+                    self.logger.debug(
+                        "Emotional relationships unavailable: %s", emotional_err
+                    )
+
                 self.logger.debug(
-                    f"Fetched {len(relationships)} valid relationship entries."
+                    "Fetched %d lexical and %d emotional relationship entries.",
+                    len(lexical_relationships),
+                    emotional_count,
                 )
 
                 return words, relationships

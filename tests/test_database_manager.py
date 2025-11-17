@@ -35,3 +35,21 @@ def test_word_exists(tmp_path):
     assert not dbm.word_exists("alpha")
     dbm.insert_or_update_word("alpha")
     assert dbm.word_exists("alpha")
+
+
+def test_emotional_relationship_table_schema(tmp_path):
+    dbm = DBManager(db_path=tmp_path / "schema.db")
+    dbm.create_tables()
+
+    with dbm.get_connection() as conn:
+        cursor = conn.execute("PRAGMA table_info(emotional_relationships)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+    assert {
+        "word_id",
+        "related_term",
+        "relationship_type",
+        "valence",
+        "arousal",
+        "last_updated",
+    } <= columns
