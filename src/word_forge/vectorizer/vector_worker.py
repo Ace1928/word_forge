@@ -367,6 +367,7 @@ class VectorWorker(threading.Thread):
             self._current_state = VectorState.RUNNING
 
         self.logger.info("Vector worker started")
+        self._warn_about_demo_configuration()
 
         while not self._stop_flag:
             try:
@@ -402,6 +403,20 @@ class VectorWorker(threading.Thread):
         """Signal the worker thread to stop after the current cycle."""
         self._stop_flag = True
         self.logger.info("Vector worker stop requested")
+
+    def _warn_about_demo_configuration(self) -> None:
+        """Log warnings when the worker is running in demo or non-deterministic mode."""
+
+        if not isinstance(self.embedder, TransformerEmbedder):
+            self.logger.warning(
+                "VectorWorker is using %s; deterministic TransformerEmbedder is required for reproducible persistence.",
+                type(self.embedder).__name__,
+            )
+
+        if getattr(self.vector_store, "demo_mode", False):
+            self.logger.warning(
+                "VectorWorker is running against a demo-mode in-memory VectorStore; vectors will not persist."
+            )
 
     def get_status(self) -> VectorWorkerStatus:
         """

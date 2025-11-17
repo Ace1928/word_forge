@@ -113,6 +113,7 @@ def main() -> None:
                 storage_type=StorageType.MEMORY,  # Use the enum member directly
                 db_manager=db_manager,
                 emotion_manager=emotion_manager,
+                demo_mode=True,
             )
             logger.info("Initialized DB, Emotion, Graph, and Vector managers.")
 

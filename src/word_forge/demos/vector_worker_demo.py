@@ -106,7 +106,9 @@ def main() -> None:
 
             # Initialize VectorStore (in memory for demo)
             vector_store = VectorStore(
-                storage_type=StorageType.MEMORY, db_manager=db_manager
+                storage_type=StorageType.MEMORY,
+                db_manager=db_manager,
+                demo_mode=True,
             )
 
             # Initialize Embedder (Simple for speed, Transformer if available)
