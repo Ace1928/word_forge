@@ -831,13 +831,20 @@ class SQLitePragmas(TypedDict, total=False):
     mmap_size: str
 
 
-class SQLTemplates(TypedDict):
+class SQLTemplates(TypedDict, total=False):
     """SQL query templates for graph operations."""
 
     check_words_table: str
     check_relationships_table: str
     fetch_all_words: str
+    fetch_words_since: str
     fetch_all_relationships: str
+    fetch_relationships_since: str
+    get_all_words: str
+    get_all_relationships: str
+    get_emotional_relationships: str
+    get_all_emotional_relationships: str
+    get_emotional_relationships_since: str
     insert_sample_word: str
     insert_sample_relationship: str
 

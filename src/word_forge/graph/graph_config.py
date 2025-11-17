@@ -223,11 +223,23 @@ class GraphConfig:
                 WHERE type='table' AND name='relationships'
             """,
             "fetch_all_words": """
-                SELECT id, term, definition FROM words
+                SELECT id, term, last_refreshed FROM words
+            """,
+            "fetch_words_since": """
+                SELECT id, term, last_refreshed
+                FROM words
+                WHERE last_refreshed > ?
+                ORDER BY last_refreshed ASC
             """,
             "fetch_all_relationships": """
                 SELECT word_id, related_term, relationship_type
                 FROM relationships
+            """,
+            "fetch_relationships_since": """
+                SELECT r.word_id, r.related_term, r.relationship_type
+                FROM relationships AS r
+                JOIN words AS w ON w.id = r.word_id
+                WHERE w.last_refreshed > ?
             """,
             "get_all_words": """
                 SELECT id, term, definition FROM words
@@ -244,6 +256,11 @@ class GraphConfig:
             "get_all_emotional_relationships": """
                 SELECT word_id, related_term, relationship_type, valence, arousal
                 FROM emotional_relationships
+            """,
+            "get_emotional_relationships_since": """
+                SELECT word_id, related_term, relationship_type, valence, arousal
+                FROM emotional_relationships
+                WHERE last_updated > ?
             """,
             "insert_sample_word": """
                 INSERT OR IGNORE INTO words (term, definition, part_of_speech)

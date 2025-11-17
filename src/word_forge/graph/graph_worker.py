@@ -14,6 +14,7 @@ from word_forge.exceptions import (  # Import specific exceptions
     GraphLayoutError,
     GraphVisualizationError,
 )
+from word_forge.graph.graph_builder import GraphUpdateMetrics
 from word_forge.graph.graph_manager import GraphManager
 
 
@@ -40,6 +41,10 @@ class WorkerStatus(TypedDict):
     uptime: Optional[float]
     state: str
     last_error: Optional[str]
+    last_new_nodes: int
+    last_new_edges: int
+    last_processed_words: int
+    last_full_rebuild: bool
 
 
 # Define specific GraphWorker exceptions inheriting from GraphError if needed,
@@ -159,6 +164,7 @@ class GraphWorker(threading.Thread):
         self._current_state = WorkerState.STOPPED
         self._status_lock = threading.RLock()  # Reentrant lock for status access
         self._error_backoff = self.poll_interval  # Initial backoff delay
+        self._last_cycle_metrics: GraphUpdateMetrics = GraphUpdateMetrics()
 
         self.logger.debug(
             f"GraphWorker initialized: Poll={self.poll_interval}s, Output='{self.output_path}', Viz='{self.visualization_path}'"
@@ -381,11 +387,20 @@ class GraphWorker(threading.Thread):
                     ) from e
 
     def _update_graph(self) -> None:
-        """Update the graph data structure. Currently uses full build."""
-        self.logger.debug("Updating graph (using full build)...")
-        # In future, could switch between build_graph and update_graph
-        self.graph_manager.build_graph()
-        self.logger.debug("Graph update complete.")
+        """Update the graph data structure using incremental refresh when possible."""
+
+        if self.graph_manager.get_node_count() == 0:
+            self.logger.debug("Graph empty; performing full build.")
+            self.graph_manager.build_graph()
+        else:
+            self.logger.debug("Graph initialized; performing incremental update.")
+            self.graph_manager.update_graph()
+
+        metrics = self.graph_manager.get_last_update_metrics()
+        with self._status_lock:
+            self._last_cycle_metrics = metrics
+
+        self.logger.debug("Graph update complete. Metrics: %s", metrics)
 
     def _save_graph(self) -> None:
         """Save the graph to a GEXF file."""
@@ -448,6 +463,10 @@ class GraphWorker(threading.Thread):
                 "uptime": uptime,
                 "state": str(state),
                 "last_error": self._last_error,
+                "last_new_nodes": self._last_cycle_metrics.new_nodes,
+                "last_new_edges": self._last_cycle_metrics.new_edges,
+                "last_processed_words": self._last_cycle_metrics.processed_words,
+                "last_full_rebuild": self._last_cycle_metrics.full_rebuild,
             }
             return status
 
@@ -465,4 +484,9 @@ class GraphWorker(threading.Thread):
                     if self._current_state == WorkerState.ERROR
                     else 0
                 ),
+                "last_new_nodes": self._last_cycle_metrics.new_nodes,
+                "last_new_edges": self._last_cycle_metrics.new_edges,
+                "last_processed_words": self._last_cycle_metrics.processed_words,
+                "last_full_rebuild": self._last_cycle_metrics.full_rebuild,
+                "last_refresh_watermark": self._last_cycle_metrics.max_last_refreshed,
             }

@@ -59,7 +59,7 @@ from word_forge.graph.graph_analysis import (
     TransitionResult,
     ValenceDistResult,
 )
-from word_forge.graph.graph_builder import GraphBuilder
+from word_forge.graph.graph_builder import GraphBuilder, GraphUpdateMetrics
 from word_forge.graph.graph_config import (
     GraphConfig,
     GraphInfoDict,
@@ -212,6 +212,12 @@ class GraphManager:
         """
         with self._graph_lock:
             return self.builder.update_graph()
+
+    def get_last_update_metrics(self) -> GraphUpdateMetrics:
+        """Expose metrics from the most recent graph build or update cycle."""
+
+        with self._graph_lock:
+            return self.builder.last_update_metrics
 
     def ensure_sample_data(self) -> bool:
         """
