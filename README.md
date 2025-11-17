@@ -86,11 +86,31 @@ While running, the CLI prints periodic progress reports indicating how many
 words have been processed, how many succeeded or failed, and the remaining
 queue size. This provides real‑time insight into long running operations.
 
-Other commands such as `python lexical_proto.py word` or the graph builder demos
+The CLI also exposes focused worker orchestration commands that wrap the
+existing managers/workers so you can drive individual stages without writing
+Python scripts:
+
+```bash
+# Build or refresh the graph database with progress logs
+word_forge graph build --timeout 180
+
+# Render the latest graph into HTML (optionally open a browser)
+word_forge graph visualize --3d --open-browser
+
+# Generate vector embeddings in a single cycle
+word_forge vector index --embedder MiniLM-L6-v2
+
+# Annotate any words missing emotion data
+word_forge emotion annotate --strategy hybrid
+
+# Run the full demo pipeline (sample data → vectors → visualization)
+word_forge demo full --3d --open-browser
+```
+
+Other utilities such as `python lexical_proto.py word` or the graph builder demos
 emit step-by-step progress messages while fetching data, embedding vectors, and
-constructing the knowledge graph. These updates appear on the console so you can
-track exactly which stage is running. Install the visualization extra before
-running the graph demos so Pyvis/Plotly are available:
+constructing the knowledge graph. Install the visualization extra before running
+graph demos so Pyvis/Plotly are available:
 
 ```bash
 pip install -e .[visualization]
