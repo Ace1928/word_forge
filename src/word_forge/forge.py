@@ -155,6 +155,21 @@ def start(
         LOGGER.info("Word Forge stopped")
 
 
+def run_setup_nltk() -> int:
+    """Ensure all required NLTK corpora are installed locally."""
+
+    _setup_logging()
+    LOGGER.info("Checking NLTK dependencies")
+    from word_forge.utils.nltk_utils import ensure_nltk_data
+
+    downloaded = ensure_nltk_data(logger=LOGGER)
+    if downloaded:
+        LOGGER.info("Downloaded NLTK corpora: %s", ", ".join(downloaded))
+    else:
+        LOGGER.info("NLTK corpora already installed; no downloads required")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
@@ -290,6 +305,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Seconds to wait for each worker-driven stage",
     )
 
+    subparsers.add_parser(
+        "setup-nltk",
+        help="Download the NLTK corpora required by Word Forge",
+    )
+
     args = parser.parse_args(argv)
 
     exit_code = 0
@@ -360,6 +380,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             demo_parser.print_help()
             exit_code = 1
+    elif args.command == "setup-nltk":
+        exit_code = run_setup_nltk()
     else:
         parser.print_help()
         exit_code = 1

@@ -182,6 +182,14 @@ This project is licensed under the terms of the [MIT License](LICENSE).
 
 Several components rely on datasets distributed with NLTK. These files are downloaded automatically the first time Word Forge accesses WordNet or related features via `ensure_nltk_data()`.
 
+To prepare an environment ahead of time run:
+
+```bash
+word_forge setup-nltk
+```
+
+The command prints the corpora it downloads (WordNet, Punkt, stopwords, VADER lexicon, etc.) and exits once everything is cached locally. Subsequent runs reuse the local copies, but the automatic fallback remains available so long as the first run has network access.
+
 Ensure the running environment has internet access on the initial run so these resources can be retrieved.
 
 Word Forge is a modular lexical processing and enrichment toolkit. It builds a comprehensive lexical network while providing vector search, emotion analysis, and graph capabilities. The project embraces the "Eidosian" design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.

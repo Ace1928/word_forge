@@ -22,39 +22,6 @@ from word_forge.utils.nltk_utils import ensure_nltk_data
 
 logger = logging.getLogger(__name__)
 
-# Download required NLTK resources preemptively and silently
-REQUIRED_NLTK_RESOURCES = frozenset(
-    [
-        "wordnet",
-        "omw-1.4",
-        "punkt",
-        "averaged_perceptron_tagger",
-        "stopwords",
-        "maxent_ne_chunker",
-        "words",
-    ]
-)
-
-
-_initialized = False
-
-
-def _ensure_nltk_resources() -> None:
-    """Initialize all required NLTK resources silently."""
-    global _initialized
-    if _initialized:
-        return
-    ensure_nltk_data()
-    for resource in REQUIRED_NLTK_RESOURCES:
-        if resource in {"wordnet", "omw-1.4"}:
-            continue
-        nltk.download(resource, quiet=True)  # type: ignore
-    _initialized = True
-
-
-# Resources will be initialized on first use
-
-
 @dataclass
 class ProcessingStatistics:
     """Tracks and reports processing metrics with atomic counters."""
@@ -117,7 +84,7 @@ class TermExtractor:
 
     def __init__(self) -> None:
         """Initialize the term extractor with necessary NLP components."""
-        _ensure_nltk_resources()
+        ensure_nltk_data()
         self._stop_words: FrozenSet[str] = frozenset(
             nltk.corpus.stopwords.words("english")  # type: ignore
         )

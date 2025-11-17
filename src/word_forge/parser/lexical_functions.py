@@ -32,11 +32,6 @@ from word_forge.configs.config_essentials import (
 )
 from word_forge.parser.language_model import ModelState
 
-# Download NLTK data quietly
-nltk.download("wordnet", quiet=True)  # type: ignore
-nltk.download("omw-1.4", quiet=True)  # type: ignore
-
-
 # ============================================================================
 #                           FILE OPERATIONS
 # ============================================================================

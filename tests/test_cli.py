@@ -194,3 +194,17 @@ def test_demo_full_command(monkeypatch):
         "open_in_browser": True,
         "timeout": 20.0,
     }
+
+
+def test_setup_nltk_command(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    called = {"count": 0}
+
+    def fake_run_setup_nltk():
+        called["count"] += 1
+        return 0
+
+    monkeypatch.setattr(module, "run_setup_nltk", fake_run_setup_nltk)
+    result = module.main(["setup-nltk"])
+    assert result == 0
+    assert called["count"] == 1
