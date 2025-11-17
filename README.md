@@ -23,6 +23,22 @@ Development tools (formatter, linter, tests) are available via:
 pip install -e .[dev]
 ```
 
+### Feature Extras
+
+Install optional feature bundles as needed:
+
+- **Vector search & CLI processing** (ChromaDB + sentence transformers):
+  ```bash
+  pip install -e .[vector]
+  ```
+- **Graph visualization** (Pyvis + Plotly):
+  ```bash
+  pip install -e .[visualization]
+  ```
+
+The `word_forge` CLI relies on the vector stack for semantic search. Install the
+`vector` extra before running CLI commands or the vector worker demos.
+
 A `requirements.txt` file is also provided if your tooling requires it:
 ```bash
 pip install -r requirements.txt
@@ -49,6 +65,7 @@ The package installs a `word_forge` executable. Launch the
 automatic parser and worker pool by running:
 
 ```bash
+pip install -e .[vector]
 word_forge start
 ```
 
@@ -72,7 +89,13 @@ queue size. This provides real‑time insight into long running operations.
 Other commands such as `python lexical_proto.py word` or the graph builder demos
 emit step-by-step progress messages while fetching data, embedding vectors, and
 constructing the knowledge graph. These updates appear on the console so you can
-track exactly which stage is running.
+track exactly which stage is running. Install the visualization extra before
+running the graph demos so Pyvis/Plotly are available:
+
+```bash
+pip install -e .[visualization]
+python -m word_forge.graph.graph_manager --help
+```
 
 ## Development and Contributing
 

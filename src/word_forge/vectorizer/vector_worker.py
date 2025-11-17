@@ -331,11 +331,16 @@ class VectorWorker(threading.Thread):
                 self.embedder = TransformerEmbedder(model_name=embedder)
                 if logger:
                     logger.info(f"Created TransformerEmbedder with model '{embedder}'")
-            except Exception as e:
-                if logger:
-                    logger.warning(f"Failed to initialize transformer embedder: {e}")
-                    logger.info("Falling back to SimpleEmbedder")
-                self.embedder = SimpleEmbedder()
+            except EmbeddingError as exc:
+                install_hint = 'pip install "word_forge[vector]"'
+                raise EmbeddingError(
+                    "Transformer embeddings require the optional vector dependencies. "
+                    f"Install them via {install_hint} and retry."
+                ) from exc
+            except Exception as exc:
+                raise EmbeddingError(
+                    f"Failed to initialize transformer embedder '{embedder}': {exc}"
+                ) from exc
         else:
             self.embedder = embedder
 
@@ -618,7 +623,7 @@ class TransformerEmbedder:
             self.dimension = 1024
         except ImportError:
             raise EmbeddingError(
-                "Failed to import sentence_transformers. Install with: pip install sentence-transformers"
+                'Failed to import sentence_transformers. Install the optional vector extras via: pip install "word_forge[vector]"'
             )
         except Exception as e:
             raise EmbeddingError(
