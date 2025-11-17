@@ -40,12 +40,16 @@ from typing import (
     overload,
 )
 
+_VECTOR_IMPORT_ERROR: Optional[Exception]
 try:  # Optional heavy dependencies
     import chromadb
     from sentence_transformers import SentenceTransformer
-except Exception:  # pragma: no cover - allow running without chromadb
+except Exception as import_error:  # pragma: no cover - allow running without chromadb
     chromadb = None  # type: ignore
     SentenceTransformer = None  # type: ignore
+    _VECTOR_IMPORT_ERROR = import_error
+else:
+    _VECTOR_IMPORT_ERROR = None
 
 import numpy as np
 from numpy.typing import NDArray
@@ -377,17 +381,17 @@ class VectorStore:
 
         # Fallback if optional dependencies are missing
         if chromadb is None or SentenceTransformer is None:
-            self.index_path = Path(index_path or "")
-            self.storage_type = StorageType.MEMORY
-            self.db_manager = db_manager
-            self.emotion_manager = emotion_manager
-            self.model_name = model_name or "simple"
-            self.dimension = dimension or 768
-            self.client = None
-            self.collection = {}  # type: ignore[var-annotated]
-            self.instruction_templates = {}
-            self.logger.warning("ChromaDB not available, using in-memory vector store")
-            return
+            install_hint = 'pip install "word_forge[vector]"'
+            missing_parts = []
+            if chromadb is None:
+                missing_parts.append("chromadb")
+            if SentenceTransformer is None:
+                missing_parts.append("sentence-transformers")
+            missing_str = ", ".join(missing_parts)
+            raise InitializationError(
+                "VectorStore requires optional vector dependencies. "
+                f"Install missing packages ({missing_str}) via {install_hint} to enable semantic search."
+            ) from _VECTOR_IMPORT_ERROR
 
         # Store configuration, using defaults from config object
         self.index_path = Path(index_path or config.vectorizer.index_path)

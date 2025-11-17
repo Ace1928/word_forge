@@ -47,6 +47,7 @@ except ImportError:
     _plotly_available = False
     go = None  # Define for type checking
 
+_VISUALIZATION_INSTALL_HINT = 'pip install "word_forge[visualization]"'
 
 # Import necessary components
 from word_forge.exceptions import GraphVisualizationError
@@ -155,9 +156,11 @@ class GraphVisualizer:
         """
         if not _pyvis_available:
             self.logger.error("Pyvis library is required for 2D visualization.")
-            self.logger.error("Install with: pip install pyvis")
+            self.logger.error(
+                f"Install with the visualization extras: {_VISUALIZATION_INSTALL_HINT}"
+            )
             raise GraphVisualizationError(
-                "Missing 'pyvis' library for 2D visualization."
+                "Missing 'pyvis' library. Install the visualization extras to enable 2D graph rendering."
             )
 
         if self.manager.g.number_of_nodes() == 0:
@@ -264,9 +267,11 @@ class GraphVisualizer:
         """
         if not _plotly_available:
             self.logger.error("Plotly library is required for 3D visualization.")
-            self.logger.error("Install with: pip install plotly")
+            self.logger.error(
+                f"Install with the visualization extras: {_VISUALIZATION_INSTALL_HINT}"
+            )
             raise GraphVisualizationError(
-                "Missing 'plotly' library for 3D visualization."
+                "Missing 'plotly' library. Install the visualization extras to enable 3D graph rendering."
             )
 
         if self.manager.g.number_of_nodes() == 0:
@@ -510,7 +515,7 @@ class GraphVisualizer:
         """
         if not _plotly_available:
             raise GraphVisualizationError(
-                "Plotly library missing, cannot configure 3D figure."
+                "Plotly library missing. Install the visualization extras to configure 3D figures."
             )
 
         self.logger.debug("Configuring Plotly 3D figure...")

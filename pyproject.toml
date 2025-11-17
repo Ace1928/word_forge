@@ -28,6 +28,11 @@ dependencies = [
     "transformers>=4.15.0",
     "networkx>=2.8.0",
     "numpy>=1.23.0",
+    "pyvis>=0.3.2",
+    "plotly>=5.24.0",
+    "sentence-transformers>=2.2.2",
+    "chromadb>=0.4.24",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +44,15 @@ dev = [
     "pytest",
     "pytest-cov",
     "pre-commit",
+]
+visualization = [
+    "pyvis>=0.3.2",
+    "plotly>=5.24.0",
+]
+vector = [
+    "sentence-transformers>=2.2.2",
+    "chromadb>=0.4.24",
+    "pyyaml>=6.0.0",
 ]
 
 [tool.setuptools.packages.find]
