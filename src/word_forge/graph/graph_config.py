@@ -55,23 +55,29 @@ from word_forge.configs.config_essentials import (
 # ==========================================
 # Type definitions
 WordId = int  # Node identifier type
-Position = Tuple[float, ...]  # Position coordinates (2D or 3D)
-PositionDict = Dict[WordId, Position]
-GraphData = Tuple[List[Tuple[WordId, str]], List[Tuple[WordId, str, str]]]
-
-# Type aliases for improved readability and type safety
-WordId = int
 Term = str
 RelType = str
 ColorHex = str  # Define ColorHex as a string alias
-WordTuple = Tuple[WordId, Term]
-RelationshipTuple = Tuple[WordId, Term, RelType]
-GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
-Position = Union[Tuple[float, float], Tuple[float, float, float]]
-PositionDict = Dict[int, Position]
+
 RelationshipDimension = Literal[
     "lexical", "emotional", "affective", "connotative", "contextual"
 ]
+
+WordTuple = Tuple[WordId, Term]
+
+RelationshipTuple = Tuple[
+    WordId,
+    Term,
+    RelType,
+    RelationshipDimension,
+    Optional[float],
+    Optional[float],
+]
+
+GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
+
+Position = Union[Tuple[float, float], Tuple[float, float, float]]
+PositionDict = Dict[WordId, Position]
 
 RelationshipStrength = float  # 0.0 to 1.0, representing connection strength
 
@@ -109,6 +115,9 @@ class RelationshipTupleDict(TypedDict):
     word_id: int
     related_term: str
     relationship_type: str
+    dimension: RelationshipDimension
+    valence: Optional[float]
+    arousal: Optional[float]
 
 
 class GraphInfoDict(TypedDict):

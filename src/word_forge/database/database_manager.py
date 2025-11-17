@@ -368,6 +368,20 @@ CREATE TABLE IF NOT EXISTS relationships (
 )
 """
 
+SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE = """
+CREATE TABLE IF NOT EXISTS emotional_relationships (
+    id INTEGER PRIMARY KEY,
+    word_id INTEGER NOT NULL,
+    related_term TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    valence REAL NOT NULL,
+    arousal REAL NOT NULL,
+    last_updated REAL NOT NULL,
+    FOREIGN KEY(word_id) REFERENCES words(id),
+    UNIQUE(word_id, related_term, relationship_type)
+)
+"""
+
 SQL_CREATE_WORD_ID_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_word_term ON words(term)
 """
@@ -375,6 +389,11 @@ CREATE INDEX IF NOT EXISTS idx_word_term ON words(term)
 SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
 ON relationships(word_id, related_term, relationship_type)
+"""
+
+SQL_CREATE_UNIQUE_EMOTIONAL_RELATIONSHIP_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_emotional_relationship
+ON emotional_relationships(word_id, related_term, relationship_type)
 """
 
 SQL_CHECK_WORDS_TABLE = (
@@ -528,10 +547,12 @@ class DBManager:
                 # Create core tables
                 conn.execute(SQL_CREATE_WORDS_TABLE)
                 conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
+                conn.execute(SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE)
 
                 # Create indexes for performance
                 conn.execute(SQL_CREATE_WORD_ID_INDEX)
                 conn.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
+                conn.execute(SQL_CREATE_UNIQUE_EMOTIONAL_RELATIONSHIP_INDEX)
 
                 # Configure database settings
                 conn.execute(SQL_PRAGMA_FOREIGN_KEYS)

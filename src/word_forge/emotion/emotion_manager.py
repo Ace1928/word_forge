@@ -74,6 +74,19 @@ from word_forge.parser.language_model import ModelState
 logger = logging.getLogger(__name__)
 LLM_AVAILABLE = True
 
+# SQL statement for storing emotional relationships derived from word analysis
+SQL_UPSERT_EMOTIONAL_RELATIONSHIP = """
+INSERT INTO emotional_relationships
+    (word_id, related_term, relationship_type, valence, arousal, last_updated)
+VALUES
+    (?, ?, ?, ?, ?, ?)
+ON CONFLICT(word_id, related_term, relationship_type)
+DO UPDATE SET
+    valence=excluded.valence,
+    arousal=excluded.arousal,
+    last_updated=excluded.last_updated
+"""
+
 # Set of positive emotion categories for efficient categorization
 POSITIVE_EMOTIONS = {EmotionCategory.HAPPINESS, EmotionCategory.SURPRISE}
 # Set of negative emotion categories for efficient categorization
@@ -309,12 +322,27 @@ class EmotionManager:
         """
         valence, arousal = self._clamp_emotional_values(valence, arousal)
 
+        relationship_type, anchor_term = self._derive_emotional_relationship(
+            valence, arousal
+        )
+        self._ensure_emotion_anchor(anchor_term)
+
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
+                timestamp = time.time()
                 cursor.execute(
                     self.config.get_sql_template("insert_word_emotion"),
-                    (word_id, valence, arousal, time.time()),
+                    (word_id, valence, arousal, timestamp),
+                )
+                self._store_emotional_relationship(
+                    cursor,
+                    word_id,
+                    anchor_term,
+                    relationship_type,
+                    valence,
+                    arousal,
+                    timestamp,
                 )
                 conn.commit()
         except sqlite3.Error as e:
@@ -1318,3 +1346,67 @@ Focus on emotional qualities rather than definitions."""
         except Exception as e:
             print(f"Error enriching word emotions for '{term}': {e}")
             return False
+
+    def _store_emotional_relationship(
+        self,
+        cursor: sqlite3.Cursor,
+        word_id: int,
+        anchor_term: str,
+        relationship_type: str,
+        valence: float,
+        arousal: float,
+        timestamp: float,
+    ) -> None:
+        """Persist the derived emotional relationship for a word."""
+
+        try:
+            cursor.execute(
+                SQL_UPSERT_EMOTIONAL_RELATIONSHIP,
+                (word_id, anchor_term, relationship_type, valence, arousal, timestamp),
+            )
+        except sqlite3.Error as e:
+            raise EmotionError(
+                f"Failed to store emotional relationship for word_id {word_id}: {e}",
+                {
+                    "word_id": word_id,
+                    "related_term": anchor_term,
+                    "relationship_type": relationship_type,
+                },
+            ) from e
+
+    def _derive_emotional_relationship(
+        self, valence: float, arousal: float
+    ) -> Tuple[str, str]:
+        """Map valence/arousal readings to a relationship type and anchor term."""
+
+        if valence >= 0.35:
+            if arousal >= 0.6:
+                return "joy_associated", "joy"
+            return "trust_associated", "trust"
+        if valence <= -0.35:
+            if arousal >= 0.6:
+                return "anger_associated", "anger"
+            return "sadness_associated", "sadness"
+        if arousal >= 0.6:
+            return "emotionally_charged", "excitement"
+        return "emotional_neutral", "calm"
+
+    def _ensure_emotion_anchor(self, term: str) -> None:
+        """Ensure the anchor term exists in the lexical database."""
+
+        if not term:
+            return
+
+        definition = f"Emotion anchor node representing '{term}'."
+        try:
+            self.db_manager.insert_or_update_word(
+                term,
+                definition=definition,
+                part_of_speech="noun",
+                usage_examples=None,
+            )
+        except Exception as exc:
+            raise EmotionError(
+                f"Failed to ensure emotion anchor '{term}': {exc}",
+                {"anchor_term": term},
+            ) from exc
