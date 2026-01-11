@@ -95,19 +95,23 @@ Item Format:
 
 - [ ] **Verify persistence** - Embeddings survive restart
 - [ ] **Polling logic** - Detect new/updated entries
-- [ ] **CLI search command** - `word_forge vector search <query>`
+- [x] **CLI search command** - `word_forge vector search <query>`
+  - Status: Complete - Added search subcommand with query, top-k, and content-type options
 
 ### 1.3 Graph Module [P0]
 
 - [x] **Rebuild from database** - `GraphManager.build_graph()` works
 - [ ] **Incremental updates** - Avoid full rebuilds
-- [ ] **Export utilities** - GEXF, GraphML formats
+- [x] **Export utilities** - GEXF, GraphML formats
+  - Status: Complete - GraphIO supports save_to_gexf, load_from_gexf, and export_subgraph
 
 ### 1.4 Conversation & Emotion [P1]
 
-- [ ] **Store conversations** - Multi-turn persistence
+- [x] **Store conversations** - Multi-turn persistence
+  - Status: Complete - ConversationManager stores conversations in SQLite
 - [ ] **Emotion integration** - Auto-annotate messages
-- [ ] **CLI commands** - `word_forge conversation start/list`
+- [x] **CLI commands** - `word_forge conversation start/list`
+  - Status: Complete - Added start, list, and show subcommands
 
 ### 1.5 Worker Orchestration [P1]
 
@@ -128,7 +132,8 @@ Item Format:
   - Status: Complete - Added comprehensive module docstring
 - [x] **`src/word_forge/conversation/conversation_manager.py`** - Missing module docstring
   - Status: Complete - Added comprehensive module docstring
-- [ ] **`src/word_forge/demos/*.py`** - Demo files lack docstrings
+- [x] **`src/word_forge/demos/*.py`** - Demo files lack docstrings
+  - Status: Complete - Added docstrings to __init__.py, cli_demo.py, tools_demo.py
 
 ### 2.2 File Organization [P2]
 
@@ -141,8 +146,10 @@ Item Format:
 
 ### 2.3 Constants [P2]
 
-- [ ] **`src/word_forge/forge.py:121`** - Extract `0.5` to `MAIN_LOOP_SLEEP_INTERVAL`
-- [ ] **`src/word_forge/forge.py:122`** - Extract `5` to `PROGRESS_REPORT_INTERVAL`
+- [x] **`src/word_forge/forge.py:121`** - Extract `0.5` to `MAIN_LOOP_SLEEP_INTERVAL`
+  - Status: Complete - Added constant at module level
+- [x] **`src/word_forge/forge.py:122`** - Extract `5` to `PROGRESS_REPORT_INTERVAL`
+  - Status: Complete - Added constant at module level
 - [ ] **`src/word_forge/emotion/emotion_manager.py:177`** - Extract `100` to config
 - [ ] **`src/word_forge/parser/parser_refiner.py:93-117`** - Move stop words to config
 
@@ -178,9 +185,11 @@ Item Format:
 ### 4.1 README [P1]
 
 - [x] **Architecture diagram** - Added
-- [ ] **Troubleshooting section** - NLTK, models, memory issues
+- [x] **Troubleshooting section** - NLTK, models, memory issues
+  - Status: Complete - Added comprehensive troubleshooting for NLTK, memory, ChromaDB, SQLite, and tests
 - [ ] **Performance benchmarks** - Data size capabilities
-- [ ] **API quick reference** - Main classes table
+- [x] **API quick reference** - Main classes table
+  - Status: Complete - Added Core Classes table and Common Operations examples
 
 ### 4.2 Module Docs [P2]
 
@@ -209,12 +218,14 @@ Item Format:
 | `test_graph_io.py` | ✅ Complete (13 tests) | P1 |
 | `test_graph_query.py` | ✅ Complete (23 tests) | P1 |
 | `test_language_model.py` | ✅ Complete (23 tests) | P1 |
-| `test_parser_config.py` | Missing | P2 |
+| `test_parser_config.py` | ✅ Complete (17 tests) | P2 |
 
 ### 5.2 Test Infrastructure [P1]
 
-- [ ] **`tests/conftest.py`** - Shared fixtures (db, config, mocks)
-- [ ] **`tests/fixtures/`** - Sample data files
+- [x] **`tests/conftest.py`** - Shared fixtures (db, config, mocks)
+  - Status: Complete - Added queue_manager, parser_config, graph_manager, conversation_manager, sample data fixtures
+- [x] **`tests/fixtures/`** - Sample data files
+  - Status: Complete - Added sample_words.json, sample_conversations.json, sample_thesaurus.jsonl
 - [ ] **`pyproject.toml`** - Coverage thresholds
 
 ### 5.3 Test Quality [P2]
@@ -425,7 +436,8 @@ Item Format:
   - Status: Complete - Added VectorError, VectorStorageError, VectorSearchError, VectorIndexError, VectorEmbeddingError
 - [x] **ConversationError** - In central exceptions.py
   - Status: Complete - Added ConversationError, ConversationNotFoundError, ConversationStateError
-- [ ] **Error codes** - Unique identifiers
+- [x] **Error codes** - Unique identifiers
+  - Status: Complete - Added ErrorCode class with WF-{CATEGORY}-{NUMBER} format codes
 
 ### 15.2 Result Pattern [P2]
 
@@ -632,7 +644,7 @@ Item Format:
 ### Immediate Actions (P0)
 
 1. ~~Create missing test files for workers~~ ✅
-2. Add shared test fixtures in conftest.py
+2. ~~Add shared test fixtures in conftest.py~~ ✅
 3. ~~Mock heavy dependencies (torch, chromadb)~~ ✅
 4. Audit SQL queries for parameterization
 5. Add dependency version constraints
@@ -644,6 +656,11 @@ Item Format:
 3. Implement vector persistence verification
 4. Add coverage to CI pipeline
 5. ~~Consolidate exception definitions~~ ✅
+6. ~~Add error codes to exceptions~~ ✅
+7. ~~Add CLI vector search command~~ ✅
+8. ~~Add CLI conversation commands~~ ✅
+9. ~~Add README troubleshooting section~~ ✅
+10. ~~Add README API quick reference~~ ✅
 
 ---
 
@@ -659,6 +676,6 @@ Item Format:
 
 ---
 
-*Document Version: 2.0*  
+*Document Version: 2.1*  
 *Last Updated: 2026-01-11*  
 *Status: Actively Maintained*

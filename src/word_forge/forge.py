@@ -36,6 +36,27 @@ LOGGER = logging.getLogger("word_forge")
 # Package version - dynamically retrieved from package metadata
 __version__ = "0.1.0"
 
+# =============================================================================
+# Processing Constants
+# =============================================================================
+
+# Main loop timing intervals (seconds)
+MAIN_LOOP_SLEEP_INTERVAL: float = 0.5
+PROGRESS_REPORT_INTERVAL: float = 5.0
+
+# Default timeout values (seconds)
+DEFAULT_TIMEOUT: float = 120.0
+DEFAULT_POLL_INTERVAL: float = 0.5
+WORKER_JOIN_TIMEOUT: float = 5.0
+
+# Default worker counts
+DEFAULT_WORKER_COUNT: int = 4
+
+# Search defaults
+DEFAULT_SEARCH_RESULTS: int = 5
+DEFAULT_CONVERSATION_LIMIT: int = 10
+DEFAULT_MESSAGE_LIMIT: int = 20
+
 
 def _get_version() -> str:
     """Get the package version string.
@@ -135,8 +156,8 @@ def start(
     last_report = start_time
     try:
         while True:
-            time.sleep(0.5)
-            if time.time() - last_report >= 5:
+            time.sleep(MAIN_LOOP_SLEEP_INTERVAL)
+            if time.time() - last_report >= PROGRESS_REPORT_INTERVAL:
                 status = worker_pool.get_status()
                 stats = status["stats"]
                 LOGGER.info(
