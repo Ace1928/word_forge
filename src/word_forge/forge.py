@@ -301,6 +301,70 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Seconds between database polling cycles",
     )
 
+    # Vector search command
+    vector_search = vector_sub.add_parser(
+        "search", help="Search the vector index for similar terms"
+    )
+    vector_search.add_argument(
+        "query",
+        nargs="+",
+        help="Query text to search for",
+    )
+    vector_search.add_argument(
+        "-k",
+        "--top-k",
+        type=int,
+        default=5,
+        help="Number of results to return (default: 5)",
+    )
+    vector_search.add_argument(
+        "--content-type",
+        choices=["word", "definition", "example", "all"],
+        default="all",
+        help="Filter by content type (default: all)",
+    )
+
+    # Conversation commands
+    conversation_parser = subparsers.add_parser(
+        "conversation", help="Conversation management commands"
+    )
+    conversation_sub = conversation_parser.add_subparsers(dest="conversation_command")
+
+    conversation_start = conversation_sub.add_parser(
+        "start", help="Start a new conversation"
+    )
+    conversation_start.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Optional title for the conversation",
+    )
+
+    conversation_list = conversation_sub.add_parser(
+        "list", help="List all conversations"
+    )
+    conversation_list.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum number of conversations to list (default: 10)",
+    )
+
+    conversation_show = conversation_sub.add_parser(
+        "show", help="Show messages in a conversation"
+    )
+    conversation_show.add_argument(
+        "conversation_id",
+        type=int,
+        help="ID of the conversation to show",
+    )
+    conversation_show.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of messages to show (default: 20)",
+    )
+
     emotion_parser = subparsers.add_parser(
         "emotion", help="Emotion annotation utilities"
     )
@@ -416,8 +480,36 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 else 1
             )
+        elif args.vector_command == "search":
+            query_text = " ".join(args.query)
+            content_type = None if args.content_type == "all" else args.content_type
+            exit_code = (
+                0
+                if run_vector_search(
+                    query=query_text,
+                    k=args.top_k,
+                    content_type=content_type,
+                )
+                else 1
+            )
         else:
             vector_parser.print_help()
+            exit_code = 1
+    elif args.command == "conversation":
+        if args.conversation_command == "start":
+            exit_code = 0 if run_conversation_start(title=args.title) else 1
+        elif args.conversation_command == "list":
+            exit_code = 0 if run_conversation_list(limit=args.limit) else 1
+        elif args.conversation_command == "show":
+            exit_code = (
+                0
+                if run_conversation_show(
+                    conversation_id=args.conversation_id, limit=args.limit
+                )
+                else 1
+            )
+        else:
+            conversation_parser.print_help()
             exit_code = 1
     elif args.command == "emotion":
         if args.emotion_command == "annotate":
@@ -703,5 +795,280 @@ def run_demo_full(
             open_in_browser=open_in_browser,
         )
         return vector_ok and graph_ok and viz_ok
+    finally:
+        db_manager.close()
+
+
+def run_vector_search(
+    *,
+    query: str,
+    k: int = 5,
+    content_type: Optional[str] = None,
+) -> bool:
+    """Search the vector index for terms similar to the query.
+
+    Parameters
+    ----------
+    query:
+        The search query text.
+    k:
+        Number of results to return.
+    content_type:
+        Optional filter for content type (word, definition, example).
+
+    Returns
+    -------
+    bool
+        True if search completed successfully, False otherwise.
+    """
+    _setup_logging()
+    from word_forge.database.database_manager import DBManager
+    from word_forge.vectorizer.vector_store import VectorStore
+
+    db_manager = DBManager()
+    try:
+        db_manager.create_tables()
+        vector_store = VectorStore(db_manager=db_manager)
+
+        LOGGER.info("Searching for: '%s' (top %d results)", query, k)
+
+        # Prepare filter metadata if content_type specified
+        filter_metadata = None
+        if content_type:
+            filter_metadata = {"content_type": content_type}
+
+        try:
+            results = vector_store.search(
+                query_text=query,
+                k=k,
+                filter_metadata=filter_metadata,
+            )
+
+            if not results:
+                print(f"No results found for query: '{query}'")
+                return True
+
+            print(f"\nSearch Results for '{query}':")
+            print("-" * 60)
+            for i, result in enumerate(results, 1):
+                distance = result.get("distance", 0.0)
+                metadata = result.get("metadata", {})
+                text = result.get("text", "")
+
+                term = metadata.get("term", "")
+                definition = metadata.get("definition", "")
+                ctype = metadata.get("content_type", "")
+
+                print(f"\n{i}. {term or text[:50]}")
+                print(f"   Type: {ctype} | Distance: {distance:.4f}")
+                if definition:
+                    print(f"   Definition: {definition[:100]}")
+
+            print("-" * 60)
+            return True
+
+        except Exception as e:
+            LOGGER.error("Vector search failed: %s", e)
+            print(f"Search error: {e}")
+            return False
+
+    finally:
+        db_manager.close()
+
+
+def run_conversation_start(*, title: Optional[str] = None) -> bool:
+    """Start a new conversation session.
+
+    Parameters
+    ----------
+    title:
+        Optional title for the conversation.
+
+    Returns
+    -------
+    bool
+        True if conversation was created successfully, False otherwise.
+    """
+    _setup_logging()
+    from word_forge.database.database_manager import DBManager
+
+    db_manager = DBManager()
+    try:
+        db_manager.create_tables()
+
+        # Create conversation tables if they don't exist
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status TEXT DEFAULT 'ACTIVE' NOT NULL,
+                    created_at REAL DEFAULT (strftime('%s','now')) NOT NULL,
+                    updated_at REAL DEFAULT (strftime('%s','now')) NOT NULL
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL,
+                    speaker TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    timestamp REAL DEFAULT (strftime('%s','now')) NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+            cursor.execute("INSERT INTO conversations (status) VALUES ('ACTIVE');")
+            conv_id = cursor.lastrowid
+            conn.commit()
+
+            print(f"Started new conversation with ID: {conv_id}")
+            if title:
+                print(f"Title: {title}")
+            return True
+
+    except Exception as e:
+        LOGGER.error("Failed to start conversation: %s", e)
+        print(f"Error: {e}")
+        return False
+    finally:
+        db_manager.close()
+
+
+def run_conversation_list(*, limit: int = 10) -> bool:
+    """List recent conversations.
+
+    Parameters
+    ----------
+    limit:
+        Maximum number of conversations to list.
+
+    Returns
+    -------
+    bool
+        True if listing completed successfully, False otherwise.
+    """
+    _setup_logging()
+    from word_forge.database.database_manager import DBManager
+
+    db_manager = DBManager()
+    try:
+        db_manager.create_tables()
+
+        with db_manager.get_connection() as conn:
+            import sqlite3
+
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    c.id,
+                    c.status,
+                    datetime(c.created_at, 'unixepoch') as created_at,
+                    COUNT(cm.id) as message_count
+                FROM conversations c
+                LEFT JOIN conversation_messages cm ON c.id = cm.conversation_id
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                print("No conversations found.")
+                return True
+
+            print(f"\nConversations (showing up to {limit}):")
+            print("-" * 60)
+            for row in rows:
+                print(
+                    f"  ID: {row['id']} | Messages: {row['message_count']} | Created: {row['created_at']}"
+                )
+            print("-" * 60)
+            return True
+
+    except Exception as e:
+        LOGGER.error("Failed to list conversations: %s", e)
+        print(f"Error: {e}")
+        return False
+    finally:
+        db_manager.close()
+
+
+def run_conversation_show(*, conversation_id: int, limit: int = 20) -> bool:
+    """Show messages in a conversation.
+
+    Parameters
+    ----------
+    conversation_id:
+        ID of the conversation to show.
+    limit:
+        Maximum number of messages to display.
+
+    Returns
+    -------
+    bool
+        True if display completed successfully, False otherwise.
+    """
+    _setup_logging()
+    from word_forge.database.database_manager import DBManager
+
+    db_manager = DBManager()
+    try:
+        db_manager.create_tables()
+
+        with db_manager.get_connection() as conn:
+            import sqlite3
+
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # First verify conversation exists
+            cursor.execute(
+                "SELECT id FROM conversations WHERE id = ?;", (conversation_id,)
+            )
+            if cursor.fetchone() is None:
+                print(f"Conversation {conversation_id} not found.")
+                return False
+
+            cursor.execute(
+                """
+                SELECT
+                    speaker as role,
+                    text as content,
+                    datetime(timestamp, 'unixepoch') as created_at
+                FROM conversation_messages
+                WHERE conversation_id = ?
+                ORDER BY timestamp ASC
+                LIMIT ?;
+                """,
+                (conversation_id, limit),
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                print(f"No messages found in conversation {conversation_id}.")
+                return True
+
+            print(f"\nConversation {conversation_id} (showing up to {limit} messages):")
+            print("-" * 60)
+            for row in rows:
+                role_display = "User" if row["role"] == "user" else "Assistant"
+                print(f"\n[{role_display}] ({row['created_at']})")
+                print(f"  {row['content']}")
+            print("-" * 60)
+            return True
+
+    except Exception as e:
+        LOGGER.error("Failed to get messages: %s", e)
+        print(f"Error: {e}")
+        return False
     finally:
         db_manager.close()

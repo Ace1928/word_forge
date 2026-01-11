@@ -1067,6 +1067,195 @@ class ConversationManager:
                 failure_error.severity,
             )
 
+    def list_conversations(self, limit: int = 10) -> Result[List[ConversationDict]]:
+        """
+        List recent conversations with their message counts.
+
+        Retrieves conversations from the database ordered by most recently updated.
+        Uses the Result pattern for explicit success/failure signaling.
+
+        Args:
+            limit: Maximum number of conversations to return.
+
+        Returns:
+            Result[List[ConversationDict]]: On success, contains a list of conversation
+                dictionaries. On failure, contains an Error object.
+        """
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT
+                        c.id,
+                        c.status,
+                        c.created_at,
+                        c.updated_at,
+                        COUNT(cm.id) as message_count
+                    FROM conversations c
+                    LEFT JOIN conversation_messages cm ON c.id = cm.conversation_id
+                    GROUP BY c.id
+                    ORDER BY c.updated_at DESC
+                    LIMIT ?;
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+                conversations: List[ConversationDict] = []
+                for row in rows:
+                    conv: ConversationDict = {
+                        "id": row["id"],
+                        "status": row["status"],
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                        "message_count": row["message_count"],
+                    }
+                    conversations.append(conv)
+                return Result[List[ConversationDict]].success(conversations)
+        except sqlite3.Error as e:
+            error = Error.create(
+                message=f"SQLite error listing conversations: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={"sql_operation": "list_conversations"},
+            )
+            return Result[List[ConversationDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error listing conversations: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={"sql_operation": "list_conversations"},
+            )
+            return Result[List[ConversationDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error listing conversations: {e}",
+                code="UNEXPECTED_LIST_CONV_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "list_conversations",
+                    "exception_type": type(e).__name__,
+                },
+            )
+            return Result[List[ConversationDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+
+    def get_messages(
+        self, conversation_id: int, limit: int = 50
+    ) -> Result[List[MessageDict]]:
+        """
+        Get messages from a specific conversation.
+
+        Retrieves messages from the database ordered by timestamp.
+        Uses the Result pattern for explicit success/failure signaling.
+
+        Args:
+            conversation_id: The ID of the conversation to retrieve messages from.
+            limit: Maximum number of messages to return.
+
+        Returns:
+            Result[List[MessageDict]]: On success, contains a list of message
+                dictionaries. On failure, contains an Error object.
+        """
+        try:
+            with self._db_connection() as conn:
+                cursor = conn.cursor()
+                # First verify conversation exists
+                cursor.execute(SQL_GET_CONVERSATION, (conversation_id,))
+                if cursor.fetchone() is None:
+                    error = Error.create(
+                        message=f"Conversation with ID {conversation_id} not found.",
+                        code="CONVERSATION_NOT_FOUND",
+                        category=ErrorCategory.VALIDATION,
+                        severity=ErrorSeverity.WARNING,
+                        context={"conversation_id": str(conversation_id)},
+                    )
+                    return Result[List[MessageDict]].failure(
+                        error.code,
+                        error.message,
+                        error.context,
+                        error.category,
+                        error.severity,
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        speaker as role,
+                        text as content,
+                        timestamp as created_at
+                    FROM conversation_messages
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp ASC
+                    LIMIT ?;
+                    """,
+                    (conversation_id, limit),
+                )
+                rows = cursor.fetchall()
+                messages: List[MessageDict] = []
+                for row in rows:
+                    msg: MessageDict = {
+                        "id": row["id"],
+                        "role": row["role"],
+                        "content": row["content"],
+                        "created_at": row["created_at"],
+                    }
+                    messages.append(msg)
+                return Result[List[MessageDict]].success(messages)
+        except sqlite3.Error as e:
+            error = Error.create(
+                message=f"SQLite error getting messages: {e}",
+                code="DB_SQLITE_ERROR",
+                category=ErrorCategory.EXTERNAL,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_messages",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[List[MessageDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except ConversationError as e:
+            error = Error.create(
+                message=f"Database connection error getting messages: {e}",
+                code="DB_CONNECTION_ERROR",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_messages",
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[List[MessageDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+        except Exception as e:
+            error = Error.create(
+                message=f"Unexpected error getting messages: {e}",
+                code="UNEXPECTED_GET_MSG_ERROR",
+                category=ErrorCategory.UNEXPECTED,
+                severity=ErrorSeverity.ERROR,
+                context={
+                    "sql_operation": "get_messages",
+                    "exception_type": type(e).__name__,
+                    "conversation_id": str(conversation_id),
+                },
+            )
+            return Result[List[MessageDict]].failure(
+                error.code, error.message, error.context, error.category, error.severity
+            )
+
 
 __all__ = [
     "ConversationManager",

@@ -321,6 +321,175 @@ def sample_graph():
 
 
 # =============================================================================
+# Queue and Worker Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def queue_manager():
+    """Create a QueueManager instance for testing.
+
+    Returns:
+        QueueManager: A fresh queue manager instance
+    """
+    from word_forge.queue.queue_manager import QueueManager
+
+    return QueueManager()
+
+
+@pytest.fixture
+def parser_config(tmp_path: Path):
+    """Create a ParserConfig instance for testing.
+
+    Args:
+        tmp_path: Pytest fixture providing temporary directory
+
+    Returns:
+        ParserConfig: Configuration with test data directory
+    """
+    from word_forge.parser.parser_config import ParserConfig
+
+    return ParserConfig(data_dir=str(tmp_path), enable_model=False)
+
+
+@pytest.fixture
+def graph_manager(db_manager):
+    """Create a GraphManager instance for testing.
+
+    Args:
+        db_manager: Database manager fixture
+
+    Returns:
+        GraphManager: Graph manager configured with test database
+    """
+    from word_forge.graph.graph_manager import GraphManager
+
+    return GraphManager(db_manager=db_manager)
+
+
+@pytest.fixture
+def conversation_manager(db_manager, emotion_manager):
+    """Create a ConversationManager instance for testing.
+
+    Args:
+        db_manager: Database manager fixture
+        emotion_manager: Emotion manager fixture
+
+    Returns:
+        ConversationManager: Conversation manager configured for testing
+    """
+    from word_forge.conversation.conversation_manager import ConversationManager
+
+    return ConversationManager(db_manager=db_manager, emotion_manager=emotion_manager)
+
+
+# =============================================================================
+# Sample Data Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def sample_words_data():
+    """Provide sample word data for testing.
+
+    Returns:
+        list: List of sample word dictionaries
+    """
+    return [
+        {
+            "term": "happiness",
+            "definition": "a state of well-being",
+            "pos": "noun",
+            "examples": ["Her happiness was contagious."],
+        },
+        {
+            "term": "sadness",
+            "definition": "an emotional state of unhappiness",
+            "pos": "noun",
+            "examples": ["Sadness can be a natural response."],
+        },
+        {
+            "term": "joy",
+            "definition": "an emotion of great delight",
+            "pos": "noun",
+            "examples": ["The joy of discovery."],
+        },
+    ]
+
+
+@pytest.fixture
+def sample_relationships():
+    """Provide sample relationship data for testing.
+
+    Returns:
+        list: List of relationship tuples (source, target, type)
+    """
+    return [
+        ("happiness", "joy", "synonym"),
+        ("happiness", "sadness", "antonym"),
+        ("joy", "happiness", "synonym"),
+        ("sadness", "sorrow", "synonym"),
+    ]
+
+
+@pytest.fixture
+def sample_conversation_data():
+    """Provide sample conversation data for testing.
+
+    Returns:
+        dict: Sample conversation with messages
+    """
+    return {
+        "title": "Test Conversation",
+        "messages": [
+            {"role": "user", "content": "What is happiness?"},
+            {
+                "role": "assistant",
+                "content": "Happiness is a state of well-being and contentment.",
+            },
+            {"role": "user", "content": "How does it relate to joy?"},
+        ],
+    }
+
+
+# =============================================================================
+# Fixtures Directory Utilities
+# =============================================================================
+
+
+@pytest.fixture
+def fixtures_dir():
+    """Get the path to the test fixtures directory.
+
+    Returns:
+        Path: Absolute path to tests/fixtures directory
+    """
+    return Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def load_fixture_json(fixtures_dir):
+    """Factory fixture for loading JSON fixture files.
+
+    Args:
+        fixtures_dir: Path to fixtures directory
+
+    Returns:
+        callable: Function that loads JSON from fixtures directory
+    """
+    import json
+
+    def _load(filename: str):
+        filepath = fixtures_dir / filename
+        if not filepath.exists():
+            raise FileNotFoundError(f"Fixture file not found: {filepath}")
+        with open(filepath, "r") as f:
+            return json.load(f)
+
+    return _load
+
+
+# =============================================================================
 # Markers and Skip Conditions
 # =============================================================================
 
@@ -335,6 +504,9 @@ def pytest_configure(config):
         "markers", "requires_nltk: marks tests that require NLTK data"
     )
     config.addinivalue_line("markers", "requires_gpu: marks tests that require GPU")
+    config.addinivalue_line(
+        "markers", "requires_chromadb: marks tests that require ChromaDB"
+    )
 
 
 def _check_nltk_available() -> bool:
