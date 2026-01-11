@@ -167,6 +167,8 @@ def test_demo_mode_requires_explicit_flag():
 def test_sqlite_faiss_fallback_used_when_chromadb_missing(tmp_path, monkeypatch):
     module = importlib.import_module("word_forge.vectorizer.vector_store")
     monkeypatch.setattr(module, "chromadb", None)
+    # Ensure faiss stub is available in the module for the fallback to work
+    monkeypatch.setattr(module, "faiss", faiss_module)
 
     store = module.VectorStore(
         dimension=5,
