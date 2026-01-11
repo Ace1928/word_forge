@@ -118,6 +118,18 @@ word_forge graph visualize --3d --open-browser
 # Index vectors
 word_forge vector index --embedder MiniLM-L6-v2
 
+# Search for similar terms
+word_forge vector search "happy" --top-k 10
+
+# Start a new conversation
+word_forge conversation start --title "My Session"
+
+# List conversations
+word_forge conversation list --limit 5
+
+# Show messages in a conversation
+word_forge conversation show 1 --limit 20
+
 # Annotate emotions
 word_forge emotion annotate --strategy hybrid
 
@@ -369,6 +381,7 @@ results = vs.search(query_text="happy", k=5)
 | `word_forge vector search QUERY` | Search for similar terms |
 | `word_forge conversation start` | Start new conversation |
 | `word_forge conversation list` | List conversations |
+| `word_forge conversation show ID` | Show messages in a conversation |
 | `word_forge emotion annotate` | Run emotion annotation |
 | `word_forge demo full` | Run full demo pipeline |
 | `word_forge setup-nltk` | Download NLTK data |

@@ -151,6 +151,77 @@ def test_vector_index_command(monkeypatch):
     }
 
 
+def test_vector_search_command(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    called = {}
+
+    def fake_run_vector_search(**kwargs):
+        called["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(module, "run_vector_search", fake_run_vector_search)
+    result = module.main(
+        [
+            "vector",
+            "search",
+            "happy",
+            "word",
+            "--top-k",
+            "10",
+            "--content-type",
+            "definition",
+        ]
+    )
+    assert result == 0
+    assert called["kwargs"] == {
+        "query": "happy word",
+        "k": 10,
+        "content_type": "definition",
+    }
+
+
+def test_conversation_start_command(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    called = {}
+
+    def fake_run_conversation_start(**kwargs):
+        called["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(module, "run_conversation_start", fake_run_conversation_start)
+    result = module.main(["conversation", "start", "--title", "Test Session"])
+    assert result == 0
+    assert called["kwargs"] == {"title": "Test Session"}
+
+
+def test_conversation_list_command(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    called = {}
+
+    def fake_run_conversation_list(**kwargs):
+        called["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(module, "run_conversation_list", fake_run_conversation_list)
+    result = module.main(["conversation", "list", "--limit", "5"])
+    assert result == 0
+    assert called["kwargs"] == {"limit": 5}
+
+
+def test_conversation_show_command(monkeypatch):
+    module = importlib.import_module("word_forge.forge")
+    called = {}
+
+    def fake_run_conversation_show(**kwargs):
+        called["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(module, "run_conversation_show", fake_run_conversation_show)
+    result = module.main(["conversation", "show", "123", "--limit", "50"])
+    assert result == 0
+    assert called["kwargs"] == {"conversation_id": 123, "limit": 50}
+
+
 def test_emotion_annotate_command(monkeypatch):
     module = importlib.import_module("word_forge.forge")
     called = {}
