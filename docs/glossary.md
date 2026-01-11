@@ -28,6 +28,8 @@ This living glossary defines key terms used throughout the project. New entries 
 
 - **Conversation Manager** — Orchestrates multi-step conversation sessions using several language models and persists messages to the database. See `conversation/conversation_manager.py`.
 
+- **Conversation Worker** — Background thread that processes conversation tasks from a queue, handling message generation and context tracking. See `conversation/conversation_worker.py`.
+
 - **Continual Learning** — Machine learning approach where models update incrementally from new data without forgetting previous knowledge.
 
 ## D
@@ -154,9 +156,11 @@ This living glossary defines key terms used throughout the project. New entries 
 
 - **Valence** — Emotional pleasantness dimension ranging from negative (-1.0) to positive (1.0).
 
+- **VectorError** — Base exception for vector operations, including storage, search, and embedding generation failures. See `exceptions.py`.
+
 - **Vector Store** — Component providing persistent storage and similarity search for vector embeddings. See `vectorizer/vector_store.py`.
 
-- **Vector Worker** — Background thread that generates embeddings for new or updated content and inserts them into the vector store.
+- **Vector Worker** — Background thread that generates embeddings for new or updated content and inserts them into the vector store. See `vectorizer/vector_worker.py`.
 
 ## W
 

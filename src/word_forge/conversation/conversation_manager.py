@@ -1,3 +1,34 @@
+"""Conversation Manager Module.
+
+This module provides the conversation management functionality for Word Forge,
+enabling multi-turn conversations with language model integration. It handles
+conversation persistence, message threading, and orchestrates multiple model
+types for generating contextually aware responses.
+
+Key Components:
+    ConversationManager: Orchestrates conversation sessions and message flow
+    ModelContext: Tracks conversation state and context between turns
+    ConversationError: Base exception for conversation-related errors
+
+The manager integrates with:
+    - Database for conversation and message persistence
+    - Emotion analysis for sentiment-aware responses
+    - Vector store for semantic similarity search
+    - Graph manager for relationship context
+    - Multiple language models (lightweight, reflexive, affective, identity)
+
+Architecture:
+    User Input → Context Assembly → Model Selection → Response Generation →
+    Emotion Analysis → Message Storage → Context Update
+
+Example:
+    >>> conv_manager = ConversationManager(db_manager, emotion_manager)
+    >>> result = conv_manager.start_conversation()
+    >>> if result.is_success:
+    ...     conv_id = result.unwrap()
+    ...     msg_id = conv_manager.add_message(conv_id, "user", "Hello!")
+"""
+
 import sqlite3
 import traceback
 from contextlib import contextmanager

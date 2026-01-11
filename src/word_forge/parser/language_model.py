@@ -141,7 +141,6 @@ class ModelState:
                 )
             return False
 
-    @classmethod
     def generate_text(
         self,
         prompt: str,
@@ -295,7 +294,7 @@ class ModelState:
                 print(
                     f"Failure threshold ({self._max_failures}) reached. Disabling model."
                 )
-            print(f"Text generation failed: {str(e)}", exc_info=True)
+            print(f"Text generation failed: {str(e)}")
             return None
 
     def query(
