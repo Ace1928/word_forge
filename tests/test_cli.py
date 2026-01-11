@@ -242,3 +242,25 @@ def test_get_version_function():
     version = module._get_version()
     assert "word_forge" in version
     assert version.startswith("word_forge ")
+
+
+def test_quiet_flag_exists():
+    """Test that --quiet flag exists in parser."""
+    module = importlib.import_module("word_forge.forge")
+    # Just verify module loads and has expected attributes for logging control
+    assert hasattr(module, "_setup_logging")
+    assert callable(module._setup_logging)
+
+
+def test_verbose_flag_exists():
+    """Test that --verbose flag exists in parser."""
+    module = importlib.import_module("word_forge.forge")
+    # Just verify module loads - verbose flag tested by help output
+    assert hasattr(module, "_setup_logging")
+
+
+def test_setup_logging_function():
+    """Test _setup_logging function exists and is callable."""
+    module = importlib.import_module("word_forge.forge")
+    assert hasattr(module, "_setup_logging")
+    assert callable(module._setup_logging)

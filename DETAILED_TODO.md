@@ -393,7 +393,7 @@ Item Format:
 
 - [x] **`--version`** - Version display (added `--version` and `-V` flags)
 - [ ] **`--config`** - Config file option
-- [ ] **`--quiet`** - Suppress output
+- [x] **`--quiet`** - Suppress output (added `--quiet`/`-q` and `--verbose`/`-v` flags)
 
 ### 14.2 UX [P2]
 

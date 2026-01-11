@@ -198,6 +198,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         version=_get_version(),
         help="Show program version and exit",
     )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress non-error output",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose/debug output",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start processing seed words")
@@ -335,6 +347,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+
+    # Configure logging based on quiet/verbose flags
+    if hasattr(args, "quiet") and args.quiet:
+        _setup_logging("ERROR")
+    elif hasattr(args, "verbose") and args.verbose:
+        _setup_logging("DEBUG")
 
     exit_code = 0
 
