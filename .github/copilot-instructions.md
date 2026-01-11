@@ -8,18 +8,19 @@
 
 ## Current Status
 - Python 3.10 in CI; project supports 3.8+.
-- Full dependency install for local work: `pip install -e .[dev]` (installs declared runtime deps plus isort, mypy, pytest-cov, pre-commit, etc.). Core install alone pulls heavy ML/vector libs (torch, transformers, sentence-transformers, chromadb, faiss, plotly, pyvis).
+- Full dependency install for local work: `pip install -e .[dev]` (installs runtime deps plus isort, mypy, pytest-cov, pre-commit, etc.). This pulls heavy ML/vector libs (torch, transformers, sentence-transformers, chromadb, faiss, plotly, pyvis). Last full install run: 2026-01-11 (torch/cu12 wheels downloaded).
 - CI installs a lightweight subset only (`networkx`, `numpy`, `black`, `ruff`, `pytest`); tests often stub heavy imports.
-- Baseline checks (Jan 2026):
-  - `black --check .` reports formatting changes for several modules.
-  - `pytest -q` fails at least:
-    - `tests/test_graph_manager.py::test_graph_includes_emotional_relationships` (EmotionManager dummy signature).
-    - `tests/test_vector_store.py::test_sqlite_faiss_fallback_used_when_chromadb_missing` (faiss dependency missing).
+- Baseline checks (rerun 2026-01-11):
+  - `black --check .` reports formatting changes for 11 files (emotion_manager.py, graph_analysis.py, graph_builder.py, parser/language_model.py, queue/worker_manager.py, parser/lexical_functions.py, utils/nltk_utils.py, parser/parser_refiner.py, vectorizer/vector_worker.py, tests/test_vector_worker.py, vectorizer/vector_store.py).
+  - `pytest -q` failures (even with full deps installed):
+    - `tests/test_graph_manager.py::test_graph_includes_emotional_relationships` (DummyEmotionManager signature mismatch).
+    - `tests/test_vector_store.py::test_sqlite_faiss_fallback_used_when_chromadb_missing` (SQLite/FAISS backend still raises dependency error under chromadb-missing path).
 - Demo/database scripts may emit SQLite files (e.g., `test_database.sqlite`, `db_worker_demo/`); treat them as disposable artifacts.
 
 ## TODO (keep updated)
-- When you finish a task, update Current Status and this TODO with any new failing checks, added tools, or dependency/command changes.
-- Note any new baseline failures, added skip conditions, or extra setup steps required for new features.
+- After every change, rerun lint (`black --check .`, `ruff check . --exit-zero`) and tests (`pytest -q`) with the appropriate dependency set; assume prior results are stale.
+- Update Current Status with the latest run date and any new failures or skips; add/remove TODO items as they change.
+- Note any new baseline failures, added skip conditions, coverage/command changes, or extra setup steps required for new features.
 - Remove resolved items promptly to keep this list actionable.
 
 ## Project context
@@ -39,10 +40,8 @@
 - Formatting: `black --check .` (line length 88).
 - Linting: `ruff check . --exit-zero` (mirrors CI; drop `--exit-zero` locally to fail on lint errors).
 - Tests: `pytest -q` (uses `tests/`).
-- Current baseline (Jan 2026): `black --check` reports formatting changes for several modules, and `pytest` fails at least:
-  - `tests/test_graph_manager.py::test_graph_includes_emotional_relationships` (EmotionManager dummy signature).
-  - `tests/test_vector_store.py::test_sqlite_faiss_fallback_used_when_chromadb_missing` (faiss dependency missing).
-  Note these before attributing failures to new changes.
+- Always rerun these after any code/docs change; do not rely on previous results.
+- Current baseline (rerun 2026-01-11): `black --check` reports formatting changes for 11 files listed in Current Status; `pytest` fails on the two tests listed in Current Status. Note these before attributing failures to new changes.
 
 ## Working guidelines
 - Respect existing configuration in `pyproject.toml` (Black, Ruff, mypy settings).
