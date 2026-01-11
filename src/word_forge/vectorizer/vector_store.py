@@ -56,7 +56,9 @@ else:
 
 try:  # Optional FAISS dependency for fallback persistence
     import faiss  # type: ignore
-except Exception as faiss_error:  # pragma: no cover - allow running without faiss initially
+except (
+    Exception
+) as faiss_error:  # pragma: no cover - allow running without faiss initially
     faiss = None  # type: ignore
     _FAISS_IMPORT_ERROR = faiss_error
 else:
@@ -363,7 +365,9 @@ class SQLiteFAISSCollection:
                         f"Vector dimension {vector.shape[0]} does not match {self.dimension}"
                     )
 
-                metadata_blob = json.dumps(metadata_list[idx]) if metadata_list[idx] else None
+                metadata_blob = (
+                    json.dumps(metadata_list[idx]) if metadata_list[idx] else None
+                )
                 document_value = documents_list[idx]
                 payload = sqlite3.Binary(vector.tobytes())
 
@@ -404,10 +408,17 @@ class SQLiteFAISSCollection:
 
         filtered_rows = self._filter_rows(rows, where)
         if not filtered_rows:
-            return {"ids": [[]], "distances": [[]], "metadatas": [[]], "documents": [[]]}
+            return {
+                "ids": [[]],
+                "distances": [[]],
+                "metadatas": [[]],
+                "documents": [[]],
+            }
 
         dataset = np.vstack([self._row_to_vector(row) for row in filtered_rows])
-        metadatas = [self._deserialize_metadata(row["metadata"]) for row in filtered_rows]
+        metadatas = [
+            self._deserialize_metadata(row["metadata"]) for row in filtered_rows
+        ]
         documents = [row["document"] for row in filtered_rows]
         ids = [row["id"] for row in filtered_rows]
 
@@ -439,7 +450,9 @@ class SQLiteFAISSCollection:
     ) -> None:
         with self._lock:
             if ids:
-                self._conn.executemany("DELETE FROM vectors WHERE id = ?", [(vec_id,) for vec_id in ids])
+                self._conn.executemany(
+                    "DELETE FROM vectors WHERE id = ?", [(vec_id,) for vec_id in ids]
+                )
             elif where:
                 rows = self._conn.execute("SELECT id, metadata FROM vectors").fetchall()
                 filtered_ids = [row["id"] for row in self._filter_rows(rows, where)]
@@ -549,7 +562,12 @@ class InMemoryCollection:
             ]
 
         if not items:
-            return {"ids": [[]], "distances": [[]], "metadatas": [[]], "documents": [[]]}
+            return {
+                "ids": [[]],
+                "distances": [[]],
+                "metadatas": [[]],
+                "documents": [[]],
+            }
 
         dataset = np.vstack([payload["embedding"] for _, payload in items])
         top_k = min(n_results, len(items))
@@ -573,7 +591,9 @@ class InMemoryCollection:
             ordered_indices = (
                 np.argsort(similarities[:, 0])[::-1][:top_k] if top_k else np.array([])
             )
-            ordered_distances = (similarities[ordered_indices, 0].tolist() if top_k else [])
+            ordered_distances = (
+                similarities[ordered_indices, 0].tolist() if top_k else []
+            )
 
         ordered = [items[int(i)] for i in ordered_indices] if top_k else []
         ordered_ids = [vec_id for vec_id, _ in ordered]
@@ -606,6 +626,8 @@ class InMemoryCollection:
             ]
             for vec_id in to_delete:
                 self._store.pop(vec_id, None)
+
+
 # SQL query constants from centralized config
 SQL_GET_TERM_BY_ID = config.vectorizer.sql_templates["get_term_by_id"]
 SQL_GET_MESSAGE_TEXT = config.vectorizer.sql_templates["get_message_text"]

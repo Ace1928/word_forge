@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import word_forge.utils.nltk_utils as nltk_utils
 
@@ -60,7 +60,7 @@ def test_ensure_nltk_data_already_present(monkeypatch):
     monkeypatch.setattr(module, "nltk", mock_nltk, raising=False)
 
     downloaded = module.ensure_nltk_data()
-    
+
     # Should not download anything since data is present
     assert downloads == []
     assert downloaded == []

@@ -30,6 +30,7 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Protocol, TypedDict, Union, cast, final
 
 import numpy as np
+
 try:  # Optional heavy dependency
     import torch
 except Exception:  # pragma: no cover - allow missing torch
@@ -677,7 +678,9 @@ class TransformerEmbedder:
                 show_progress_bar=True,  # Show Progress
                 output_value="sentence_embedding",  # Ensure correct output
                 precision="float32",  # Use float32 for consistency
-                device="cuda" if torch is not None and torch.cuda.is_available() else "cpu",
+                device=(
+                    "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
+                ),
             )
             return cast(NDArray[np.float32], embedding)
         except Exception as e:

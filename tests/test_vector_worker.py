@@ -5,10 +5,7 @@ Note: Some tests require simplified implementations due to ML model dependencies
 """
 
 import time
-from pathlib import Path
-from typing import List
 
-import pytest
 import numpy as np
 
 from word_forge.database.database_manager import DBManager

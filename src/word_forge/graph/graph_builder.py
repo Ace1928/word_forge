@@ -161,7 +161,8 @@ class GraphBuilder:
                 self._last_refresh_watermark = value
         except sqlite3.Error as exc:
             self.logger.warning(
-                "Failed to persist graph watermark: %s", exc,
+                "Failed to persist graph watermark: %s",
+                exc,
                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
             )
 
@@ -297,7 +298,9 @@ class GraphBuilder:
             return self.manager.g.number_of_nodes()
 
         self.logger.info("Initiating incremental graph update.")
-        since = self._last_refresh_watermark if self._last_refresh_watermark > 0 else None
+        since = (
+            self._last_refresh_watermark if self._last_refresh_watermark > 0 else None
+        )
         if since is None:
             self.logger.debug(
                 "No persisted watermark detected; falling back to full dataset fetch."
@@ -488,9 +491,7 @@ class GraphBuilder:
                 )
                 word_query = self._config.sql_templates.get(word_query_key)
                 if word_query is None:
-                    raise GraphDataError(
-                        f"SQL template '{word_query_key}' is missing."
-                    )
+                    raise GraphDataError(f"SQL template '{word_query_key}' is missing.")
                 params: Tuple[float, ...] = (since,) if since is not None else tuple()
                 cursor.execute(word_query, params)
                 words_raw = cursor.fetchall()
@@ -524,7 +525,9 @@ class GraphBuilder:
                 )
                 rel_query = self._config.sql_templates.get(rel_query_key)
                 rel_params: Tuple[float, ...] = (
-                    (since,) if rel_query_key == "fetch_relationships_since" else tuple()
+                    (since,)
+                    if rel_query_key == "fetch_relationships_since"
+                    else tuple()
                 )
                 if rel_query is None:
                     rel_query = self._config.sql_templates["fetch_all_relationships"]
@@ -569,7 +572,8 @@ class GraphBuilder:
                     else:
                         emotional_params = (
                             (since,)
-                            if emotional_query_key == "get_emotional_relationships_since"
+                            if emotional_query_key
+                            == "get_emotional_relationships_since"
                             else tuple()
                         )
                     cursor.execute(emotional_query, emotional_params)

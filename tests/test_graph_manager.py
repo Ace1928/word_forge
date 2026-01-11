@@ -2,7 +2,6 @@ import sys
 from pathlib import Path
 import types
 
-import pytest
 
 # Stub dependencies before importing project modules
 networkx_stub = types.ModuleType("networkx")

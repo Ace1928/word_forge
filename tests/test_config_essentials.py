@@ -391,7 +391,7 @@ class TestMeasureExecution:
         """Test that CPU time is measured."""
         with measure_execution("cpu_op") as metrics:
             # Do some CPU work
-            result = sum(range(10000))
+            _ = sum(range(10000))
 
         assert metrics.cpu_time_ms >= 0
 

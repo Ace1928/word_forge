@@ -6,7 +6,6 @@ ProcessingResult, ProcessingStats, and related functionality.
 
 import time
 
-import pytest
 
 from word_forge.queue.queue_worker import (
     ProcessingError,

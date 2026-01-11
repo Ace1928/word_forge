@@ -22,6 +22,7 @@ from word_forge.utils.nltk_utils import ensure_nltk_data
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ProcessingStatistics:
     """Tracks and reports processing metrics with atomic counters."""

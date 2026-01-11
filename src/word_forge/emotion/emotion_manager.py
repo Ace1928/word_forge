@@ -40,6 +40,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
 try:  # Optional dependencies
     from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
+
     VADER_AVAILABLE = True
 except Exception:  # pragma: no cover - allow missing VADER
     SentimentIntensityAnalyzer = None  # type: ignore
