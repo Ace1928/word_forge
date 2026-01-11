@@ -4,7 +4,6 @@ This module tests the graph configuration classes including GraphConfig,
 various typed dictionaries, and layout/dimension types.
 """
 
-import pytest
 from pathlib import Path
 
 from word_forge.graph.graph_config import (

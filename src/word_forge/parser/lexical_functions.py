@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Union
 
-import nltk  # type: ignore
 from nltk.corpus import wordnet as wn  # type: ignore
 from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
 from rdflib import Graph
@@ -31,6 +30,7 @@ from word_forge.configs.config_essentials import (
     WordnetEntry,
 )
 from word_forge.parser.language_model import ModelState
+
 
 # ============================================================================
 #                           FILE OPERATIONS

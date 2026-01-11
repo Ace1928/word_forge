@@ -1,224 +1,277 @@
 # Word Forge
 
-Word Forge is an experimental lexical data processing framework. It aggregates natural language resources, analyzes emotional context, and builds a semantic graph for advanced text exploration. The project follows **Eidosian** principles: clear layering, self-documenting modules, and functional, testable components.
+[![CI](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
+Word Forge is a modular lexical processing and enrichment toolkit that builds a comprehensive semantic network while providing vector search, emotion analysis, and graph visualization capabilities. The project embraces the **Eidosian** design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.
+
+## Features
+
+- **Lexical Data Aggregation**: Combines data from WordNet, thesauruses, and other linguistic resources
+- **Semantic Graph**: Builds a multidimensional knowledge graph using NetworkX with relationship types including synonyms, antonyms, hypernyms, and emotional associations
+- **Emotion Analysis**: Dimensional (valence/arousal) and categorical emotion detection using VADER, TextBlob, and optional LLM integration
+- **Vector Search**: Semantic similarity search powered by sentence transformers and ChromaDB/FAISS backends
+- **CLI Interface**: Full-featured command-line interface for all major operations
+- **Background Workers**: Threaded workers for graph building, vector indexing, and emotion annotation
+
+## Architecture
+
+```
+┌────────────────────┐
+│    word_forge      │  CLI entry point
+└─────────┬──────────┘
+          │
+┌─────────▼──────────┐
+│       config       │  Centralized configuration
+└─────────┬──────────┘
+          │
+┌─────────┴─────────────────────────────────────────┐
+│                    Core Modules                    │
+├──────────┬───────────┬──────────┬────────────────┤
+│ database │   graph   │ emotion  │   vectorizer   │
+│(SQLite)  │(NetworkX) │(VADER/TB)│ (Transformers) │
+└──────────┴───────────┴──────────┴────────────────┘
+          │
+┌─────────▼──────────┐
+│   queue/workers    │  Background processing
+└────────────────────┘
+```
 
 ## Installation
 
-Word Forge targets Python 3.8 or newer. Choose one of the following install
-methods:
+Word Forge targets **Python 3.8 or newer**.
 
-1. **Clone and install locally**
-   ```bash
-   git clone https://github.com/Ace1928/word_forge.git
-   cd word_forge
-   pip install -e .
-   ```
-2. **Install directly from Git without cloning**
-   ```bash
-   pip install git+https://github.com/Ace1928/word_forge.git
-   ```
+### Basic Installation
 
-Development tools (formatter, linter, tests) are available via:
+```bash
+# Clone and install locally
+git clone https://github.com/Ace1928/word_forge.git
+cd word_forge
+pip install -e .
+
+# Or install directly from Git
+pip install git+https://github.com/Ace1928/word_forge.git
+```
+
+### Development Installation
+
+Install with development tools (formatter, linter, tests):
+
 ```bash
 pip install -e .[dev]
 ```
 
-### Feature Extras
+### Optional Feature Extras
 
-Install optional feature bundles as needed:
+Install feature bundles based on your needs:
 
-- **Vector search & CLI processing** (ChromaDB + sentence transformers):
-  ```bash
-  pip install -e .[vector]
-  ```
-- **Graph visualization** (Pyvis + Plotly):
-  ```bash
-  pip install -e .[visualization]
-  ```
+| Extra | Command | Includes |
+|-------|---------|----------|
+| `vector` | `pip install -e .[vector]` | sentence-transformers, ChromaDB, FAISS |
+| `visualization` | `pip install -e .[visualization]` | Pyvis, Plotly |
+| `dev` | `pip install -e .[dev]` | black, ruff, pytest, mypy, pre-commit |
 
-The `word_forge` CLI relies on the vector stack for semantic search. Install the
-`vector` extra before running CLI commands or the vector worker demos.
+**Note**: The `word_forge` CLI relies on the `vector` extra for semantic search operations.
 
-A `requirements.txt` file is also provided if your tooling requires it:
-```bash
-pip install -r requirements.txt
-```
-The runtime requirements include `networkx` for graph operations and `numpy` for
-vector math.
+## Quick Start
 
-Runtime packages include `networkx` for graph operations and `numpy` for vector
-math.
-
-## Usage
-
-Modules are located under `src/word_forge`. Example usage:
+### Python API
 
 ```python
 from word_forge.config import config
+from word_forge.database.database_manager import DBManager
 
-print(config.database_url)
+# Initialize database
+db = DBManager()
+db.create_tables()
+
+# Add a word entry
+db.insert_or_update_word(
+    term="algorithm",
+    definition="A step-by-step procedure for solving a problem",
+    part_of_speech="noun"
+)
+
+# Create relationships
+db.insert_relationship("algorithm", "procedure", "synonym")
 ```
 
 ### Command Line Interface
 
-The package installs a `word_forge` executable. Launch the
-automatic parser and worker pool by running:
+The package installs a `word_forge` executable:
 
 ```bash
-pip install -e .[vector]
-word_forge start
-```
+# Show version
+word_forge --version
 
-Use `--help` to see available options. For example, to run for five
-minutes with custom seed words:
+# Start the processing pipeline with seed words
+word_forge start apple banana --minutes 5 --workers 4
 
-```bash
-word_forge start apple banana --minutes 5
-```
-
-You can also control the number of worker threads:
-
-```bash
-word_forge start apple --minutes 5 --workers 2
-```
-
-While running, the CLI prints periodic progress reports indicating how many
-words have been processed, how many succeeded or failed, and the remaining
-queue size. This provides real‑time insight into long running operations.
-
-The CLI also exposes focused worker orchestration commands that wrap the
-existing managers/workers so you can drive individual stages without writing
-Python scripts:
-
-```bash
-# Build or refresh the graph database with progress logs
+# Build the semantic graph
 word_forge graph build --timeout 180
 
-# Render the latest graph into HTML (optionally open a browser)
+# Generate visualization (requires visualization extra)
 word_forge graph visualize --3d --open-browser
 
-# Generate vector embeddings in a single cycle
+# Index vectors
 word_forge vector index --embedder MiniLM-L6-v2
 
-# Annotate any words missing emotion data
+# Annotate emotions
 word_forge emotion annotate --strategy hybrid
 
-# Run the full demo pipeline (sample data → vectors → visualization)
+# Run full demo pipeline
 word_forge demo full --3d --open-browser
+
+# Setup NLTK data
+word_forge setup-nltk
+
+# Quiet mode (suppress non-error output)
+word_forge --quiet start apple
+
+# Verbose mode (enable debug output)
+word_forge --verbose start apple
 ```
 
-Other utilities such as `python lexical_proto.py word` or the graph builder demos
-emit step-by-step progress messages while fetching data, embedding vectors, and
-constructing the knowledge graph. Install the visualization extra before running
-graph demos so Pyvis/Plotly are available:
+### Demo Scripts
 
 ```bash
-pip install -e .[visualization]
-python -m word_forge.graph.graph_manager --help
-```
+# Explore configuration
+python -m word_forge.demos.config_demo --validate
 
-## Development and Contributing
+# Vector worker demo
+python -m word_forge.demos.vector_worker_demo
 
-Style and tooling are managed through **Black** and **Ruff**. Tests are implemented with **pytest** and run automatically by the CI workflow.
+# Generate lexical data for a word
+python lexical_proto.py recursion
 
-- Format code with `black`.
-- Lint with `ruff`.
-- Install `pre-commit` and run `pre-commit install` to automatically format and
-  lint changed files on each commit.
-- Run tests with `pytest`.
-
-Pull requests should pass all checks in the CI workflow.
-
-Additional documentation resides in `docs/`. See `glossary.md` for
-terminology. Preferred docstring formats are provided in
-`templates/function_template.md`, `templates/class_template.md`, and
-`templates/module_template.md`.
-
-Word Forge is a collection of tools and demos for building and exploring a lexical knowledge base. The project relies on SQLite for persistent storage but the repository does not ship any generated databases.
-
-## Generating Demo Databases
-
-If a demo requires a database file, run the corresponding script from the `src/word_forge/demos` package. Each script will create its own SQLite file if it does not already exist.
-
-```bash
-# Create a simple sample database with example words
+# Database demo
 python -m word_forge.demos.database_demo
-
-# Demonstrate the database worker which also creates backups
-python -m word_forge.demos.database_worker_demo
-
-# Build a vector demo database for search
-python -m word_forge.vectorizer.vector_demo
 ```
 
-Running these scripts will generate files such as `test_database.sqlite`, `db_worker_demo/test_database.sqlite`, or `vector_demo/demo.sqlite`. You may safely delete them when done. A new database can always be regenerated by running the corresponding demo again.
+## Project Structure
 
-For a custom database path you can initialize `DBManager` directly and call `create_tables()` to prepare an empty schema:
+```
+word_forge/
+├── src/word_forge/        # Main package
+│   ├── config.py          # Central configuration
+│   ├── forge.py           # CLI entry point
+│   ├── configs/           # Configuration components
+│   ├── database/          # SQLite persistence layer
+│   ├── emotion/           # Emotion analysis system
+│   ├── graph/             # Semantic graph operations
+│   ├── parser/            # Text parsing and lexical extraction
+│   ├── queue/             # Worker queue management
+│   ├── vectorizer/        # Vector embeddings and search
+│   └── demos/             # Example scripts
+├── tests/                 # Test suite (pytest)
+├── docs/                  # Documentation
+├── data/                  # Data directory (created at runtime)
+└── pyproject.toml         # Project configuration
+```
+
+## Development
+
+### Code Style
+
+Word Forge uses **Black** for formatting and **Ruff** for linting:
+
+```bash
+# Format code
+black .
+
+# Lint code
+ruff check .
+
+# Auto-fix lint issues
+ruff check . --fix
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run specific test file
+pytest tests/test_config.py
+
+# Run with coverage
+pytest --cov=word_forge --cov-report=html
+```
+
+### Pre-commit Hooks
+
+Install pre-commit hooks to automatically format and lint on commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+## Configuration
+
+Word Forge uses a centralized configuration system with environment variable overrides:
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `WORDFORGE_DB_PATH` | Database file path | `data/word_forge.sqlite` |
+| `WORDFORGE_LOG_LEVEL` | Logging level | `INFO` |
+| `WORDFORGE_VECTOR_MODEL` | Embedding model name | `all-MiniLM-L6-v2` |
+
+Configuration can also be modified programmatically:
 
 ```python
-from word_forge.database.database_manager import DBManager
+from word_forge.config import config
 
-manager = DBManager(db_path="my_word_forge.sqlite")
-manager.create_tables()
+# Access configuration
+print(config.database.db_path)
+print(config.vectorizer.model_name)
+
+# Export configuration
+config.export_to_file("config.json")
 ```
-
-## Packaging
-
-The project relies on **setuptools** to build distribution artifacts.
-
-```bash
-python -m build
-```
-
-Running this command creates the standard `src/word_forge.egg-info` directory
-along with wheel and source distributions. Because this directory is generated
-automatically, it is excluded from version control via `.gitignore`.
-
-## License
-
-This project is licensed under the terms of the [MIT License](LICENSE).
 
 ## NLTK Data
 
-Several components rely on datasets distributed with NLTK. These files are downloaded automatically the first time Word Forge accesses WordNet or related features via `ensure_nltk_data()`.
-
-To prepare an environment ahead of time run:
+Word Forge uses NLTK for WordNet and other linguistic resources. Data is downloaded automatically on first use, or can be pre-downloaded:
 
 ```bash
 word_forge setup-nltk
 ```
 
-The command prints the corpora it downloads (WordNet, Punkt, stopwords, VADER lexicon, etc.) and exits once everything is cached locally. Subsequent runs reuse the local copies, but the automatic fallback remains available so long as the first run has network access.
+Required corpora: WordNet, Punkt, stopwords, VADER lexicon.
 
-Ensure the running environment has internet access on the initial run so these resources can be retrieved.
+## Documentation
 
-Word Forge is a modular lexical processing and enrichment toolkit. It builds a comprehensive lexical network while providing vector search, emotion analysis, and graph capabilities. The project embraces the "Eidosian" design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.
+- [`docs/overview.md`](docs/overview.md) - Developer guide
+- [`docs/glossary.md`](docs/glossary.md) - Term definitions
+- [`docs/templates/`](docs/templates/) - Docstring templates
 
-## Quick Start Examples
+## Contributing
 
-- **Inspect configuration**
-  ```bash
-  python -m word_forge.demos.config_demo --validate
-  ```
-- **Run the vector worker demo**
-  ```bash
-  python -m word_forge.demos.vector_worker_demo
-  ```
-- **Generate lexical data for a word**
-  ```bash
-  python lexical_proto.py recursion
-  ```
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make changes and add tests
+4. Ensure tests pass (`pytest`)
+5. Ensure code is formatted (`black . && ruff check .`)
+6. Commit changes (`git commit -m 'Add amazing feature'`)
+7. Push to branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
-## Dependency Management
+All pull requests must pass CI checks before merging.
 
-Project dependencies are declared in `pyproject.toml`. Optional development tools are under the `[project.optional-dependencies]` section. The `requirements.txt` file mirrors these packages for compatibility with tooling that does not yet read `pyproject.toml`.
+## License
 
-## Running Tests
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-Install the development dependencies as shown above and execute:
+## Acknowledgments
 
-```bash
-pytest
-```
-
-Tests live in the `tests/` directory and use `pytest`. Configuration for pytest is stored in `pyproject.toml`.
+- [NetworkX](https://networkx.org/) - Graph operations
+- [NLTK](https://www.nltk.org/) - Natural language processing
+- [Sentence Transformers](https://www.sbert.net/) - Semantic embeddings
+- [ChromaDB](https://www.trychroma.com/) - Vector database

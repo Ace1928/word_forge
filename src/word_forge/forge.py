@@ -32,6 +32,23 @@ if TYPE_CHECKING:  # pragma: no cover - imported for typing only
 
 LOGGER = logging.getLogger("word_forge")
 
+# Package version - dynamically retrieved from package metadata
+__version__ = "0.1.0"
+
+
+def _get_version() -> str:
+    """Get the package version string.
+
+    Returns:
+        Version string in format 'word_forge VERSION'
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+
+        return f"word_forge {version('word_forge')}"
+    except (ImportError, PackageNotFoundError):
+        return f"word_forge {__version__}"
+
 
 def _setup_logging(level: str = "INFO") -> None:
     """Configure basic console logging."""
@@ -174,6 +191,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
     parser = argparse.ArgumentParser(description="Word Forge command line interface")
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=_get_version(),
+        help="Show program version and exit",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress non-error output",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose/debug output",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start processing seed words")
@@ -311,6 +347,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+
+    # Configure logging based on quiet/verbose flags
+    # These flags are global arguments, so they're always present
+    if args.quiet:
+        _setup_logging("ERROR")
+    elif args.verbose:
+        _setup_logging("DEBUG")
 
     exit_code = 0
 

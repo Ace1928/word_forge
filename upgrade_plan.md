@@ -1,3 +1,12 @@
+# Word Forge Architectural Review
+
+> ⚠️ **NOTE**: The actionable items from this review have been integrated into [`DETAILED_TODO.md`](DETAILED_TODO.md).
+>
+> This document is preserved for reference as it contains valuable architectural analysis and design rationale.
+> For the current improvement roadmap, see [`DETAILED_TODO.md`](DETAILED_TODO.md).
+
+---
+
 Okay, let's perform a modular, extensible, retrocompatible, and Eidosian review of the provided Python code for the "Word Forge" system.
 
 ## ✅ PART 1: BASELINE REVIEW – Deep Structural & Functional Evaluation

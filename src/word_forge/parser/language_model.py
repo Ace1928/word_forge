@@ -13,6 +13,7 @@ try:  # Optional heavy dependencies
         PreTrainedTokenizerFast,
     )
 except Exception:  # pragma: no cover - optional dependency handling
+
     class _FakeTorch:
         """Minimal stub when PyTorch is unavailable."""
 
@@ -117,7 +118,9 @@ class ModelState:
                     cast(Union[str, PathLike], self.model_name),
                     device_map=str(self.device),
                     torch_dtype=(
-                        torch.float16 if getattr(self.device, "type", "cpu") == "cuda" else torch.float32
+                        torch.float16
+                        if getattr(self.device, "type", "cpu") == "cuda"
+                        else torch.float32
                     ),
                 ),
             )

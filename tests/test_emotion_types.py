@@ -172,9 +172,7 @@ class TestEmotionVector:
         )
         normalized = vector.normalized()
         # Magnitude should be 1.0
-        magnitude = math.sqrt(
-            sum(v**2 for v in normalized.dimensions.values())
-        )
+        magnitude = math.sqrt(sum(v**2 for v in normalized.dimensions.values()))
         assert abs(magnitude - 1.0) < 0.001
 
     def test_dominant_dimension(self):

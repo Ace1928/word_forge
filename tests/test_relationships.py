@@ -4,11 +4,8 @@ This module tests the relationship type definitions and helper functions
 used throughout the Word Forge lexical network.
 """
 
-import pytest
-
 from word_forge.relationships import (
     RELATIONSHIP_TYPES,
-    RelationshipProperties,
     get_relationship_properties,
     is_bidirectional,
     get_relationship_weight,

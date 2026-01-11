@@ -9,7 +9,6 @@ import importlib
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -192,7 +191,9 @@ class TestVectorStoreDemoMode:
 
     def test_demo_mode_initialization(self):
         """Test demo mode initializes correctly."""
-        store = VectorStore(dimension=5, storage_type=StorageType.MEMORY, demo_mode=True)
+        store = VectorStore(
+            dimension=5, storage_type=StorageType.MEMORY, demo_mode=True
+        )
         assert store.demo_mode is True
         assert store.backend_name == "memory-demo"
 
@@ -200,7 +201,9 @@ class TestVectorStoreDemoMode:
 class TestVectorStoreFallback:
     """Tests for VectorStore SQLite-FAISS fallback."""
 
-    def test_sqlite_faiss_fallback_used_when_chromadb_missing(self, tmp_path, monkeypatch):
+    def test_sqlite_faiss_fallback_used_when_chromadb_missing(
+        self, tmp_path, monkeypatch
+    ):
         """Test that SQLite-FAISS backend is used when chromadb is unavailable."""
         module = importlib.import_module("word_forge.vectorizer.vector_store")
         monkeypatch.setattr(module, "chromadb", None)

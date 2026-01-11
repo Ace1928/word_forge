@@ -4,8 +4,6 @@ This module tests the QueueConfig dataclass and related enums/functions
 for queue processing configuration.
 """
 
-import pytest
-
 from word_forge.queue.queue_config import (
     QueueConfig,
     QueueMetricsFormat,

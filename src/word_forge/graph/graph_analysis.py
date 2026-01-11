@@ -657,7 +657,9 @@ class GraphAnalysis:
         base_subgraph = self.manager.g.subgraph(neighborhood_nodes)
 
         # 2. Filter edges based on emotional criteria
-        emotional_subgraph = nx.Graph()  # Create a new graph to add filtered nodes/edges
+        emotional_subgraph = (
+            nx.Graph()
+        )  # Create a new graph to add filtered nodes/edges
         for node, data in base_subgraph.nodes(data=True):
             emotional_subgraph.add_node(node, **data)  # Copy nodes
 
@@ -724,7 +726,7 @@ class GraphAnalysis:
                     if u not in isolated and v not in isolated
                 }
             self.logger.debug(
-                f"Removed {len(isolated)} isolated nodes from emotional subgraph." 
+                f"Removed {len(isolated)} isolated nodes from emotional subgraph."
             )
 
         # Ensure returned graph has iterable 'nodes' attribute for stubs

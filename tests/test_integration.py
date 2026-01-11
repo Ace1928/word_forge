@@ -4,8 +4,14 @@ This module contains integration tests that verify cross-module functionality
 and ensure that different components work correctly together.
 """
 
-import pytest
+import sys
 from pathlib import Path
+
+# Ensure repository source is on sys.path for import reliability
+_repo_src = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_repo_src))
+
+import pytest
 
 
 class TestDatabaseGraphIntegration:
@@ -14,9 +20,10 @@ class TestDatabaseGraphIntegration:
     def test_graph_manager_reads_from_database(self, tmp_path, monkeypatch):
         """Test that GraphManager can read data from DBManager."""
         from word_forge.database.database_manager import DBManager
+
         # Import the real GraphManager directly from its module
         import importlib
-        
+
         graph_module = importlib.import_module("word_forge.graph.graph_manager")
         # Reload to get the real class, not a stub
         importlib.reload(graph_module)
@@ -87,9 +94,10 @@ class TestEmotionVectorOperations:
         intensified = blended.intensify(factor=1.2)
 
         # Verify operations work correctly
-        assert intensified.dimensions[EmotionDimension.VALENCE] > blended.dimensions[
-            EmotionDimension.VALENCE
-        ]
+        assert (
+            intensified.dimensions[EmotionDimension.VALENCE]
+            > blended.dimensions[EmotionDimension.VALENCE]
+        )
 
 
 class TestResultMonadChaining:
@@ -112,7 +120,10 @@ class TestResultMonadChaining:
 
         # Chain operations
         result = (
-            Result.success(5).flat_map(validate_positive).flat_map(double).flat_map(add_ten)
+            Result.success(5)
+            .flat_map(validate_positive)
+            .flat_map(double)
+            .flat_map(add_ten)
         )
 
         assert result.is_success
@@ -181,7 +192,9 @@ class TestEmotionConfigMetrics:
 
         # Simulate many correct HAPPINESS detections
         for _ in range(20):
-            metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS)
+            metrics.record_detection(
+                EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS
+            )
 
         # Simulate some incorrect SADNESS detections
         for _ in range(5):
@@ -213,7 +226,6 @@ class TestExceptionHierarchy:
         """Test that exception classes maintain proper inheritance."""
         from word_forge.exceptions import (
             WordForgeError,
-            DatabaseError,
             GraphError,
             NodeNotFoundError,
         )
@@ -338,9 +350,7 @@ class TestEmotionalContextIntegration:
                 EmotionDimension.AROUSAL: 0.5,
             }
         )
-        context = EmotionalContext(
-            cultural_factors={"valence": 0.3}
-        )
+        context = EmotionalContext(cultural_factors={"valence": 0.3})
 
         # Apply context
         modified = context.apply_to_vector(vector)
@@ -355,11 +365,10 @@ class TestExecutionMetricsIntegration:
     def test_measure_execution_context_manager(self):
         """Test execution measurement context manager."""
         from word_forge.configs.config_essentials import measure_execution
-        import time
 
         with measure_execution("test_operation", {"test_key": "test_value"}) as metrics:
             # Simulate some work
-            total = sum(range(10000))
+            _ = sum(range(10000))
 
         # Metrics should be populated
         assert metrics.operation_name == "test_operation"
@@ -372,6 +381,7 @@ class TestProcessingStatsIntegration:
 
     def test_processing_stats_accumulation(self):
         """Test that processing stats accumulate correctly."""
+        pytest.importorskip("nltk", reason="NLTK required for queue_worker")
         from word_forge.queue.queue_worker import (
             ProcessingStats,
             ProcessingResult,
