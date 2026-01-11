@@ -4,6 +4,13 @@ This module contains integration tests that verify cross-module functionality
 and ensure that different components work correctly together.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure repository source is on sys.path for import reliability
+_repo_src = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(_repo_src))
+
 import pytest
 
 
@@ -374,6 +381,7 @@ class TestProcessingStatsIntegration:
 
     def test_processing_stats_accumulation(self):
         """Test that processing stats accumulate correctly."""
+        pytest.importorskip("nltk", reason="NLTK required for queue_worker")
         from word_forge.queue.queue_worker import (
             ProcessingStats,
             ProcessingResult,

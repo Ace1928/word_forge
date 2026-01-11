@@ -1,34 +1,72 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
 
-# Ignore SQLite databases and temp files created during demos
+# Build and distribution
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# SQLite databases and demo files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*-wal
+*-shm
 word_forge.sqlite
 **/word_forge.sqlite
 **/test_database.sqlite
 **/demo.sqlite
 **/temp*_demo_db.sqlite*
-*.sqlite-shm
-*.sqlite-wal
+
+# Demo output directories
 vector_demo/
 db_worker_demo/
-*.egg-info/
-
-# Ignore Python cache and compiled files
-__pycache__/
-*.pyc
-
-# Ignore SQLite database files and logs
-*.sqlite
-*-wal
-*-shm
-
-# Ignore backups produced by database workers
-# (db_worker_demo/backups/ directory)
 db_worker_demo/backups/*
 
-# Ignore IDE/editor settings
-*.code-workspace
-.vscode/
+# Data and logs (runtime generated)
+data/
+logs/
 
-# Python artifacts
-__pycache__/
-*.pyc
-*.code-workspace
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
