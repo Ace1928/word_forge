@@ -121,28 +121,6 @@ sys.modules["networkx.algorithms"] = alg_mod
 sys.modules["networkx.algorithms.community"] = alg_comm
 sys.modules["networkx.nx_agraph"] = nx_agraph
 
-numpy_stub = types.ModuleType("numpy")
-
-
-def _zeros(size, dtype=None):
-    length = size if isinstance(size, int) else size[0]
-    return [0.0] * length
-
-
-def _allclose(a, b, **_):
-    return a == b
-
-
-numpy_stub.float32 = float
-numpy_stub.zeros = _zeros
-numpy_stub.allclose = _allclose
-
-sys.modules["numpy"] = numpy_stub
-numpy_typing = types.ModuleType("numpy.typing")
-numpy_typing.NDArray = object
-numpy_stub.typing = numpy_typing
-sys.modules["numpy.typing"] = numpy_typing
-
 chromadb = types.ModuleType("chromadb")
 chromadb.Client = lambda *a, **k: None
 chromadb.PersistentClient = lambda *a, **k: None
@@ -172,6 +150,8 @@ sys.modules["nltk.corpus.reader"] = nltk.corpus.reader
 sys.modules["nltk.corpus.reader.wordnet"] = nltk.corpus.reader.wordnet
 sys.modules["nltk.stem"] = nltk.stem
 
+import numpy as np
+
 
 class DummyModel:
     def __init__(self, *a, **k):
@@ -181,8 +161,6 @@ class DummyModel:
         return 5
 
     def encode(self, *a, **k):
-        import numpy as np
-
         return np.zeros(5, dtype=np.float32)
 
 
@@ -232,17 +210,6 @@ class ResultRow(tuple):
 rdflib_mod.query.ResultRow = ResultRow
 sys.modules["rdflib"] = rdflib_mod
 sys.modules["rdflib.query"] = rdflib_mod.query
-
-emotion_module = types.ModuleType("word_forge.emotion.emotion_manager")
-
-
-class DummyEmotionManager:
-    def process_message(self, message_id, text):
-        pass
-
-
-emotion_module.EmotionManager = DummyEmotionManager
-sys.modules["word_forge.emotion.emotion_manager"] = emotion_module
 
 from types import SimpleNamespace
 
