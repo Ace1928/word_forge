@@ -212,7 +212,7 @@ pytest -k "test_emotion"
 
 ## Additional Resources
 
-- `upgrade_plan.md` - Planned improvements
-- `docs/migration/` - Historical migration notes
-- `docs/glossary.md` - Term definitions
-- `docs/templates/` - Docstring templates for new code
+- [`DETAILED_TODO.md`](../DETAILED_TODO.md) - Comprehensive improvement roadmap (primary reference)
+- [`docs/glossary.md`](glossary.md) - Term definitions
+- [`docs/templates/`](templates/) - Docstring templates for new code
+- [`upgrade_plan.md`](../upgrade_plan.md) - Architectural analysis (reference only)

@@ -1,994 +1,654 @@
-# Word Forge Detailed Improvement TODO
+# Word Forge Comprehensive TODO
 
-> **Exhaustive Analysis Document**
-> 
-> This document catalogs every identified improvement opportunity in the Word Forge codebase, from trivial enhancements to advanced architectural changes. Items are organized by category and priority. Each item includes specific file references, implementation notes, and expected impact.
+> **Unified Improvement Roadmap**  
+> **Last Updated**: 2026-01-11  
+> **Status**: Active Development
+>
+> This document consolidates ALL improvement opportunities, architectural enhancements, and planned features for Word Forge. It merges content from:
+> - `TODO.md` (MVP deliverables)
+> - `upgrade_plan.md` (architectural review)
+> - `code_perfection_prompt.md` (Eidosian transformation patterns)
+> - `code_polishing_prompt.md` (refinement directives)
+> - `living_lexicon_discussion.md` (original vision)
+> - Exhaustive file-by-file analysis
+
+---
+
+## Format Guide
+
+```
+Legend:
+  [ ] = Not started
+  [~] = In progress  
+  [x] = Complete
+  [!] = Blocked/Needs discussion
+
+Priority Levels:
+  P0 = Critical (blocking MVP)
+  P1 = High (needed soon)
+  P2 = Medium (planned)
+  P3 = Low (nice to have)
+
+Item Format:
+  - [ ] **`file/path.py:line`** - Brief description [Priority]
+    - Impact: Why this matters
+    - Implementation: How to fix/implement
+    - Dependencies: What this depends on
+```
 
 ---
 
 ## Table of Contents
 
-1. [Code Quality & Style](#1-code-quality--style)
-2. [Type Safety & Static Analysis](#2-type-safety--static-analysis)
-3. [Documentation](#3-documentation)
-4. [Testing](#4-testing)
-5. [Configuration System](#5-configuration-system)
-6. [Database Layer](#6-database-layer)
-7. [Graph Module](#7-graph-module)
-8. [Emotion Module](#8-emotion-module)
-9. [Vector Module](#9-vector-module)
-10. [Queue & Worker System](#10-queue--worker-system)
-11. [Parser Module](#11-parser-module)
-12. [Conversation Module](#12-conversation-module)
-13. [CLI & Entry Points](#13-cli--entry-points)
-14. [Error Handling](#14-error-handling)
-15. [Performance Optimization](#15-performance-optimization)
-16. [Security](#16-security)
-17. [Architecture & Design Patterns](#17-architecture--design-patterns)
-18. [CI/CD & DevOps](#18-cicd--devops)
-19. [Dependencies & Compatibility](#19-dependencies--compatibility)
-20. [Future Features](#20-future-features)
+1. [MVP Deliverables](#1-mvp-deliverables)
+2. [Code Quality](#2-code-quality)
+3. [Type Safety](#3-type-safety)
+4. [Documentation](#4-documentation)
+5. [Testing](#5-testing)
+6. [Configuration](#6-configuration)
+7. [Database](#7-database)
+8. [Graph Module](#8-graph-module)
+9. [Emotion Module](#9-emotion-module)
+10. [Vector Module](#10-vector-module)
+11. [Queue & Workers](#11-queue--workers)
+12. [Parser Module](#12-parser-module)
+13. [Conversation Module](#13-conversation-module)
+14. [CLI](#14-cli)
+15. [Error Handling](#15-error-handling)
+16. [Performance](#16-performance)
+17. [Security](#17-security)
+18. [Architecture](#18-architecture)
+19. [CI/CD](#19-cicd)
+20. [Dependencies](#20-dependencies)
+21. [Future Vision](#21-future-vision)
+22. [Eidosian Checklist](#22-eidosian-checklist)
 
 ---
 
-## 1. Code Quality & Style
+## 1. MVP Deliverables
 
-### 1.1 Docstring Completeness
+> Source: `TODO.md` - Core deliverables for initial release
 
-- [ ] **`src/word_forge/database/database_manager.py:1-64`** - Module docstring is malformed (content appears before module description)
-  - **Impact**: Documentation generation fails, confusing for developers
-  - **Fix**: Restructure docstring to follow standard format (description first, then sections)
+### 1.1 Test Coverage [P0]
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - Missing module-level docstring
-  - **Impact**: No context for module purpose
-  - **Fix**: Add comprehensive module docstring explaining parser refiner functionality
+- [x] **`tests/test_queue_manager.py`** - Queue manager tests
+- [ ] **`tests/test_database_worker.py`** - Database worker tests [P0]
+  - Impact: Critical worker untested
+  - Implementation: Create following test_queue_worker.py pattern
+- [ ] **`tests/test_emotion_processor.py`** - Emotion processor tests [P0]
+  - Impact: Recursive emotion processing untested
+- [ ] **`tests/test_conversation_worker.py`** - Conversation worker tests [P1]
+- [ ] **`tests/test_graph_builder.py`** - Graph builder tests [P1]
+- [ ] **`tests/test_graph_io.py`** - Graph I/O tests [P1]
+- [ ] **`tests/test_graph_query.py`** - Graph query tests [P1]
+- [ ] **`tests/test_language_model.py`** - LLM interface tests [P1]
+- [ ] **Heavy dependency mocking** - Stub torch, chromadb, transformers [P0]
+  - Impact: Tests can run without GPU/large downloads
+  - Implementation: `tests/conftest.py` with mock fixtures
 
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - Missing module-level docstring
-  - **Impact**: No context for conversation module
-  - **Fix**: Add docstring explaining conversation management capabilities
+### 1.2 Vectorization [P0]
 
-- [ ] **`src/word_forge/demos/*.py`** - Most demo files lack docstrings
-  - **Impact**: Demo scripts are not self-explanatory
-  - **Fix**: Add usage examples and purpose documentation to each demo
+- [ ] **Verify persistence** - Embeddings survive restart
+- [ ] **Polling logic** - Detect new/updated entries
+- [ ] **CLI search command** - `word_forge vector search <query>`
 
-### 1.2 Code Organization
+### 1.3 Graph Module [P0]
 
-- [ ] **`src/word_forge/config.py`** - 1285 lines, violates single responsibility
-  - **Impact**: Difficult to maintain, test, and extend
-  - **Fix**: Split into `config_loader.py`, `config_observers.py`, `config_profiles.py`
+- [x] **Rebuild from database** - `GraphManager.build_graph()` works
+- [ ] **Incremental updates** - Avoid full rebuilds
+- [ ] **Export utilities** - GEXF, GraphML formats
 
-- [ ] **`src/word_forge/configs/config_essentials.py`** - 1697 lines, too many concerns
-  - **Impact**: Hard to navigate and maintain
-  - **Fix**: Split into `types.py`, `errors.py`, `protocols.py`, `utilities.py`
+### 1.4 Conversation & Emotion [P1]
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - 1757 lines
-  - **Impact**: Monolithic file is hard to maintain
-  - **Fix**: Extract `vector_backends.py`, `vector_search.py`, `vector_metadata.py`
+- [ ] **Store conversations** - Multi-turn persistence
+- [ ] **Emotion integration** - Auto-annotate messages
+- [ ] **CLI commands** - `word_forge conversation start/list`
 
-- [ ] **`src/word_forge/tools/av_to_text.py`** - 2469 lines, standalone utility
-  - **Impact**: Overly complex single file
-  - **Fix**: Split into `transcription_engine.py`, `media_utils.py`, `cli_interface.py`
+### 1.5 Worker Orchestration [P1]
 
-### 1.3 Import Organization
-
-- [ ] **All modules** - Inconsistent import ordering
-  - **Impact**: Code style inconsistency
-  - **Fix**: Run `isort` with consistent profile across all files
-
-- [ ] **`src/word_forge/emotion/emotion_manager.py:31-74`** - Mixed import styles
-  - **Impact**: Visual clutter, harder to track dependencies
-  - **Fix**: Standardize import blocks (stdlib, third-party, local)
-
-### 1.4 Magic Numbers & Constants
-
-- [ ] **`src/word_forge/forge.py:121`** - Hardcoded `0.5` sleep interval
-  - **Impact**: Not configurable
-  - **Fix**: Extract to config constant `MAIN_LOOP_SLEEP_INTERVAL`
-
-- [ ] **`src/word_forge/forge.py:122`** - Hardcoded `5` seconds for report interval
-  - **Impact**: Not configurable
-  - **Fix**: Extract to config constant `PROGRESS_REPORT_INTERVAL`
-
-- [ ] **`src/word_forge/emotion/emotion_manager.py:177-178`** - Hardcoded `100` optimization frequency
-  - **Impact**: Not configurable
-  - **Fix**: Move to `EmotionConfig.optimization_frequency`
-
-- [ ] **`src/word_forge/parser/parser_refiner.py:93-117`** - Hardcoded stop words list
-  - **Impact**: Not extensible
-  - **Fix**: Move to config file or constant module
-
-### 1.5 Dead Code & Comments
-
-- [ ] **`src/word_forge/exceptions.py:126-182`** - Empty comment sections ("# Word Forge Specific Exceptions", etc.)
-  - **Impact**: Misleading structure
-  - **Fix**: Remove empty sections or add planned exceptions
-
-- [ ] **`src/word_forge/database/database_manager.py`** - Duplicate exception definitions (also in `exceptions.py`)
-  - **Impact**: Confusion about canonical exception location
-  - **Fix**: Consolidate exceptions in `exceptions.py`, import in `database_manager.py`
+- [x] **WorkerManager** - Lifecycle management complete
+- [ ] **Enable/disable flags** - Per-worker configuration
 
 ---
 
-## 2. Type Safety & Static Analysis
+## 2. Code Quality
 
-### 2.1 Remove `Any` Usage
+### 2.1 Docstrings [P1]
 
-- [ ] **`src/word_forge/config.py:44`** - `Any` imported but should be minimized
-  - **Impact**: Weak type safety
-  - **Fix**: Replace with specific types for each usage
+- [ ] **`src/word_forge/database/database_manager.py:1-64`** - Malformed docstring
+  - Impact: Docstring content appears before description
+  - Fix: Move description to top, sections below
+- [ ] **`src/word_forge/parser/parser_refiner.py`** - Missing module docstring
+- [ ] **`src/word_forge/conversation/conversation_manager.py`** - Missing module docstring
+- [ ] **`src/word_forge/demos/*.py`** - Demo files lack docstrings
 
-- [ ] **`src/word_forge/queue/queue_manager.py:23`** - `Any` used for `ErrorContext.context`
-  - **Impact**: Loses type information
-  - **Fix**: Create specific `ErrorContextDict` TypedDict
+### 2.2 File Organization [P2]
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py:42`** - `cast` used extensively
-  - **Impact**: Runtime type safety bypassed
-  - **Fix**: Refactor to use proper type narrowing or generics
+- [ ] **`src/word_forge/config.py`** - Split 1285-line file
+  - Target: `config_loader.py`, `config_observers.py`, `config_profiles.py`
+- [ ] **`src/word_forge/configs/config_essentials.py`** - Split 1697-line file
+  - Target: `types.py`, `errors.py`, `protocols.py`, `utilities.py`
+- [ ] **`src/word_forge/vectorizer/vector_store.py`** - Split 1757-line file
+  - Target: `vector_backends.py`, `vector_search.py`, `vector_metadata.py`
 
-### 2.2 Add Missing Type Hints
+### 2.3 Constants [P2]
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - Return type for `extract_terms` could be more specific
-  - **Impact**: Callers don't know exact structure
-  - **Fix**: Create `ExtractedTerms = Tuple[List[str], List[str]]` type alias
+- [ ] **`src/word_forge/forge.py:121`** - Extract `0.5` to `MAIN_LOOP_SLEEP_INTERVAL`
+- [ ] **`src/word_forge/forge.py:122`** - Extract `5` to `PROGRESS_REPORT_INTERVAL`
+- [ ] **`src/word_forge/emotion/emotion_manager.py:177`** - Extract `100` to config
+- [ ] **`src/word_forge/parser/parser_refiner.py:93-117`** - Move stop words to config
 
-- [ ] **`src/word_forge/conversation/conversation_types.py`** - Protocol methods missing return types
-  - **Impact**: Protocol contracts incomplete
-  - **Fix**: Add complete return type annotations
+### 2.4 Dead Code [P3]
 
-### 2.3 Fix `# type: ignore` Comments
-
-- [ ] **`src/word_forge/parser/parser_refiner.py:9-14`** - Multiple `# type: ignore` for NLTK
-  - **Impact**: Type errors hidden
-  - **Fix**: Create stub files or use more specific type: ignore directives
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py:48-65`** - `# type: ignore` for optional imports
-  - **Impact**: Type safety compromised
-  - **Fix**: Create proper stub modules or conditional type definitions
-
-### 2.4 TypedDict vs Dataclass Consistency
-
-- [ ] **Multiple files** - Inconsistent use of TypedDict and dataclass
-  - **Impact**: Inconsistent data structure patterns
-  - **Fix**: Establish guideline: TypedDict for JSON/dict interfaces, dataclass for internal state
-
-- [ ] **`src/word_forge/graph/graph_config.py`** - Mixed TypedDict and dataclass usage
-  - **Impact**: Confusion about when to use each
-  - **Fix**: Standardize on dataclass for configs with validation
+- [ ] **`src/word_forge/exceptions.py:126-182`** - Remove empty comment sections
+- [ ] **Duplicate exceptions** - Consolidate `DatabaseError` locations
 
 ---
 
-## 3. Documentation
+## 3. Type Safety
 
-### 3.1 README Enhancements
+### 3.1 Remove `Any` Usage [P1]
 
-- [ ] **`README.md`** - Add troubleshooting section
-  - **Impact**: Users struggle with common issues
-  - **Fix**: Add FAQ for NLTK data, model downloads, memory issues
+- [ ] **`src/word_forge/config.py`** - Replace `Any` with specific types
+- [ ] **`src/word_forge/queue/queue_manager.py:23`** - `ErrorContext.context`
+- [ ] **`src/word_forge/vectorizer/vector_store.py`** - Reduce `cast` usage
 
-- [ ] **`README.md`** - Add performance benchmarks
-  - **Impact**: Users can't assess system capabilities
-  - **Fix**: Add benchmark results for different data sizes
+### 3.2 Add Missing Hints [P2]
 
-- [ ] **`README.md`** - Add API quick reference
-  - **Impact**: Developers must read source for API overview
-  - **Fix**: Add table of main classes and methods
+- [ ] **`src/word_forge/parser/parser_refiner.py`** - `extract_terms` return type
+- [ ] **`src/word_forge/conversation/conversation_types.py`** - Protocol methods
 
-### 3.2 Module Documentation
+### 3.3 Fix Type Ignores [P2]
 
-- [ ] **`docs/`** - Missing architecture decision records (ADRs)
-  - **Impact**: Design decisions not documented
-  - **Fix**: Create `docs/adr/` directory with key decisions
-
-- [ ] **`docs/`** - Missing API reference documentation
-  - **Impact**: No generated API docs
-  - **Fix**: Add Sphinx/MkDocs configuration and generate API docs
-
-- [ ] **`docs/overview.md`** - Add sequence diagrams for main flows
-  - **Impact**: Hard to understand system interactions
-  - **Fix**: Add Mermaid diagrams for key processes
-
-### 3.3 Inline Documentation
-
-- [ ] **`src/word_forge/graph/graph_analysis.py`** - Complex algorithms need more explanation
-  - **Impact**: Hard to understand analysis methods
-  - **Fix**: Add algorithm descriptions and references
-
-- [ ] **`src/word_forge/emotion/emotion_processor.py`** - Recursive analysis needs explanation
-  - **Impact**: Complex logic is opaque
-  - **Fix**: Add detailed comments explaining recursive emotion processing
-
-### 3.4 Example Code
-
-- [ ] **`docs/`** - Missing usage examples directory
-  - **Impact**: No copy-paste examples for developers
-  - **Fix**: Create `docs/examples/` with common use cases
-
-- [ ] **Docstrings** - Many lack usage examples
-  - **Impact**: API usage unclear
-  - **Fix**: Add Examples section to all public API docstrings
+- [ ] **`src/word_forge/parser/parser_refiner.py:9-14`** - NLTK stubs
+- [ ] **`src/word_forge/vectorizer/vector_store.py:48-65`** - Optional import stubs
 
 ---
 
-## 4. Testing
+## 4. Documentation
 
-### 4.1 Missing Test Coverage
+### 4.1 README [P1]
 
-- [ ] **`tests/test_database_worker.py`** - File doesn't exist
-  - **Impact**: Database worker untested
-  - **Fix**: Create comprehensive database worker tests
+- [x] **Architecture diagram** - Added
+- [ ] **Troubleshooting section** - NLTK, models, memory issues
+- [ ] **Performance benchmarks** - Data size capabilities
+- [ ] **API quick reference** - Main classes table
 
-- [ ] **`tests/test_emotion_processor.py`** - File doesn't exist
-  - **Impact**: Emotion processor untested
-  - **Fix**: Create tests for recursive emotion processing
+### 4.2 Module Docs [P2]
 
-- [ ] **`tests/test_conversation_worker.py`** - File doesn't exist
-  - **Impact**: Conversation worker untested
-  - **Fix**: Create conversation worker tests
+- [ ] **`docs/adr/`** - Architecture Decision Records
+- [ ] **API reference** - Sphinx/MkDocs generation
+- [ ] **`docs/overview.md`** - Add sequence diagrams
+- [ ] **`docs/examples/`** - Usage examples directory
 
-- [ ] **`tests/test_graph_builder.py`** - File doesn't exist
-  - **Impact**: Graph builder untested
-  - **Fix**: Create graph builder unit tests
+### 4.3 Inline Docs [P2]
 
-- [ ] **`tests/test_graph_io.py`** - File doesn't exist
-  - **Impact**: Graph import/export untested
-  - **Fix**: Create graph I/O tests
-
-- [ ] **`tests/test_graph_query.py`** - File doesn't exist
-  - **Impact**: Graph queries untested
-  - **Fix**: Create graph query tests
-
-- [ ] **`tests/test_parser_config.py`** - File doesn't exist
-  - **Impact**: Parser config untested
-  - **Fix**: Create parser configuration tests
-
-- [ ] **`tests/test_language_model.py`** - File doesn't exist
-  - **Impact**: Language model interface untested
-  - **Fix**: Create LLM interface tests with mocks
-
-### 4.2 Test Quality Improvements
-
-- [ ] **`tests/test_integration.py`** - Uses `pytest.importorskip` reactively
-  - **Impact**: Tests skip silently for missing deps
-  - **Fix**: Document required dependencies clearly, use fixtures
-
-- [ ] **`tests/`** - No property-based tests
-  - **Impact**: Edge cases not systematically tested
-  - **Fix**: Add Hypothesis tests for data transformation functions
-
-- [ ] **`tests/`** - No performance tests
-  - **Impact**: Performance regressions undetected
-  - **Fix**: Add pytest-benchmark tests for critical paths
-
-- [ ] **`tests/`** - No snapshot tests for visualization outputs
-  - **Impact**: Visual regressions undetected
-  - **Fix**: Add snapshot tests for graph visualizations
-
-### 4.3 Test Infrastructure
-
-- [ ] **`tests/conftest.py`** - Missing shared fixtures
-  - **Impact**: Test setup duplicated
-  - **Fix**: Create shared fixtures for db, config, mock objects
-
-- [ ] **`tests/`** - No test data fixtures
-  - **Impact**: Test data inconsistent
-  - **Fix**: Create `tests/fixtures/` with sample data files
-
-- [ ] **`pyproject.toml`** - Missing coverage configuration
-  - **Impact**: Coverage thresholds not enforced
-  - **Fix**: Add `[tool.coverage]` section with minimum thresholds
-
-### 4.4 Mocking Strategy
-
-- [ ] **`tests/`** - Heavy dependencies not consistently mocked
-  - **Impact**: Tests slow, require external resources
-  - **Fix**: Create mock factories for torch, chromadb, networkx
-
-- [ ] **`tests/test_vector_store.py`** - Complex mock setup
-  - **Impact**: Hard to understand test intent
-  - **Fix**: Extract mock setup to fixtures
+- [ ] **`src/word_forge/graph/graph_analysis.py`** - Algorithm explanations
+- [ ] **`src/word_forge/emotion/emotion_processor.py`** - Recursive processing docs
 
 ---
 
-## 5. Configuration System
+## 5. Testing
 
-### 5.1 Config Validation
+### 5.1 Missing Tests [P0-P1]
 
-- [ ] **`src/word_forge/config.py`** - `validate_all()` doesn't validate cross-component constraints
-  - **Impact**: Invalid configurations accepted
-  - **Fix**: Add cross-component validation rules
+| Test File | Status | Priority |
+|-----------|--------|----------|
+| `test_database_worker.py` | Missing | P0 |
+| `test_emotion_processor.py` | Missing | P0 |
+| `test_conversation_worker.py` | Missing | P1 |
+| `test_graph_builder.py` | Missing | P1 |
+| `test_graph_io.py` | Missing | P1 |
+| `test_graph_query.py` | Missing | P1 |
+| `test_language_model.py` | Missing | P1 |
+| `test_parser_config.py` | Missing | P2 |
 
-- [ ] **`src/word_forge/database/database_config.py`** - Path validation incomplete
-  - **Impact**: Invalid paths accepted
-  - **Fix**: Add validation for path writability
+### 5.2 Test Infrastructure [P1]
 
-- [ ] **`src/word_forge/vectorizer/vectorizer_config.py`** - Model name not validated
-  - **Impact**: Invalid model names cause late failures
-  - **Fix**: Add validation against known model list
+- [ ] **`tests/conftest.py`** - Shared fixtures (db, config, mocks)
+- [ ] **`tests/fixtures/`** - Sample data files
+- [ ] **`pyproject.toml`** - Coverage thresholds
 
-### 5.2 Environment Variables
+### 5.3 Test Quality [P2]
 
-- [ ] **`src/word_forge/config.py`** - ENV_VARS mappings incomplete
-  - **Impact**: Not all settings overridable via env
-  - **Fix**: Add ENV_VARS for all configurable settings
-
-- [ ] **`src/word_forge/`** - No .env.example file
-  - **Impact**: Users don't know available env vars
-  - **Fix**: Create `.env.example` with all variables documented
-
-### 5.3 Config Profiles
-
-- [ ] **`src/word_forge/config.py:1031-1074`** - Profiles hardcoded
-  - **Impact**: Profiles not extensible
-  - **Fix**: Load profiles from YAML/JSON files
-
-- [ ] **Config profiles** - Missing profile for "minimal" mode
-  - **Impact**: Can't run with minimal dependencies
-  - **Fix**: Add "minimal" profile disabling heavy features
-
-### 5.4 Runtime Configuration
-
-- [ ] **`src/word_forge/config.py`** - Hot reload doesn't reload component configs
-  - **Impact**: Components use stale config after reload
-  - **Fix**: Implement config change propagation to components
-
-- [ ] **`src/word_forge/config.py`** - No config file support (only env vars)
-  - **Impact**: Complex configs hard to manage
-  - **Fix**: Add YAML/JSON/TOML config file loading
+- [ ] **Property-based tests** - Hypothesis for data transforms
+- [ ] **Performance tests** - pytest-benchmark for critical paths
+- [ ] **Snapshot tests** - Graph visualization outputs
 
 ---
 
-## 6. Database Layer
+## 6. Configuration
 
-### 6.1 Schema Management
+### 6.1 Validation [P1]
 
-- [ ] **`src/word_forge/database/database_manager.py`** - No schema migration system
-  - **Impact**: Schema changes require manual intervention
-  - **Fix**: Implement Alembic-style migrations
+- [ ] **Cross-component validation** - `validate_all()` improvements
+- [ ] **Path validation** - Writability checks
+- [ ] **Model name validation** - Against known models
 
-- [ ] **`src/word_forge/database/database_manager.py`** - Schema version not tracked
-  - **Impact**: Version mismatches undetected
-  - **Fix**: Add schema_version table and check on startup
+### 6.2 Environment [P2]
 
-- [ ] **Database schema** - No foreign key constraints enforcement
-  - **Impact**: Data integrity not guaranteed
-  - **Fix**: Enable `PRAGMA foreign_keys = ON` consistently
+- [ ] **Complete ENV_VARS** - All settings overridable
+- [ ] **`.env.example`** - Document all variables
 
-### 6.2 Query Optimization
+### 6.3 Profiles [P2]
 
-- [ ] **`src/word_forge/database/database_manager.py`** - No query plan analysis
-  - **Impact**: Slow queries undetected
-  - **Fix**: Add EXPLAIN ANALYZE for slow queries in debug mode
-
-- [ ] **`src/word_forge/database/database_manager.py`** - Missing indexes
-  - **Impact**: Slow lookups on large datasets
-  - **Fix**: Add indexes on frequently queried columns
-
-- [ ] **`src/word_forge/database/database_manager.py`** - No prepared statement caching
-  - **Impact**: Query parsing overhead
-  - **Fix**: Implement prepared statement cache
-
-### 6.3 Connection Management
-
-- [ ] **`src/word_forge/database/database_manager.py`** - Connection pool size not configurable per-context
-  - **Impact**: Can't optimize for different workloads
-  - **Fix**: Add context-aware pool sizing
-
-- [ ] **`src/word_forge/database/database_manager.py`** - No connection health checks
-  - **Impact**: Stale connections cause errors
-  - **Fix**: Add periodic connection validation
-
-### 6.4 Data Access Patterns
-
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - Direct sqlite3 usage
-  - **Impact**: Bypasses DBManager abstraction
-  - **Fix**: Use DBManager consistently
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - Some direct sqlite3 calls
-  - **Impact**: Inconsistent database access
-  - **Fix**: Route all DB access through DBManager
+- [ ] **External profiles** - Load from YAML/JSON
+- [ ] **Minimal profile** - Disable heavy features
+- [ ] **Hot reload propagation** - Update components on change
 
 ---
 
-## 7. Graph Module
+## 7. Database
 
-### 7.1 Graph Construction
+### 7.1 Schema [P1]
 
-- [ ] **`src/word_forge/graph/graph_builder.py`** - Full rebuild on each update
-  - **Impact**: Slow for large graphs
-  - **Fix**: Implement incremental graph updates
+- [ ] **Migrations** - Alembic-style system
+- [ ] **Version tracking** - `schema_version` table
+- [ ] **Foreign keys** - Enable `PRAGMA foreign_keys`
 
-- [ ] **`src/word_forge/graph/graph_builder.py`** - No graph versioning
-  - **Impact**: Can't track graph changes over time
-  - **Fix**: Add graph version/timestamp metadata
+### 7.2 Performance [P2]
 
-### 7.2 Graph Analysis
+- [ ] **Query analysis** - EXPLAIN for slow queries
+- [ ] **Indexes** - Frequent query columns
+- [ ] **Prepared statements** - Statement cache
 
-- [ ] **`src/word_forge/graph/graph_analysis.py`** - Limited community detection algorithms
-  - **Impact**: Only basic clustering available
-  - **Fix**: Add Leiden, Infomap algorithms
+### 7.3 Abstraction [P2]
 
-- [ ] **`src/word_forge/graph/graph_analysis.py`** - No graph embedding support
-  - **Impact**: Can't use node embeddings for ML
-  - **Fix**: Add node2vec, GraphSAGE integration
-
-- [ ] **`src/word_forge/graph/graph_analysis.py`** - Missing path analysis
-  - **Impact**: Can't analyze semantic paths
-  - **Fix**: Add shortest path, all paths between concepts
-
-### 7.3 Graph Visualization
-
-- [ ] **`src/word_forge/graph/graph_visualizer.py`** - Limited layout algorithms
-  - **Impact**: Suboptimal graph layouts
-  - **Fix**: Add Fruchterman-Reingold, Kamada-Kawai layouts
-
-- [ ] **`src/word_forge/graph/graph_visualizer.py`** - No interactive filtering in output
-  - **Impact**: Large graphs overwhelming
-  - **Fix**: Add D3.js-based interactive filtering
-
-- [ ] **`src/word_forge/graph/graph_visualizer.py`** - No legend in visualizations
-  - **Impact**: Edge types unclear in output
-  - **Fix**: Add relationship type legend
-
-### 7.4 Graph I/O
-
-- [ ] **`src/word_forge/graph/graph_io.py`** - Limited export formats
-  - **Impact**: Interoperability limited
-  - **Fix**: Add Cypher (Neo4j), DOT, JSON-LD formats
-
-- [ ] **`src/word_forge/graph/graph_io.py`** - No streaming export for large graphs
-  - **Impact**: Memory issues with large graphs
-  - **Fix**: Implement streaming/chunked export
+- [ ] **Remove direct sqlite3** - Route through DBManager
+  - `conversation_manager.py` - Uses direct sqlite3
+  - `vector_store.py` - Some direct calls
 
 ---
 
-## 8. Emotion Module
+## 8. Graph Module
 
-### 8.1 Emotion Analysis
+### 8.1 Construction [P1]
 
-- [ ] **`src/word_forge/emotion/emotion_manager.py`** - VADER/TextBlob weights fixed
-  - **Impact**: Can't tune for different domains
-  - **Fix**: Make weights configurable per domain
+- [ ] **Incremental updates** - Delta processing
+- [ ] **Graph versioning** - Track changes over time
 
-- [ ] **`src/word_forge/emotion/emotion_manager.py`** - No emotion trend analysis
-  - **Impact**: Can't track emotion changes over time
-  - **Fix**: Add temporal emotion analysis
+### 8.2 Analysis [P2]
 
-- [ ] **`src/word_forge/emotion/emotion_processor.py`** - Recursive depth not configurable
-  - **Impact**: Fixed analysis depth
-  - **Fix**: Add max_recursion_depth config
+- [ ] **More algorithms** - Leiden, Infomap
+- [ ] **Graph embeddings** - node2vec, GraphSAGE
+- [ ] **Path analysis** - Semantic path finding
 
-### 8.2 Emotion Models
+### 8.3 Visualization [P2]
 
-- [ ] **`src/word_forge/emotion/emotion_config.py`** - Only Ekman emotions supported
-  - **Impact**: Limited emotion taxonomy
-  - **Fix**: Add Plutchik wheel, PAD model support
+- [ ] **More layouts** - Fruchterman-Reingold, Kamada-Kawai
+- [ ] **Interactive filtering** - D3.js integration
+- [ ] **Legend** - Relationship type key
 
-- [ ] **`src/word_forge/emotion/emotion_types.py`** - No composite emotion support
-  - **Impact**: Can't represent complex emotions
-  - **Fix**: Add emotion combination logic
+### 8.4 I/O [P2]
 
-### 8.3 Emotion Persistence
-
-- [ ] **`src/word_forge/emotion/emotion_manager.py`** - Emotion history not tracked
-  - **Impact**: Can't see emotion evolution
-  - **Fix**: Add emotion history table with timestamps
-
-- [ ] **`src/word_forge/emotion/emotion_manager.py`** - No emotion confidence decay
-  - **Impact**: Old annotations weighted equally
-  - **Fix**: Add time-based confidence decay
+- [ ] **More formats** - Cypher, DOT, JSON-LD
+- [ ] **Streaming export** - Large graph handling
 
 ---
 
-## 9. Vector Module
+## 9. Emotion Module
 
-### 9.1 Vector Storage
+### 9.1 Analysis [P2]
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - ChromaDB only persistent backend
-  - **Impact**: Limited deployment options
-  - **Fix**: Add Pinecone, Weaviate, Milvus backends
+- [ ] **Configurable weights** - VADER/TextBlob per domain
+- [ ] **Trend analysis** - Temporal patterns
+- [ ] **Configurable depth** - Recursive analysis limits
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No vector versioning
-  - **Impact**: Can't compare embedding versions
-  - **Fix**: Add model version tracking per embedding
+### 9.2 Models [P2]
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No vector compression
-  - **Impact**: High storage requirements
-  - **Fix**: Add PQ/OPQ compression option
+- [ ] **More taxonomies** - Plutchik wheel, PAD model
+- [ ] **Composite emotions** - Combination logic
 
-### 9.2 Embedding Models
+### 9.3 Persistence [P2]
 
-- [ ] **`src/word_forge/vectorizer/vectorizer_config.py`** - Limited model options
-  - **Impact**: Can't use latest models
-  - **Fix**: Add support for any sentence-transformers model
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No model benchmarking
-  - **Impact**: Can't compare model quality
-  - **Fix**: Add embedding quality metrics
-
-### 9.3 Search Optimization
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No hybrid search
-  - **Impact**: Pure vector search can miss keyword matches
-  - **Fix**: Add BM25 + vector hybrid search
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No search result explanation
-  - **Impact**: Results are opaque
-  - **Fix**: Add similarity breakdown in results
+- [ ] **History tracking** - Emotion timeline
+- [ ] **Confidence decay** - Time-based weighting
 
 ---
 
-## 10. Queue & Worker System
+## 10. Vector Module
 
-### 10.1 Queue Management
+### 10.1 Storage [P2]
 
-- [ ] **`src/word_forge/queue/queue_manager.py`** - No persistent queue option
-  - **Impact**: Queue lost on restart
-  - **Fix**: Add optional SQLite/Redis persistence
+- [ ] **More backends** - Pinecone, Weaviate, Milvus
+- [ ] **Version tracking** - Model version per embedding
+- [ ] **Compression** - PQ/OPQ support
 
-- [ ] **`src/word_forge/queue/queue_manager.py`** - No dead letter queue
-  - **Impact**: Failed items lost
-  - **Fix**: Add DLQ for repeated failures
+### 10.2 Models [P2]
 
-- [ ] **`src/word_forge/queue/queue_manager.py`** - No rate limiting
-  - **Impact**: Can overwhelm downstream systems
-  - **Fix**: Add token bucket rate limiter
+- [ ] **Dynamic model selection** - Any sentence-transformers
+- [ ] **Quality metrics** - Embedding benchmarks
 
-### 10.2 Worker Management
+### 10.3 Search [P2]
 
-- [ ] **`src/word_forge/queue/worker_manager.py`** - No worker health checks
-  - **Impact**: Stuck workers undetected
-  - **Fix**: Add heartbeat monitoring
-
-- [ ] **`src/word_forge/queue/worker_manager.py`** - No automatic worker restart
-  - **Impact**: Failed workers stay down
-  - **Fix**: Add automatic restart with backoff
-
-- [ ] **`src/word_forge/queue/worker_manager.py`** - No worker scaling
-  - **Impact**: Fixed worker count
-  - **Fix**: Add auto-scaling based on queue depth
-
-### 10.3 Worker Coordination
-
-- [ ] **Workers** - No distributed locking
-  - **Impact**: Race conditions in multi-process
-  - **Fix**: Add Redis/database-based locking
-
-- [ ] **Workers** - No work stealing
-  - **Impact**: Uneven load distribution
-  - **Fix**: Add work stealing for idle workers
+- [ ] **Hybrid search** - BM25 + vector
+- [ ] **Result explanation** - Similarity breakdown
 
 ---
 
-## 11. Parser Module
+## 11. Queue & Workers
 
-### 11.1 Term Extraction
+### 11.1 Queue [P2]
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - Limited NLP pipeline
-  - **Impact**: Basic term extraction only
-  - **Fix**: Add spaCy pipeline for NER, dependencies
+- [ ] **Persistence** - SQLite/Redis queue
+- [ ] **Dead letter queue** - Failed items
+- [ ] **Rate limiting** - Token bucket
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - No multi-word expression detection
-  - **Impact**: Phrases not captured
-  - **Fix**: Add collocation detection
+### 11.2 Workers [P2]
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - No domain-specific extraction
-  - **Impact**: Technical terms missed
-  - **Fix**: Add domain dictionaries
+- [ ] **Health checks** - Heartbeat monitoring
+- [ ] **Auto-restart** - Failure recovery
+- [ ] **Auto-scaling** - Queue depth based
 
-### 11.2 Lexical Resources
+### 11.3 Coordination [P3]
 
-- [ ] **`src/word_forge/parser/lexical_functions.py`** - Resource loading not lazy
-  - **Impact**: Startup time increased
-  - **Fix**: Implement lazy loading
-
-- [ ] **`src/word_forge/parser/lexical_functions.py`** - No resource update mechanism
-  - **Impact**: Outdated lexical data
-  - **Fix**: Add resource versioning and updates
-
-### 11.3 Language Model Integration
-
-- [ ] **`src/word_forge/parser/language_model.py`** - Global `ModelState` singleton
-  - **Impact**: Hard to test, configure
-  - **Fix**: Convert to dependency-injected instance
-
-- [ ] **`src/word_forge/parser/language_model.py`** - Hardcoded model names
-  - **Impact**: Can't swap models easily
-  - **Fix**: Move model names to config
-
-- [ ] **`src/word_forge/parser/language_model.py`** - No model caching strategy
-  - **Impact**: Models reloaded unnecessarily
-  - **Fix**: Add model cache with memory management
+- [ ] **Distributed locking** - Multi-process safety
+- [ ] **Work stealing** - Load balancing
 
 ---
 
-## 12. Conversation Module
+## 12. Parser Module
 
-### 12.1 Conversation Management
+### 12.1 Extraction [P2]
 
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - No conversation search
-  - **Impact**: Can't find old conversations
-  - **Fix**: Add full-text search on messages
+- [ ] **SpaCy pipeline** - NER, dependencies
+- [ ] **MWE detection** - Multi-word expressions
+- [ ] **Domain dictionaries** - Technical terms
 
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - No conversation summarization
-  - **Impact**: Long conversations hard to review
-  - **Fix**: Add LLM-based summarization
+### 12.2 Resources [P2]
 
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - No conversation branching
-  - **Impact**: Linear conversations only
-  - **Fix**: Add conversation tree support
+- [ ] **Lazy loading** - On-demand resources
+- [ ] **Update mechanism** - Resource versioning
 
-### 12.2 Message Processing
+### 12.3 LLM [P2]
 
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - No message threading
-  - **Impact**: Reply relationships not tracked
-  - **Fix**: Add parent_message_id support
-
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - No message attachments
-  - **Impact**: Can't handle multimedia
-  - **Fix**: Add attachment storage
-
-### 12.3 Conversation Analysis
-
-- [ ] **`src/word_forge/conversation/`** - No conversation topic modeling
-  - **Impact**: Topics not extracted
-  - **Fix**: Add topic extraction
-
-- [ ] **`src/word_forge/conversation/`** - No speaker analysis
-  - **Impact**: Speaker patterns not tracked
-  - **Fix**: Add speaker statistics
+- [ ] **Remove ModelState singleton** - Dependency injection
+- [ ] **Configurable models** - Move names to config
+- [ ] **Memory management** - Model unloading
 
 ---
 
-## 13. CLI & Entry Points
+## 13. Conversation Module
 
-### 13.1 CLI Completeness
+### 13.1 Management [P2]
 
-- [ ] **`src/word_forge/forge.py`** - No `--version` flag
-  - **Impact**: Version check not available
-  - **Fix**: Add version command using `importlib.metadata`
+- [ ] **Full-text search** - Message search
+- [ ] **Summarization** - LLM-based summaries
+- [ ] **Branching** - Conversation trees
 
-- [ ] **`src/word_forge/forge.py`** - No `--config` file option
-  - **Impact**: Can't specify config file
-  - **Fix**: Add config file argument
+### 13.2 Messages [P3]
 
-- [ ] **`src/word_forge/forge.py`** - No `--quiet` mode
-  - **Impact**: Always verbose output
-  - **Fix**: Add quiet/verbose flags
+- [ ] **Threading** - Reply relationships
+- [ ] **Attachments** - Multimedia support
 
-### 13.2 CLI UX
+### 13.3 Analysis [P3]
 
-- [ ] **`src/word_forge/forge.py`** - No progress bars
-  - **Impact**: No visual feedback for long operations
-  - **Fix**: Add tqdm/rich progress bars
-
-- [ ] **`src/word_forge/forge.py`** - No colored output
-  - **Impact**: Output hard to scan
-  - **Fix**: Add rich/colorama colored output
-
-- [ ] **`src/word_forge/forge.py`** - No shell completion
-  - **Impact**: Command completion not available
-  - **Fix**: Add bash/zsh completion scripts
-
-### 13.3 Command Organization
-
-- [ ] **`src/word_forge/forge.py`** - Commands could be plugins
-  - **Impact**: New commands require core changes
-  - **Fix**: Implement plugin-based command system
-
-- [ ] **`src/word_forge/forge.py`** - No command aliases
-  - **Impact**: Verbose command names
-  - **Fix**: Add short aliases for common commands
+- [ ] **Topic modeling** - Topic extraction
+- [ ] **Speaker analysis** - Per-speaker stats
 
 ---
 
-## 14. Error Handling
+## 14. CLI
 
-### 14.1 Exception Hierarchy
+### 14.1 Commands [P1]
 
-- [ ] **`src/word_forge/exceptions.py`** - Missing VectorError hierarchy
-  - **Impact**: Vector errors not typed
-  - **Fix**: Add VectorError, VectorIndexError, VectorSearchError
+- [ ] **`--version`** - Version display
+- [ ] **`--config`** - Config file option
+- [ ] **`--quiet`** - Suppress output
 
-- [ ] **`src/word_forge/exceptions.py`** - Missing ConversationError hierarchy
-  - **Impact**: Conversation errors not typed
-  - **Fix**: Add ConversationError, MessageError classes
+### 14.2 UX [P2]
 
-- [ ] **`src/word_forge/exceptions.py`** - Missing EmotionError in central module
-  - **Impact**: Emotion errors defined separately
-  - **Fix**: Consolidate all errors in exceptions.py
+- [ ] **Progress bars** - tqdm/rich
+- [ ] **Colored output** - rich/colorama
+- [ ] **Shell completion** - bash/zsh scripts
 
-### 14.2 Error Information
+### 14.3 Organization [P3]
 
-- [ ] **All exceptions** - No error codes
-  - **Impact**: Programmatic error handling difficult
-  - **Fix**: Add unique error codes to all exceptions
-
-- [ ] **All exceptions** - No structured error context
-  - **Impact**: Debug info inconsistent
-  - **Fix**: Add context dict to all exceptions
-
-### 14.3 Result Pattern
-
-- [ ] **`src/word_forge/queue/queue_manager.py`** - Result pattern not used consistently
-  - **Impact**: Mixed error handling styles
-  - **Fix**: Extend Result pattern usage to all modules
-
-- [ ] **`src/word_forge/configs/config_essentials.py`** - Result lacks `and_then` combinator
-  - **Impact**: Chaining limited
-  - **Fix**: Add `and_then`, `or_else` methods
+- [ ] **Plugin system** - Extensible commands
+- [ ] **Aliases** - Short command forms
 
 ---
 
-## 15. Performance Optimization
+## 15. Error Handling
 
-### 15.1 Memory Management
+### 15.1 Hierarchy [P1]
 
-- [ ] **`src/word_forge/parser/language_model.py`** - Models kept in memory always
-  - **Impact**: High memory usage
-  - **Fix**: Add model unloading for unused models
+- [ ] **VectorError** - Vector operation errors
+- [ ] **ConversationError** - In central exceptions.py
+- [ ] **Error codes** - Unique identifiers
 
-- [ ] **`src/word_forge/graph/graph_manager.py`** - Graph kept in memory entirely
-  - **Impact**: Large graphs cause OOM
-  - **Fix**: Add graph sharding or database-backed graph
+### 15.2 Result Pattern [P2]
 
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - Embeddings cached in memory
-  - **Impact**: Memory grows with usage
-  - **Fix**: Add LRU cache with size limit
-
-### 15.2 CPU Optimization
-
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - No batch processing
-  - **Impact**: Per-item overhead
-  - **Fix**: Add batch term extraction
-
-- [ ] **`src/word_forge/emotion/emotion_manager.py`** - No batch emotion analysis
-  - **Impact**: Per-item model calls
-  - **Fix**: Add batch emotion processing
-
-### 15.3 I/O Optimization
-
-- [ ] **`src/word_forge/database/database_manager.py`** - No connection pooling metrics
-  - **Impact**: Pool efficiency unknown
-  - **Fix**: Add pool utilization metrics
-
-- [ ] **`src/word_forge/vectorizer/vector_store.py`** - No async embedding generation
-  - **Impact**: I/O-bound operations block
-  - **Fix**: Add async embedding generation
-
-### 15.4 Profiling & Metrics
-
-- [ ] **All modules** - No built-in profiling
-  - **Impact**: Performance issues hard to identify
-  - **Fix**: Add optional cProfile integration
-
-- [ ] **All modules** - Limited metrics collection
-  - **Impact**: System behavior opaque
-  - **Fix**: Add Prometheus/StatsD metrics
+- [ ] **Consistent usage** - All modules
+- [ ] **Combinators** - `and_then`, `or_else`
 
 ---
 
-## 16. Security
+## 16. Performance
 
-### 16.1 Input Validation
+### 16.1 Memory [P2]
 
-- [ ] **`src/word_forge/database/database_manager.py`** - SQL injection protection audit
-  - **Impact**: Potential SQL injection
-  - **Fix**: Audit all queries use parameterized statements
+- [ ] **Model unloading** - Unused model cleanup
+- [ ] **Graph sharding** - Large graph handling
+- [ ] **LRU cache limits** - Bounded caches
 
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - Input sanitization incomplete
-  - **Impact**: Malicious input could cause issues
-  - **Fix**: Add comprehensive input sanitization
+### 16.2 CPU [P2]
 
-### 16.2 Data Protection
+- [ ] **Batch processing** - Term extraction
+- [ ] **Batch emotion** - Analysis batching
 
-- [ ] **`src/word_forge/config.py`** - Secrets in config not protected
-  - **Impact**: Sensitive data exposed
-  - **Fix**: Add secret masking in logs/exports
+### 16.3 I/O [P2]
 
-- [ ] **`src/word_forge/`** - No data encryption at rest
-  - **Impact**: SQLite data unencrypted
-  - **Fix**: Add optional SQLCipher support
+- [ ] **Pool metrics** - Connection utilization
+- [ ] **Async embeddings** - Non-blocking generation
 
-### 16.3 Dependency Security
+### 16.4 Profiling [P3]
 
-- [ ] **`pyproject.toml`** - No dependency pinning
-  - **Impact**: Vulnerable versions could be installed
-  - **Fix**: Add dependency version constraints
-
-- [ ] **CI** - No dependency vulnerability scanning
-  - **Impact**: Known vulnerabilities undetected
-  - **Fix**: Add Dependabot/Snyk scanning
+- [ ] **cProfile integration** - Built-in profiling
+- [ ] **Prometheus metrics** - Observability
 
 ---
 
-## 17. Architecture & Design Patterns
+## 17. Security
 
-### 17.1 Dependency Injection
+### 17.1 Input [P1]
 
-- [ ] **All modules** - Direct instantiation of dependencies
-  - **Impact**: Hard to test, couple tightly
-  - **Fix**: Implement DI container or manual injection
+- [ ] **SQL injection audit** - Parameterized queries
+- [ ] **Input sanitization** - Parser inputs
 
-- [ ] **`src/word_forge/config.py`** - Global config singleton
-  - **Impact**: Global state issues
-  - **Fix**: Pass config via DI
+### 17.2 Data [P2]
 
-### 17.2 Repository Pattern
+- [ ] **Secret masking** - Log/export protection
+- [ ] **Encryption** - SQLCipher support
 
-- [ ] **`src/word_forge/database/`** - No repository abstraction
-  - **Impact**: Database access not abstracted
-  - **Fix**: Create Repository protocols and implementations
+### 17.3 Dependencies [P1]
 
-### 17.3 Event System
-
-- [ ] **All modules** - No event bus
-  - **Impact**: Components can't react to system events
-  - **Fix**: Add event bus for cross-component communication
-
-### 17.4 Plugin Architecture
-
-- [ ] **All modules** - No plugin system
-  - **Impact**: Extensions require core changes
-  - **Fix**: Add plugin architecture for analyzers, backends
+- [ ] **Version constraints** - Upper bounds
+- [ ] **Vulnerability scanning** - Dependabot/Snyk
 
 ---
 
-## 18. CI/CD & DevOps
+## 18. Architecture
 
-### 18.1 CI Pipeline
+> Source: `upgrade_plan.md` - Architectural patterns
 
-- [ ] **`.github/workflows/ci.yml`** - No caching of dependencies
-  - **Impact**: Slow CI runs
-  - **Fix**: Add pip cache
+### 18.1 Result Pattern [P1]
 
-- [ ] **`.github/workflows/ci.yml`** - No parallel test execution
-  - **Impact**: Tests run sequentially
-  - **Fix**: Add pytest-xdist for parallel tests
+- [ ] **Standardize error handling** - Return `Result[T]` instead of exceptions
+- [ ] **Error context codes** - Consistent error identification
+  - Impact: Explicit error paths, better composability
+  - Breaking: Requires coordinated updates
 
-- [ ] **`.github/workflows/ci.yml`** - No coverage reporting
-  - **Impact**: Coverage not tracked
-  - **Fix**: Add codecov/coveralls integration
+### 18.2 Repository Pattern [P2]
 
-- [ ] **`.github/workflows/ci.yml`** - No integration test job
-  - **Impact**: Integration tests not run in CI
-  - **Fix**: Add integration test job
+- [ ] **Define protocols** - `WordRepository`, `ConversationRepository`
+- [ ] **SQLite implementations** - `SQLiteWordRepository`, etc.
+- [ ] **Dependency injection** - Accept protocols in constructors
+  - Impact: Decouples from SQLite, enables mocking
+  - Breaking: Component initialization changes
 
-### 18.2 Release Automation
+### 18.3 Configuration Refactor [P2]
 
-- [ ] **`.github/`** - No release workflow
-  - **Impact**: Manual releases
-  - **Fix**: Add semantic-release workflow
+- [ ] **Simple loader** - `load_config() -> Dict`
+- [ ] **Component injection** - Pass config via constructors
+- [ ] **Remove global config** - No `config.database.db_path`
+  - Impact: Better testability, explicit dependencies
+  - Breaking: Fundamental access pattern change
 
-- [ ] **`.github/`** - No changelog generation
-  - **Impact**: Manual changelog
-  - **Fix**: Add conventional-changelog
+### 18.4 LLM Abstraction [P2]
 
-### 18.3 Containerization
+- [ ] **Define `LLMInterface` protocol** - `generate()`, `embed()`
+- [ ] **HuggingFace implementation** - Encapsulate transformers
+- [ ] **Remove ModelState singleton** - Use dependency injection
+  - Impact: Swap models easily, testable
+  - Breaking: Singleton removal
 
-- [ ] **Root** - No Dockerfile
-  - **Impact**: Can't containerize
-  - **Fix**: Add multi-stage Dockerfile
+### 18.5 Event System [P3]
 
-- [ ] **Root** - No docker-compose.yml
-  - **Impact**: Complex local setup
-  - **Fix**: Add docker-compose for development
-
----
-
-## 19. Dependencies & Compatibility
-
-### 19.1 Dependency Management
-
-- [ ] **`pyproject.toml`** - No upper version bounds
-  - **Impact**: Breaking changes from deps
-  - **Fix**: Add upper bounds for critical deps
-
-- [ ] **`pyproject.toml`** - No lock file
-  - **Impact**: Non-reproducible builds
-  - **Fix**: Add `pip-tools` or Poetry for lock file
-
-### 19.2 Python Compatibility
-
-- [ ] **`pyproject.toml`** - Python 3.8 support claimed but not tested
-  - **Impact**: May not work on 3.8
-  - **Fix**: Add 3.8 to CI matrix
-
-- [ ] **Type hints** - Some 3.10+ syntax used
-  - **Impact**: Type hints fail on 3.8/3.9
-  - **Fix**: Use `from __future__ import annotations`
-
-### 19.3 Optional Dependencies
-
-- [ ] **`pyproject.toml`** - Optional deps not properly guarded
-  - **Impact**: Import errors without optional deps
-  - **Fix**: Add try/except guards for all optional imports
+- [ ] **Event bus** - Cross-component communication
+- [ ] **Plugin architecture** - Extensible analyzers/backends
 
 ---
 
-## 20. Future Features
+## 19. CI/CD
 
-### 20.1 Multi-Language Support
+### 19.1 Pipeline [P1]
 
-- [ ] Add language detection
-- [ ] Add multilingual embedding models
-- [ ] Add translation support
-- [ ] Add language-specific tokenization
+- [ ] **Dependency caching** - pip cache
+- [ ] **Parallel tests** - pytest-xdist
+- [ ] **Coverage reporting** - codecov/coveralls
+- [ ] **Integration test job** - Separate workflow
 
-### 20.2 Distributed Processing
+### 19.2 Release [P2]
 
-- [ ] Add Celery/RQ task queue support
-- [ ] Add distributed graph processing (GraphX)
-- [ ] Add distributed vector search (Milvus cluster)
-- [ ] Add Kubernetes deployment configs
+- [ ] **Release workflow** - semantic-release
+- [ ] **Changelog** - conventional-changelog
 
-### 20.3 API Layer
+### 19.3 Containers [P2]
 
-- [ ] Add REST API (FastAPI/Flask)
-- [ ] Add GraphQL API
-- [ ] Add WebSocket for real-time updates
-- [ ] Add API authentication
-
-### 20.4 UI/Visualization
-
-- [ ] Add web dashboard
-- [ ] Add interactive graph explorer
-- [ ] Add emotion visualization timeline
-- [ ] Add conversation analytics dashboard
-
-### 20.5 Machine Learning Integration
-
-- [ ] Add custom fine-tuning for emotion models
-- [ ] Add active learning for annotation
-- [ ] Add model comparison framework
-- [ ] Add A/B testing for models
+- [ ] **Dockerfile** - Multi-stage build
+- [ ] **docker-compose.yml** - Dev environment
 
 ---
 
-## Priority Matrix
+## 20. Dependencies
 
-### P0 - Critical (Do First)
+### 20.1 Management [P1]
 
-1. Fix malformed module docstrings
-2. Consolidate exception definitions
-3. Add missing test files
-4. Fix database abstraction leaks
-5. Add conftest.py fixtures
+- [ ] **Upper bounds** - Prevent breaking changes
+- [ ] **Lock file** - pip-tools or Poetry
 
-### P1 - High (Do Soon)
+### 20.2 Compatibility [P2]
 
-1. Split large files (config.py, config_essentials.py)
-2. Implement Result pattern consistently
-3. Add CI caching and coverage
-4. Fix type hints and remove `Any`
-5. Add database migrations
+- [ ] **Python 3.8 CI** - Add to test matrix
+- [ ] **Type hint compat** - `from __future__ import annotations`
 
-### P2 - Medium (Planned)
+### 20.3 Guards [P1]
 
-1. Add API documentation generation
-2. Implement repository pattern
-3. Add worker health checks
-4. Add performance profiling
-5. Add config file support
-
-### P3 - Low (Nice to Have)
-
-1. Add CLI progress bars
-2. Add shell completion
-3. Add plugin architecture
-4. Add web dashboard
-5. Add distributed processing
+- [ ] **Optional imports** - try/except for all optionals
 
 ---
 
-## Metrics to Track
+## 21. Future Vision
 
-- [ ] Test coverage: Target 80%+
-- [ ] Type coverage: Target 95%+
-- [ ] Documentation coverage: Target 100% public APIs
-- [ ] Cyclomatic complexity: Target <10 per function
-- [ ] Lines per file: Target <500
+> Source: `living_lexicon_discussion.md` - Long-term goals
+
+### 21.1 Multi-Language Lexicons [P3]
+
+- [ ] **Per-language tables** - Python, C++, Rust, JS lexicons
+- [ ] **Cross-references** - Concept bridging across languages
+- [ ] **Integration** - Unified with English lexicon
+
+### 21.2 Tool Calling & Self-Modification [P3]
+
+- [ ] **Tool API** - `create_file()`, `run_in_sandbox()`
+- [ ] **Safe sandbox** - Container-based execution
+- [ ] **Self-modification** - `edit_file()` with review
+
+### 21.3 Dynamic Language Core [P3]
+
+- [ ] **LoRA/PEFT adapters** - Incremental fine-tuning
+- [ ] **Identity tokens** - Persona embeddings
+- [ ] **Experience replay** - Continuous learning
+
+### 21.4 Distributed [P3]
+
+- [ ] **Celery/RQ** - Task queues
+- [ ] **Milvus cluster** - Distributed vectors
+- [ ] **Kubernetes** - Deployment configs
+
+### 21.5 API & UI [P3]
+
+- [ ] **REST API** - FastAPI
+- [ ] **GraphQL** - Query interface
+- [ ] **Web dashboard** - Analytics UI
+- [ ] **Interactive explorer** - Graph visualization
 
 ---
 
-*Last Updated: 2026-01-11*
-*Generated through exhaustive codebase analysis*
+## 22. Eidosian Checklist
+
+> Source: `code_perfection_prompt.md`, `code_polishing_prompt.md`
+
+### Verification Criteria
+
+- [ ] All existing functionality preserved
+- [ ] Performance metrics improved ≥30%
+- [ ] Memory usage stable or reduced
+- [ ] Public interfaces maintain compatibility
+- [ ] Type coverage 100% for public APIs
+- [ ] Error handling consistent across modules
+
+### Quality Standards
+
+- [ ] Further removal would break functionality
+- [ ] Structure prevents invalid state by design
+- [ ] Names reveal intent without comments
+- [ ] Types enforce correctness at compile time
+- [ ] Error handling explicit and informative
+- [ ] Performance improvements measurable
+
+---
+
+## Priority Summary
+
+| Priority | Count | Focus Area |
+|----------|-------|------------|
+| P0 | 12 | Tests, security, CI |
+| P1 | 28 | Core features, docs, types |
+| P2 | 45 | Architecture, performance |
+| P3 | 22 | Future features, polish |
+
+### Immediate Actions (P0)
+
+1. Create missing test files for workers
+2. Add shared test fixtures in conftest.py
+3. Mock heavy dependencies (torch, chromadb)
+4. Audit SQL queries for parameterization
+5. Add dependency version constraints
+
+### Short-term (P1)
+
+1. Fix malformed docstrings
+2. Add `--version` CLI flag
+3. Implement vector persistence verification
+4. Add coverage to CI pipeline
+5. Consolidate exception definitions
+
+---
+
+## Metrics Targets
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| Test coverage | ~60% | 80%+ |
+| Type coverage | ~80% | 95%+ |
+| Doc coverage | ~70% | 100% public APIs |
+| Max file lines | 1757 | <500 |
+| Max complexity | ~15 | <10 |
+
+---
+
+*Document Version: 2.0*  
+*Last Updated: 2026-01-11*  
+*Status: Actively Maintained*
