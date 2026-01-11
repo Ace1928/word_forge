@@ -123,6 +123,54 @@ class ParserError(WordForgeError):
     pass
 
 
+class VectorError(WordForgeError):
+    """Base exception for vector operations."""
+
+    pass
+
+
+class VectorStorageError(VectorError):
+    """Raised when vector storage operations fail."""
+
+    pass
+
+
+class VectorSearchError(VectorError):
+    """Raised when vector search operations fail."""
+
+    pass
+
+
+class VectorIndexError(VectorError):
+    """Raised when vector indexing operations fail."""
+
+    pass
+
+
+class VectorEmbeddingError(VectorError):
+    """Raised when vector embedding generation fails."""
+
+    pass
+
+
+class ConversationError(WordForgeError):
+    """Base exception for conversation operations."""
+
+    pass
+
+
+class ConversationNotFoundError(ConversationError):
+    """Raised when a conversation lookup fails."""
+
+    pass
+
+
+class ConversationStateError(ConversationError):
+    """Raised when conversation state is invalid."""
+
+    pass
+
+
 # Word Forge Specific Exceptions
 
 

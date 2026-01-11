@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, List, Optional
@@ -210,6 +211,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Enable verbose/debug output",
     )
+    parser.add_argument(
+        "--config",
+        "-c",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Path to configuration file (YAML or JSON)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start processing seed words")
@@ -354,6 +363,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         _setup_logging("ERROR")
     elif args.verbose:
         _setup_logging("DEBUG")
+
+    # Load configuration file if specified
+    if args.config:
+        config_path = args.config
+        if not os.path.exists(config_path):
+            LOGGER.error("Configuration file not found: %s", config_path)
+            return 1
+        try:
+            from word_forge.config import config
+
+            config.load_from_file(config_path)
+            LOGGER.info("Loaded configuration from: %s", config_path)
+        except Exception as exc:
+            LOGGER.error("Failed to load configuration: %s", exc)
+            return 1
 
     exit_code = 0
 

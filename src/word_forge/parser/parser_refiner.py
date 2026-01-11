@@ -1,3 +1,29 @@
+"""Parser Refiner Module.
+
+This module provides the core parsing and term refinement functionality for
+Word Forge. It extracts lexical data from text, integrates with WordNet and
+other lexical resources, and enriches word entries with relationships,
+definitions, and usage examples.
+
+Key Components:
+    ParserRefiner: Main parsing pipeline that processes terms through the queue
+    TermExtractor: NLP-based term discovery from text content
+    ProcessingStatistics: Tracks processing metrics and statistics
+
+The module uses NLTK for natural language processing, including lemmatization,
+part-of-speech tagging, and WordNet integration. It supports concurrent
+processing through a thread pool executor for efficient batch operations.
+
+Architecture:
+    Text Input → Term Extraction → Lemmatization → WordNet Lookup →
+    Relationship Discovery → Database Storage → Queue Dispatch
+
+Example:
+    >>> parser = ParserRefiner(db_manager, queue_manager)
+    >>> parser.process_word("algorithm")
+    >>> stats = parser.get_stats()
+"""
+
 import logging  # Import logging
 import os
 import re
