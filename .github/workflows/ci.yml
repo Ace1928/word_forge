@@ -23,6 +23,7 @@ jobs:
           pip install black ruff pytest
       - name: Lint
         run: |
+          black .
           black --check .
           ruff check . --exit-zero
       - name: Test

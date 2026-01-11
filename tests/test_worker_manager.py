@@ -1,40 +1,75 @@
-import sys
-from pathlib import Path
+"""Tests for word_forge.queue.worker_manager module.
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+This module tests the WorkerManager class which coordinates multiple workers.
+"""
+
+import threading
+import time
+
+import pytest
 
 from word_forge.queue.worker_manager import WorkerManager
 
 
-class DummyWorker:
+class SimpleWorker(threading.Thread):
+    """A simple worker thread for testing WorkerManager coordination."""
+
     def __init__(self):
-        self.started = False
-        self.stopped = False
+        super().__init__(daemon=True)
+        self._stop_event = threading.Event()
+        self.started_flag = False
 
-    def start(self) -> None:
-        self.started = True
+    def run(self):
+        """Run the worker until stopped."""
+        self.started_flag = True
+        while not self._stop_event.is_set():
+            time.sleep(0.01)
 
-    def stop(self) -> None:
-        self.stopped = True
-
-    def is_alive(self) -> bool:
-        return self.started and not self.stopped
-
-    def join(self, timeout=None):
-        pass
+    def stop(self):
+        """Signal the worker to stop."""
+        self._stop_event.set()
 
 
 def test_start_and_stop_all():
-    w1 = DummyWorker()
-    w2 = DummyWorker()
+    """Test that WorkerManager can start and stop all registered workers."""
+    w1 = SimpleWorker()
+    w2 = SimpleWorker()
     manager = WorkerManager()
     manager.register(w1)
     manager.register(w2)
 
     manager.start_all()
-    assert w1.started and w2.started
+    time.sleep(0.05)  # Give workers time to start
+    assert w1.started_flag and w2.started_flag
     assert manager.any_alive()
 
     manager.stop_all()
-    assert w1.stopped and w2.stopped
+    w1.join(timeout=1)
+    w2.join(timeout=1)
     assert not manager.any_alive()
+
+
+def test_register_workers():
+    """Test that workers can be registered with the manager."""
+    manager = WorkerManager()
+    w1 = SimpleWorker()
+    w2 = SimpleWorker()
+
+    manager.register(w1)
+    manager.register(w2)
+
+    # Manager should track both workers
+    assert len(manager._workers) == 2
+
+
+def test_any_alive_with_no_workers():
+    """Test any_alive returns False when no workers registered."""
+    manager = WorkerManager()
+    assert not manager.any_alive()
+
+
+def test_stop_all_with_no_workers():
+    """Test stop_all doesn't raise when no workers registered."""
+    manager = WorkerManager()
+    # Should not raise
+    manager.stop_all()
