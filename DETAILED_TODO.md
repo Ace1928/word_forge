@@ -76,14 +76,20 @@ Item Format:
   - Status: Complete - 59 tests covering state, exceptions, metrics, lifecycle
 - [x] **`tests/test_emotion_processor.py`** - Emotion processor tests [P0]
   - Status: Complete - 40 tests covering initialization, context, hooks, relationships
-- [ ] **`tests/test_conversation_worker.py`** - Conversation worker tests [P1]
-- [ ] **`tests/test_graph_builder.py`** - Graph builder tests [P1]
-- [ ] **`tests/test_graph_io.py`** - Graph I/O tests [P1]
-- [ ] **`tests/test_graph_query.py`** - Graph query tests [P1]
-- [ ] **`tests/test_language_model.py`** - LLM interface tests [P1]
-- [ ] **Heavy dependency mocking** - Stub torch, chromadb, transformers [P0]
+- [x] **`tests/test_conversation_worker.py`** - Conversation worker tests [P1]
+  - Status: Complete - 33 tests covering state, metrics, exceptions
+- [x] **`tests/test_graph_builder.py`** - Graph builder tests [P1]
+  - Status: Complete - 12 tests covering initialization, build, update, verification
+- [x] **`tests/test_graph_io.py`** - Graph I/O tests [P1]
+  - Status: Complete - 13 tests covering GEXF save/load, subgraph export
+- [x] **`tests/test_graph_query.py`** - Graph query tests [P1]
+  - Status: Complete - 23 tests covering node/edge queries, subgraph extraction
+- [x] **`tests/test_language_model.py`** - LLM interface tests [P1]
+  - Status: Complete - 23 tests covering initialization, generation, error handling
+- [x] **Heavy dependency mocking** - Stub torch, chromadb, transformers [P0]
   - Impact: Tests can run without GPU/large downloads
   - Implementation: `tests/conftest.py` with mock fixtures
+  - Status: Complete - CI environment uses mocked dependencies
 
 ### 1.2 Vectorization [P0]
 
@@ -114,11 +120,14 @@ Item Format:
 
 ### 2.1 Docstrings [P1]
 
-- [ ] **`src/word_forge/database/database_manager.py:1-64`** - Malformed docstring
+- [x] **`src/word_forge/database/database_manager.py:1-64`** - Malformed docstring
   - Impact: Docstring content appears before description
   - Fix: Move description to top, sections below
-- [ ] **`src/word_forge/parser/parser_refiner.py`** - Missing module docstring
-- [ ] **`src/word_forge/conversation/conversation_manager.py`** - Missing module docstring
+  - Status: Complete - Docstring reorganized with proper structure
+- [x] **`src/word_forge/parser/parser_refiner.py`** - Missing module docstring
+  - Status: Complete - Added comprehensive module docstring
+- [x] **`src/word_forge/conversation/conversation_manager.py`** - Missing module docstring
+  - Status: Complete - Added comprehensive module docstring
 - [ ] **`src/word_forge/demos/*.py`** - Demo files lack docstrings
 
 ### 2.2 File Organization [P2]
@@ -193,13 +202,13 @@ Item Format:
 
 | Test File | Status | Priority |
 |-----------|--------|----------|
-| `test_database_worker.py` | Missing | P0 |
-| `test_emotion_processor.py` | Missing | P0 |
-| `test_conversation_worker.py` | Missing | P1 |
-| `test_graph_builder.py` | Missing | P1 |
-| `test_graph_io.py` | Missing | P1 |
-| `test_graph_query.py` | Missing | P1 |
-| `test_language_model.py` | Missing | P1 |
+| `test_database_worker.py` | ✅ Complete | P0 |
+| `test_emotion_processor.py` | ✅ Complete | P0 |
+| `test_conversation_worker.py` | ✅ Complete (33 tests) | P1 |
+| `test_graph_builder.py` | ✅ Complete (12 tests) | P1 |
+| `test_graph_io.py` | ✅ Complete (13 tests) | P1 |
+| `test_graph_query.py` | ✅ Complete (23 tests) | P1 |
+| `test_language_model.py` | ✅ Complete (23 tests) | P1 |
 | `test_parser_config.py` | Missing | P2 |
 
 ### 5.2 Test Infrastructure [P1]
@@ -392,7 +401,7 @@ Item Format:
 ### 14.1 Commands [P1]
 
 - [x] **`--version`** - Version display (added `--version` and `-V` flags)
-- [ ] **`--config`** - Config file option
+- [x] **`--config`** - Config file option (added `--config`/`-c` flag)
 - [x] **`--quiet`** - Suppress output (added `--quiet`/`-q` and `--verbose`/`-v` flags)
 
 ### 14.2 UX [P2]
@@ -412,8 +421,10 @@ Item Format:
 
 ### 15.1 Hierarchy [P1]
 
-- [ ] **VectorError** - Vector operation errors
-- [ ] **ConversationError** - In central exceptions.py
+- [x] **VectorError** - Vector operation errors
+  - Status: Complete - Added VectorError, VectorStorageError, VectorSearchError, VectorIndexError, VectorEmbeddingError
+- [x] **ConversationError** - In central exceptions.py
+  - Status: Complete - Added ConversationError, ConversationNotFoundError, ConversationStateError
 - [ ] **Error codes** - Unique identifiers
 
 ### 15.2 Result Pattern [P2]
@@ -613,26 +624,26 @@ Item Format:
 
 | Priority | Count | Focus Area |
 |----------|-------|------------|
-| P0 | 12 | Tests, security, CI |
-| P1 | 28 | Core features, docs, types |
+| P0 | 4 | Tests, security, CI |
+| P1 | 20 | Core features, docs, types |
 | P2 | 45 | Architecture, performance |
 | P3 | 22 | Future features, polish |
 
 ### Immediate Actions (P0)
 
-1. Create missing test files for workers
+1. ~~Create missing test files for workers~~ ✅
 2. Add shared test fixtures in conftest.py
-3. Mock heavy dependencies (torch, chromadb)
+3. ~~Mock heavy dependencies (torch, chromadb)~~ ✅
 4. Audit SQL queries for parameterization
 5. Add dependency version constraints
 
 ### Short-term (P1)
 
-1. Fix malformed docstrings
-2. Add `--version` CLI flag
+1. ~~Fix malformed docstrings~~ ✅
+2. ~~Add `--version` CLI flag~~ ✅
 3. Implement vector persistence verification
 4. Add coverage to CI pipeline
-5. Consolidate exception definitions
+5. ~~Consolidate exception definitions~~ ✅
 
 ---
 
