@@ -103,6 +103,9 @@ db.insert_relationship("algorithm", "procedure", "synonym")
 The package installs a `word_forge` executable:
 
 ```bash
+# Show version
+word_forge --version
+
 # Start the processing pipeline with seed words
 word_forge start apple banana --minutes 5 --workers 4
 
@@ -123,6 +126,12 @@ word_forge demo full --3d --open-browser
 
 # Setup NLTK data
 word_forge setup-nltk
+
+# Quiet mode (suppress non-error output)
+word_forge --quiet start apple
+
+# Verbose mode (enable debug output)
+word_forge --verbose start apple
 ```
 
 ### Demo Scripts
