@@ -569,10 +569,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     return exit_code
 
 
-if __name__ == "__main__":  # pragma: no cover - manual invocation
-    raise SystemExit(main(sys.argv[1:]))
-
-
 def _wait_for_condition(
     description: str,
     predicate: Callable[[], bool],
@@ -1093,3 +1089,7 @@ def run_conversation_show(*, conversation_id: int, limit: int = 20) -> bool:
         return False
     finally:
         db_manager.close()
+
+
+if __name__ == "__main__":  # pragma: no cover - manual invocation
+    raise SystemExit(main(sys.argv[1:]))
