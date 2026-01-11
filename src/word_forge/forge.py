@@ -349,9 +349,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     # Configure logging based on quiet/verbose flags
-    if hasattr(args, "quiet") and args.quiet:
+    # These flags are global arguments, so they're always present
+    if args.quiet:
         _setup_logging("ERROR")
-    elif hasattr(args, "verbose") and args.verbose:
+    elif args.verbose:
         _setup_logging("DEBUG")
 
     exit_code = 0

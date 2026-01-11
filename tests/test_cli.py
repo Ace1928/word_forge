@@ -1,7 +1,9 @@
-import sys
-from pathlib import Path
-import types
 import importlib
+import sys
+import types
+from pathlib import Path
+
+import pytest
 
 # Ensure repository source on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -212,8 +214,6 @@ def test_setup_nltk_command(monkeypatch):
 
 def test_version_flag(capsys):
     """Test that --version flag displays version."""
-    import pytest
-
     module = importlib.import_module("word_forge.forge")
     # --version causes SystemExit
     with pytest.raises(SystemExit) as exc_info:
@@ -226,8 +226,6 @@ def test_version_flag(capsys):
 
 def test_version_flag_short(capsys):
     """Test that -V flag displays version."""
-    import pytest
-
     module = importlib.import_module("word_forge.forge")
     with pytest.raises(SystemExit) as exc_info:
         module.main(["-V"])

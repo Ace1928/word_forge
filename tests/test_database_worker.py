@@ -5,6 +5,7 @@ including lifecycle management, maintenance operations, optimization,
 backup, integrity checks, and metrics collection.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -549,8 +550,6 @@ class TestDatabaseWorkerBackupCleanup:
             backup_file = backup_path / f"test_{i:02d}.backup"
             backup_file.write_text("backup content")
             # Set different modification times
-            import os
-
             os.utime(backup_file, (time.time() - i * 60, time.time() - i * 60))
 
         worker._cleanup_old_backups(keep_count=10)
