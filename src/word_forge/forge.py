@@ -32,6 +32,23 @@ if TYPE_CHECKING:  # pragma: no cover - imported for typing only
 
 LOGGER = logging.getLogger("word_forge")
 
+# Package version - dynamically retrieved from package metadata
+__version__ = "0.1.0"
+
+
+def _get_version() -> str:
+    """Get the package version string.
+
+    Returns:
+        Version string in format 'word_forge VERSION'
+    """
+    try:
+        from importlib.metadata import version
+
+        return f"word_forge {version('word_forge')}"
+    except Exception:
+        return f"word_forge {__version__}"
+
 
 def _setup_logging(level: str = "INFO") -> None:
     """Configure basic console logging."""
@@ -174,6 +191,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
     parser = argparse.ArgumentParser(description="Word Forge command line interface")
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=_get_version(),
+        help="Show program version and exit",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     start_parser = subparsers.add_parser("start", help="Start processing seed words")

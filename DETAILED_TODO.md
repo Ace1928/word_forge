@@ -391,7 +391,7 @@ Item Format:
 
 ### 14.1 Commands [P1]
 
-- [ ] **`--version`** - Version display
+- [x] **`--version`** - Version display (added `--version` and `-V` flags)
 - [ ] **`--config`** - Config file option
 - [ ] **`--quiet`** - Suppress output
 
