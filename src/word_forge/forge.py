@@ -43,10 +43,10 @@ def _get_version() -> str:
         Version string in format 'word_forge VERSION'
     """
     try:
-        from importlib.metadata import version
+        from importlib.metadata import version, PackageNotFoundError
 
         return f"word_forge {version('word_forge')}"
-    except Exception:
+    except (ImportError, PackageNotFoundError):
         return f"word_forge {__version__}"
 
 
