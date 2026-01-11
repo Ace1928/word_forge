@@ -2,16 +2,18 @@
 
 ## Project context
 - Python package under `src/word_forge` with a `word_forge` CLI entry point.
-- Optional vector/visualization features rely on heavy deps (torch, sentence-transformers, chromadb, faiss, plotly, pyvis); tests typically stub these and CI does not install them.
+- Core dependencies listed in `pyproject.toml` include heavy ML/vector libs (torch, transformers, sentence-transformers, chromadb, faiss, plotly, pyvis).
+- CI installs only a lightweight subset and tests often stub these heavy imports, so avoid relying on heavyweight functionality unless explicitly required.
 - Demo/database scripts may emit SQLite files (e.g., `test_database.sqlite`, `db_worker_demo/`); treat them as disposable artifacts.
 
 ## Environment setup
 - Use Python 3.10 in CI; project supports 3.8+.
-- Minimal dev install (matches CI): `pip install networkx numpy black ruff pytest` or `pip install -e .[dev]`.
+- Minimal dev install (matches CI): `pip install networkx numpy black ruff pytest`. Full tooling via `pip install -e .[dev]` (adds isort, mypy, pytest-cov, pre-commit).
 - Avoid installing `vector`/`visualization` extras unless the task truly needs real embeddings or graph rendering.
 
 ## Linting and tests
-- Formatting: `black --check .` (line length 88). Linting: `ruff check .` (exit-zero used in CI).
+- Formatting: `black --check .` (line length 88).
+- Linting: `ruff check . --exit-zero` (mirrors CI; drop `--exit-zero` locally to fail on lint errors).
 - Tests: `pytest -q` (uses `tests/`).
 - Current baseline (Jan 2026): `black --check` reports formatting changes for several modules, and `pytest` fails at least:
   - `tests/test_graph_manager.py::test_graph_includes_emotional_relationships` (EmotionManager dummy signature).
