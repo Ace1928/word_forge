@@ -246,6 +246,133 @@ word_forge setup-nltk
 
 Required corpora: WordNet, Punkt, stopwords, VADER lexicon.
 
+## Troubleshooting
+
+### Common Issues
+
+#### NLTK Data Not Found
+
+If you encounter errors about missing NLTK corpora:
+
+```bash
+# Download required NLTK data
+word_forge setup-nltk
+
+# Or manually in Python
+import nltk
+nltk.download('wordnet')
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('vader_lexicon')
+```
+
+#### Memory Issues with Large Models
+
+For systems with limited RAM:
+
+1. Use a smaller embedding model:
+   ```bash
+   export WORDFORGE_VECTOR_MODEL="all-MiniLM-L6-v2"  # ~80MB
+   ```
+
+2. Reduce batch sizes in configuration:
+   ```python
+   from word_forge.config import config
+   config.vectorizer.batch_size = 16
+   ```
+
+3. Use the low-memory profile:
+   ```bash
+   python -m word_forge.demos.config_demo --profile low_memory
+   ```
+
+#### ChromaDB/FAISS Import Errors
+
+These heavy dependencies are optional. Install them explicitly:
+
+```bash
+pip install -e .[vector]
+```
+
+#### SQLite Database Locked
+
+If you see "database is locked" errors:
+
+1. Ensure only one process writes to the database at a time
+2. Check for zombie processes: `ps aux | grep word_forge`
+3. Use WAL mode (enabled by default) for better concurrency
+
+#### Tests Failing with Import Errors
+
+CI uses a lightweight test configuration. For full tests locally:
+
+```bash
+pip install -e .[dev]
+pytest
+```
+
+### Getting Help
+
+- Check [docs/overview.md](docs/overview.md) for detailed component documentation
+- Review [docs/glossary.md](docs/glossary.md) for term definitions
+- Open an issue on GitHub for bugs or feature requests
+
+## API Quick Reference
+
+### Core Classes
+
+| Class | Module | Description |
+|-------|--------|-------------|
+| `DBManager` | `database.database_manager` | SQLite database operations |
+| `GraphManager` | `graph.graph_manager` | Semantic graph construction |
+| `EmotionManager` | `emotion.emotion_manager` | Emotion analysis |
+| `VectorStore` | `vectorizer.vector_store` | Vector embeddings & search |
+| `QueueManager` | `queue.queue_manager` | Task queue management |
+| `ParserRefiner` | `parser.parser_refiner` | Text parsing pipeline |
+| `ConversationManager` | `conversation.conversation_manager` | Multi-turn conversations |
+
+### Common Operations
+
+```python
+# Database operations
+from word_forge.database.database_manager import DBManager
+db = DBManager()
+db.create_tables()
+db.insert_or_update_word("example", "a representative sample", "noun")
+entry = db.get_word_entry("example")
+
+# Graph operations
+from word_forge.graph.graph_manager import GraphManager
+graph = GraphManager(db_manager=db)
+graph.build_graph()
+graph.visualize(output_path="graph.html")
+
+# Emotion analysis
+from word_forge.emotion.emotion_manager import EmotionManager
+em = EmotionManager(db)
+valence, arousal = em.analyze_text_emotion("I love this!")
+
+# Vector search
+from word_forge.vectorizer.vector_store import VectorStore
+vs = VectorStore(db_manager=db)
+results = vs.search(query_text="happy", k=5)
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `word_forge start [WORDS...]` | Start processing pipeline |
+| `word_forge graph build` | Build semantic graph |
+| `word_forge graph visualize` | Generate visualization |
+| `word_forge vector index` | Index word vectors |
+| `word_forge vector search QUERY` | Search for similar terms |
+| `word_forge conversation start` | Start new conversation |
+| `word_forge conversation list` | List conversations |
+| `word_forge emotion annotate` | Run emotion annotation |
+| `word_forge demo full` | Run full demo pipeline |
+| `word_forge setup-nltk` | Download NLTK data |
+
 ## Documentation
 
 - [`docs/overview.md`](docs/overview.md) - Developer guide

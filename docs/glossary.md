@@ -108,6 +108,8 @@ This living glossary defines key terms used throughout the project. New entries 
 
 ## P
 
+- **Parser Config** — Configuration dataclass for lexical data parser settings including resource paths, model settings, and data source management. See `parser/parser_config.py`.
+
 - **Parser Refiner** — Main parsing pipeline that extracts lexical entries from text and enriches them with relationships. See `parser/parser_refiner.py`.
 
 - **PEFT (Parameter-Efficient Fine-Tuning)** — Family of techniques for adapting large models with minimal parameter updates.

@@ -39,7 +39,9 @@ class TestWordForgeError:
         error = WordForgeError("Test error message")
         assert error.message == "Test error message"
         assert error.cause is None
-        assert str(error) == "Test error message"
+        # Error code is included in string representation
+        assert "Test error message" in str(error)
+        assert error.error_code in str(error)
 
     def test_init_with_message_and_cause(self):
         """Test WordForgeError initialization with message and cause."""
@@ -53,14 +55,18 @@ class TestWordForgeError:
     def test_str_representation_without_cause(self):
         """Test __str__ representation without a cause."""
         error = WordForgeError("Simple error")
-        assert str(error) == "Simple error"
+        # Error code is included in string representation
+        assert "Simple error" in str(error)
+        assert error.error_code in str(error)
 
     def test_str_representation_with_cause(self):
         """Test __str__ representation with a cause."""
         cause = RuntimeError("Root cause")
         error = WordForgeError("Wrapper", cause=cause)
-        expected = "Wrapper | Cause: Root cause"
-        assert str(error) == expected
+        # Error code is included in string representation
+        assert "Wrapper" in str(error)
+        assert "Root cause" in str(error)
+        assert error.error_code in str(error)
 
     def test_exception_hierarchy(self):
         """Test that WordForgeError inherits from Exception."""
