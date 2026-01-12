@@ -22,7 +22,11 @@ def test_end_to_end_crawl_and_ingest(tmp_path: Path) -> None:
     from word_forge.database.database_manager import DBManager
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager
-    from word_forge.queue.queue_worker import ParallelWordProcessor, WordProcessor, WorkerPoolConfig
+    from word_forge.queue.queue_worker import (
+        ParallelWordProcessor,
+        WordProcessor,
+        WorkerPoolConfig,
+    )
     from word_forge.utils.nltk_utils import ensure_nltk_data
 
     ensure_nltk_data()
@@ -38,7 +42,9 @@ def test_end_to_end_crawl_and_ingest(tmp_path: Path) -> None:
         model_name=LLM_MODEL,
     )
     processor = WordProcessor(db_manager=db_manager, parser_refiner=parser_refiner)
-    worker_pool = ParallelWordProcessor(processor, config=WorkerPoolConfig(worker_count=1))
+    worker_pool = ParallelWordProcessor(
+        processor, config=WorkerPoolConfig(worker_count=1)
+    )
 
     queue_manager.enqueue("happy")
     worker_pool.start()
@@ -69,7 +75,11 @@ def test_queue_running_state_allows_processing(tmp_path: Path) -> None:
     from word_forge.database.database_manager import DBManager
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager, QueueState
-    from word_forge.queue.queue_worker import ParallelWordProcessor, WordProcessor, WorkerPoolConfig
+    from word_forge.queue.queue_worker import (
+        ParallelWordProcessor,
+        WordProcessor,
+        WorkerPoolConfig,
+    )
 
     db_path = tmp_path / "queue_state.db"
     db_manager = DBManager(db_path=db_path)
@@ -82,7 +92,9 @@ def test_queue_running_state_allows_processing(tmp_path: Path) -> None:
         model_name=LLM_MODEL,
     )
     processor = WordProcessor(db_manager=db_manager, parser_refiner=parser_refiner)
-    worker_pool = ParallelWordProcessor(processor, config=WorkerPoolConfig(worker_count=1))
+    worker_pool = ParallelWordProcessor(
+        processor, config=WorkerPoolConfig(worker_count=1)
+    )
 
     queue_manager.enqueue("oxygen")
     worker_pool.start()

@@ -42,7 +42,9 @@ class TestGraphBuilderIntegration:
         builder.build_graph()
         assert graph_manager.get_node_count() > 0
 
-    def test_update_graph_detects_new_nodes(self, graph_manager, populated_db_manager) -> None:
+    def test_update_graph_detects_new_nodes(
+        self, graph_manager, populated_db_manager
+    ) -> None:
         builder = GraphBuilder(graph_manager)
 
         populated_db_manager.insert_or_update_word(
