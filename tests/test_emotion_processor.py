@@ -7,7 +7,7 @@ and meta-emotion generation.
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from typing import Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -22,19 +22,26 @@ from word_forge.emotion.emotion_types import (
 )
 
 
+def _create_dependencies(tmp_path: Path) -> Tuple[DBManager, EmotionManager]:
+    db_manager = DBManager(db_path=tmp_path / "test.db")
+    db_manager.create_tables()
+    emotion_manager = EmotionManager(db_manager)
+    return db_manager, emotion_manager
+
+
+def _create_processor(
+    db_manager: DBManager, emotion_manager: EmotionManager
+) -> RecursiveEmotionProcessor:
+    return RecursiveEmotionProcessor(db_manager, emotion_manager)
+
+
 class TestRecursiveEmotionProcessorInit:
     """Tests for RecursiveEmotionProcessor initialization."""
 
     def test_init_with_managers(self, tmp_path: Path) -> None:
         """Test initialization with DBManager and EmotionManager."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         assert processor.db is db_manager
         assert processor.emotion_manager is emotion_manager
@@ -45,14 +52,8 @@ class TestRecursiveEmotionProcessorInit:
 
     def test_init_creates_hook_registries(self, tmp_path: Path) -> None:
         """Test that initialization creates hook registries."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         assert hasattr(processor, "meta_emotion_hooks")
         assert hasattr(processor, "pattern_hooks")
@@ -65,14 +66,8 @@ class TestRecursiveScope:
 
     def test_recursive_scope_increments_depth(self, tmp_path: Path) -> None:
         """Test that recursive scope increments processing depth."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         assert processor._processing_depth == 0
         with processor._recursive_scope():
@@ -84,14 +79,8 @@ class TestRecursiveScope:
 
     def test_recursive_scope_decrements_on_exception(self, tmp_path: Path) -> None:
         """Test that recursive scope decrements depth even on exception."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         try:
             with processor._recursive_scope():
@@ -108,14 +97,8 @@ class TestContextManagement:
 
     def test_register_context(self, tmp_path: Path) -> None:
         """Test registering a named context."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = EmotionalContext()
         processor.register_context("test_context", context)
@@ -124,14 +107,8 @@ class TestContextManagement:
 
     def test_get_context_exists(self, tmp_path: Path) -> None:
         """Test retrieving an existing context."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = EmotionalContext()
         processor.register_context("existing", context)
@@ -140,44 +117,25 @@ class TestContextManagement:
 
     def test_get_context_not_found(self, tmp_path: Path) -> None:
         """Test retrieving a non-existent context returns None."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         assert processor.get_context("nonexistent") is None
 
     def test_create_context_for_academic_domain(self, tmp_path: Path) -> None:
         """Test creating context for academic domain."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = processor.create_context_for_domain("academic")
         assert context.domain_specific is not None
         assert "valence" in context.domain_specific
-        assert "certainty" in context.domain_specific
         assert context.domain_specific["certainty"] == 0.7
 
     def test_create_context_for_casual_domain(self, tmp_path: Path) -> None:
         """Test creating context for casual domain."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = processor.create_context_for_domain("casual")
         assert context.domain_specific is not None
@@ -185,14 +143,8 @@ class TestContextManagement:
 
     def test_create_context_for_medical_domain(self, tmp_path: Path) -> None:
         """Test creating context for medical domain."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = processor.create_context_for_domain("medical")
         assert context.domain_specific is not None
@@ -200,14 +152,8 @@ class TestContextManagement:
 
     def test_create_context_for_literary_domain(self, tmp_path: Path) -> None:
         """Test creating context for literary domain."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = processor.create_context_for_domain("literary")
         assert context.domain_specific is not None
@@ -215,17 +161,10 @@ class TestContextManagement:
 
     def test_create_context_for_unknown_domain(self, tmp_path: Path) -> None:
         """Test creating context for unknown domain returns empty context."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = processor.create_context_for_domain("unknown_domain")
-        # Should return empty context without specific factors
         assert isinstance(context, EmotionalContext)
 
 
@@ -234,48 +173,28 @@ class TestHeuristicEmotionGeneration:
 
     def test_generate_heuristic_positive_term(self, tmp_path: Path) -> None:
         """Test heuristic generation for positive terms."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._generate_heuristic_emotion("happiness")
         assert isinstance(emotion, EmotionVector)
         assert EmotionDimension.VALENCE in emotion.dimensions
-        # "happiness" matches positive patterns, so valence should be positive
         assert emotion.dimensions[EmotionDimension.VALENCE] > 0
 
     def test_generate_heuristic_negative_term(self, tmp_path: Path) -> None:
         """Test heuristic generation for negative terms."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._generate_heuristic_emotion("sadness")
         assert isinstance(emotion, EmotionVector)
         assert EmotionDimension.VALENCE in emotion.dimensions
-        # "sadness" matches negative patterns, so valence should be negative
         assert emotion.dimensions[EmotionDimension.VALENCE] < 0
 
     def test_generate_heuristic_high_arousal_term(self, tmp_path: Path) -> None:
         """Test heuristic generation for high arousal terms."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._generate_heuristic_emotion("excitement")
         assert isinstance(emotion, EmotionVector)
@@ -283,31 +202,18 @@ class TestHeuristicEmotionGeneration:
 
     def test_generate_heuristic_high_dominance_term(self, tmp_path: Path) -> None:
         """Test heuristic generation for high dominance terms."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._generate_heuristic_emotion("powerful")
         assert isinstance(emotion, EmotionVector)
         assert EmotionDimension.DOMINANCE in emotion.dimensions
-        # "powerful" matches high dominance pattern
         assert emotion.dimensions[EmotionDimension.DOMINANCE] > 0
 
     def test_generate_heuristic_returns_valid_confidence(self, tmp_path: Path) -> None:
         """Test that heuristic generation returns valid confidence."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._generate_heuristic_emotion("test")
         assert 0.0 <= emotion.confidence <= 1.0
@@ -318,14 +224,8 @@ class TestDefaultEmotion:
 
     def test_create_default_emotion_empty_term(self, tmp_path: Path) -> None:
         """Test creating default emotion for empty term."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._create_default_emotion("")
         assert isinstance(emotion, EmotionVector)
@@ -336,18 +236,11 @@ class TestDefaultEmotion:
 
     def test_create_default_emotion_with_term(self, tmp_path: Path) -> None:
         """Test creating default emotion for a term uses heuristics."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion = processor._create_default_emotion("test_word")
         assert isinstance(emotion, EmotionVector)
-        # Should use heuristic generation for actual terms
         assert emotion.confidence > 0
 
 
@@ -356,14 +249,8 @@ class TestFallbackConcept:
 
     def test_create_fallback_concept(self, tmp_path: Path) -> None:
         """Test creating fallback concept."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         concept = processor._create_fallback_concept("fallback_term")
         assert isinstance(concept, EmotionalConcept)
@@ -377,14 +264,8 @@ class TestNormalizeDimensions:
 
     def test_normalize_dimensions_within_range(self, tmp_path: Path) -> None:
         """Test normalizing dimensions already within range."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         dimensions = {
             EmotionDimension.VALENCE: 0.5,
@@ -396,14 +277,8 @@ class TestNormalizeDimensions:
 
     def test_normalize_dimensions_clips_high(self, tmp_path: Path) -> None:
         """Test normalizing clips values above 1.0."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         dimensions = {EmotionDimension.VALENCE: 2.5}
         normalized = processor._normalize_dimensions(dimensions)
@@ -411,14 +286,8 @@ class TestNormalizeDimensions:
 
     def test_normalize_dimensions_clips_low(self, tmp_path: Path) -> None:
         """Test normalizing clips values below -1.0."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         dimensions = {EmotionDimension.VALENCE: -2.5}
         normalized = processor._normalize_dimensions(dimensions)
@@ -430,28 +299,16 @@ class TestCacheKey:
 
     def test_cache_key_without_context(self, tmp_path: Path) -> None:
         """Test cache key without context is just the term."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         key = processor._get_cache_key("test_term")
         assert key == "test_term"
 
     def test_cache_key_with_context(self, tmp_path: Path) -> None:
         """Test cache key with context includes hash."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = EmotionalContext()
         context.domain_specific = {"valence": 0.5}
@@ -461,14 +318,8 @@ class TestCacheKey:
 
     def test_cache_key_same_for_same_context(self, tmp_path: Path) -> None:
         """Test cache key is deterministic for same context."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         context = EmotionalContext()
         context.domain_specific = {"valence": 0.5}
@@ -482,14 +333,8 @@ class TestHookRegistration:
 
     def test_register_meta_emotion_hook(self, tmp_path: Path) -> None:
         """Test registering a meta-emotion hook."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         initial_count = len(processor.meta_emotion_hooks)
 
@@ -502,14 +347,8 @@ class TestHookRegistration:
 
     def test_register_pattern_hook(self, tmp_path: Path) -> None:
         """Test registering a pattern hook."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         initial_count = len(processor.pattern_hooks)
 
@@ -526,14 +365,8 @@ class TestRelationshipAnalysis:
 
     def test_calculate_evocative_strength(self, tmp_path: Path) -> None:
         """Test evocative strength calculation."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         emotion1 = EmotionVector(
             dimensions={
@@ -553,22 +386,14 @@ class TestRelationshipAnalysis:
 
     def test_calculate_component_strength(self, tmp_path: Path) -> None:
         """Test component strength calculation."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
-
-        # Component (simpler)
         component = EmotionVector(
             dimensions={
                 EmotionDimension.VALENCE: 0.8,
             }
         )
-        # Composite (more complex)
         composite = EmotionVector(
             dimensions={
                 EmotionDimension.VALENCE: 0.7,
@@ -586,52 +411,30 @@ class TestAnalyzeRelationship:
 
     def test_analyze_synonym_relationship(self, tmp_path: Path) -> None:
         """Test analyzing synonym relationships."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        # Create words in database
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("happy", "feeling happy", "adjective")
         db_manager.insert_or_update_word("joyful", "feeling joyful", "adjective")
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         strength = processor.analyze_relationship("happy", "joyful", "synonym")
         assert 0.0 <= strength <= 1.0
 
     def test_analyze_antonym_relationship(self, tmp_path: Path) -> None:
         """Test analyzing antonym relationships."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("happy", "feeling happy", "adjective")
         db_manager.insert_or_update_word("sad", "feeling sad", "adjective")
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         strength = processor.analyze_relationship("happy", "sad", "antonym")
         assert 0.0 <= strength <= 1.0
 
     def test_analyze_intensifies_relationship(self, tmp_path: Path) -> None:
         """Test analyzing intensifies relationships."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("angry", "feeling angry", "adjective")
         db_manager.insert_or_update_word("furious", "extremely angry", "adjective")
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         strength = processor.analyze_relationship("angry", "furious", "intensifies")
         assert 0.0 <= strength <= 1.0
@@ -642,36 +445,22 @@ class TestGetEmotionVector:
 
     def test_get_emotion_vector_unknown_term(self, tmp_path: Path) -> None:
         """Test getting emotion vector for unknown term."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
         vector = processor.get_emotion_vector("unknown_term_xyz")
         assert isinstance(vector, EmotionVector)
 
     def test_get_emotion_vector_known_term(self, tmp_path: Path) -> None:
         """Test getting emotion vector for known term."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("happiness", "state of being happy", "noun")
         word_id = db_manager.get_word_id("happiness")
         emotion_manager.set_word_emotion(word_id, 0.8, 0.6)
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         vector = processor.get_emotion_vector("happiness")
         assert isinstance(vector, EmotionVector)
-        # Should have valence we set
         assert EmotionDimension.VALENCE in vector.dimensions
         assert vector.dimensions[EmotionDimension.VALENCE] == 0.8
 
@@ -681,16 +470,9 @@ class TestProcessTerm:
 
     def test_process_term_returns_concept(self, tmp_path: Path) -> None:
         """Test process_term returns EmotionalConcept."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("love", "deep affection", "noun")
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         concept = processor.process_term("love")
         assert isinstance(concept, EmotionalConcept)
@@ -699,40 +481,22 @@ class TestProcessTerm:
 
     def test_process_term_caches_result(self, tmp_path: Path) -> None:
         """Test process_term caches the result."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("test", "test word", "noun")
-
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
+        processor = _create_processor(db_manager, emotion_manager)
 
         concept1 = processor.process_term("test")
-        # Check cache
         assert "test" in processor._cache
         concept2 = processor.process_term("test")
-        # Should return cached version
         assert concept1 is concept2
 
     def test_process_term_respects_recursion_limit(self, tmp_path: Path) -> None:
         """Test process_term respects recursion limit."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
+        processor = _create_processor(db_manager, emotion_manager)
 
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
-
-        # Set processing depth to max
         processor._processing_depth = processor._max_recursion + 1
-
         concept = processor.process_term("deep_term")
-        # Should return fallback concept
         assert concept.word_id == -1
 
 
@@ -741,26 +505,16 @@ class TestIntegration:
 
     def test_full_processing_pipeline(self, tmp_path: Path) -> None:
         """Test full processing pipeline."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
-        # Create a word with emotion
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word(
             "euphoria", "intense feeling of happiness", "noun"
         )
         word_id = db_manager.get_word_id("euphoria")
         emotion_manager.set_word_emotion(word_id, 0.9, 0.8)
+        processor = _create_processor(db_manager, emotion_manager)
 
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
-
-        # Process the term
         concept = processor.process_term("euphoria")
 
-        # Verify results
         assert concept.term == "euphoria"
         assert concept.word_id == word_id
         assert concept.primary_emotion.dimensions[EmotionDimension.VALENCE] == 0.9
@@ -768,23 +522,14 @@ class TestIntegration:
 
     def test_process_with_context(self, tmp_path: Path) -> None:
         """Test processing with emotional context."""
-        db_manager = DBManager(db_path=tmp_path / "test.db")
-        db_manager.create_tables()
-        emotion_manager = EmotionManager(db_manager)
-
+        db_manager, emotion_manager = _create_dependencies(tmp_path)
         db_manager.insert_or_update_word("work", "effort or activity", "noun")
         word_id = db_manager.get_word_id("work")
         emotion_manager.set_word_emotion(word_id, 0.0, 0.5)
+        processor = _create_processor(db_manager, emotion_manager)
 
-        with patch.object(
-            RecursiveEmotionProcessor, "_initialize_nlp", return_value=None
-        ):
-            processor = RecursiveEmotionProcessor(db_manager, emotion_manager)
-
-        # Create academic context
         context = processor.create_context_for_domain("academic")
-
-        # Process with context
         concept = processor.process_term("work", context)
         assert concept.term == "work"
-        # Context should modify the emotion
+        assert concept.word_id == word_id
+        assert concept.primary_emotion.dimensions[EmotionDimension.VALENCE] != 0.0

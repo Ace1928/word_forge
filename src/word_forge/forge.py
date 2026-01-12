@@ -84,6 +84,9 @@ def start(
     seed_words: Optional[Iterable[str]] = None,
     run_minutes: Optional[float] = None,
     worker_count: int = 4,
+    db_path: Optional[str] = None,
+    vector_model: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ) -> None:
     """Launch the Word Forge processing pipeline.
 
@@ -95,6 +98,13 @@ def start(
     run_minutes:
         Optional duration to run before shutting down. ``None`` means run
         until interrupted.
+    db_path:
+        Optional override for the SQLite database path.
+    vector_model:
+        Optional override for the sentence-transformer model used by vector storage
+        and the vector worker embedder.
+    llm_model:
+        Optional override for the language model used to generate example sentences.
     """
 
     from word_forge.database.database_manager import DBManager
@@ -115,9 +125,14 @@ def start(
     _setup_logging()
     LOGGER.info("Starting Word Forge")
 
-    db_manager = DBManager()
+    db_manager = DBManager(db_path=db_path)
     queue_manager: QueueManager[str] = QueueManager()
-    parser_refiner = ParserRefiner(db_manager=db_manager, queue_manager=queue_manager)
+    queue_manager.start()
+    parser_refiner = ParserRefiner(
+        db_manager=db_manager,
+        queue_manager=queue_manager,
+        model_name=llm_model,
+    )
     processor = WordProcessor(
         db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER
     )
@@ -127,11 +142,11 @@ def start(
     graph_manager = GraphManager(db_manager=db_manager)
     graph_worker = GraphWorker(graph_manager=graph_manager)
 
-    vector_store = VectorStore(db_manager=db_manager)
+    vector_store = VectorStore(db_manager=db_manager, model_name=vector_model)
     vector_worker = VectorWorker(
         db=db_manager,
         vector_store=vector_store,
-        embedder="sentence-transformers/all-MiniLM-L6-v2",
+        embedder=vector_model or "sentence-transformers/all-MiniLM-L6-v2",
     )
 
     manager = WorkerManager(logger=LOGGER)
@@ -191,6 +206,7 @@ def start(
         LOGGER.info("Interrupted by user")
     finally:
         manager.stop_all()
+        queue_manager.stop()
         parser_refiner.shutdown()
         db_manager.close()
         LOGGER.info("Word Forge stopped")
@@ -257,6 +273,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=int,
         default=4,
         help="Number of worker threads",
+    )
+    start_parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Override the default SQLite database path",
+    )
+    start_parser.add_argument(
+        "--vector-model",
+        type=str,
+        default=None,
+        help="Override the default sentence-transformer model for vector storage/indexing",
+    )
+    start_parser.add_argument(
+        "--llm-model",
+        type=str,
+        default=None,
+        help="Override the default language model for example sentence generation",
     )
 
     graph_parser = subparsers.add_parser("graph", help="Graph management commands")
@@ -442,7 +476,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Download the NLTK corpora required by Word Forge",
     )
 
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
 
     # Configure logging based on quiet/verbose flags
     # These flags are global arguments, so they're always present
@@ -469,7 +506,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     exit_code = 0
 
     if args.command == "start":
-        start(args.words, run_minutes=args.minutes, worker_count=args.workers)
+        start(
+            args.words,
+            run_minutes=args.minutes,
+            worker_count=args.workers,
+            db_path=args.db_path,
+            vector_model=args.vector_model,
+            llm_model=args.llm_model,
+        )
     elif args.command == "graph":
         if args.graph_command == "build":
             exit_code = (
@@ -692,7 +736,7 @@ def run_vector_index(
     db = db_manager or DBManager()
     db.create_tables()
 
-    vector_store = VectorStore(db_manager=db)
+    vector_store = VectorStore(db_manager=db, model_name=embedder)
     worker = VectorWorker(
         db=db,
         vector_store=vector_store,

@@ -1,54 +1,52 @@
-"""Tests for word_forge.graph.graph_worker module.
+"""Tests for word_forge.graph.graph_worker module using real components."""
 
-This module tests the GraphWorker class which handles background graph updates.
-"""
+from __future__ import annotations
 
 import time
-
+from pathlib import Path
 
 from word_forge.database.database_manager import DBManager
 from word_forge.graph.graph_manager import GraphManager
 from word_forge.graph.graph_worker import GraphWorker
 
 
-def test_restart_returns_running_worker(tmp_path, monkeypatch):
-    """Test that restart() returns a new running worker instance."""
-    # Create real database and graph manager
-    db_path = tmp_path / "test.db"
-    db = DBManager(db_path=db_path)
+def _wait_until(predicate, timeout: float = 10.0, interval: float = 0.2) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def test_restart_returns_running_worker(tmp_path: Path) -> None:
+    db = DBManager(db_path=tmp_path / "test.db")
     manager = GraphManager(db_manager=db)
 
     worker = GraphWorker(
         graph_manager=manager,
-        poll_interval=0.01,
+        poll_interval=0.2,
         output_path=str(tmp_path / "gexf.gexf"),
         visualization_path=str(tmp_path / "vis.html"),
     )
 
-    def quick_cycle(self):
-        """Quick cycle that stops immediately for testing."""
-        time.sleep(0.02)
-        self.stop()
-
-    monkeypatch.setattr(GraphWorker, "_execute_update_cycle", quick_cycle)
-
     worker.start()
-    worker.join(timeout=1)
-    assert not worker.is_alive()
+    try:
+        assert _wait_until(lambda: worker.get_status()["update_count"] > 0, timeout=10.0)
+    finally:
+        worker.stop()
+        worker.join(timeout=5)
 
     new_worker = worker.restart()
     assert new_worker is not worker
-    time.sleep(0.01)
-    assert new_worker.is_alive()
+    assert _wait_until(lambda: new_worker.is_alive(), timeout=5.0)
 
     new_worker.stop()
-    new_worker.join(timeout=1)
+    new_worker.join(timeout=5)
 
 
-def test_worker_initialization(tmp_path):
-    """Test that GraphWorker initializes correctly."""
-    db_path = tmp_path / "init_test.db"
-    db = DBManager(db_path=db_path)
+def test_worker_initialization(tmp_path: Path) -> None:
+    db = DBManager(db_path=tmp_path / "init_test.db")
     manager = GraphManager(db_manager=db)
 
     worker = GraphWorker(
@@ -62,17 +60,11 @@ def test_worker_initialization(tmp_path):
     assert not worker.is_alive()
 
 
-def test_worker_stop_when_not_running(tmp_path):
-    """Test that stopping a non-running worker doesn't raise errors."""
-    db_path = tmp_path / "stop_test.db"
-    db = DBManager(db_path=db_path)
+def test_worker_stop_when_not_running(tmp_path: Path) -> None:
+    db = DBManager(db_path=tmp_path / "stop_test.db")
     manager = GraphManager(db_manager=db)
 
-    worker = GraphWorker(
-        graph_manager=manager,
-        poll_interval=1.0,
-    )
+    worker = GraphWorker(graph_manager=manager, poll_interval=1.0)
 
-    # Should not raise
     worker.stop()
     assert not worker.is_alive()

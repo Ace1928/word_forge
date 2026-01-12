@@ -16,15 +16,16 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 # Word Forge Components
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.conversation.conversation_models import (
+    AffectiveLexicalLanguageModel,
     EidosianIdentityModel,
-    MockAffectiveLexicalModel,
-    MockLightweightModel,
-    MockReflexiveModel,
+    LightweightLanguageModel,
+    ReflexiveLanguageModel,
 )
 from word_forge.conversation.conversation_worker import ConversationWorker
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.parser.language_model import ModelState
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager
 from word_forge.vectorizer.vector_store import VectorStore
@@ -138,10 +139,11 @@ def main() -> None:
         vector_store = VectorStore()
 
         # Conversation Models - Instantiate them
-        reflexive_model_instance = MockReflexiveModel()
-        lightweight_model_instance = MockLightweightModel()
-        affective_model_instance = MockAffectiveLexicalModel()
-        identity_model_instance = EidosianIdentityModel()
+        llm_state = ModelState()
+        reflexive_model_instance = ReflexiveLanguageModel(llm_state=llm_state)
+        lightweight_model_instance = LightweightLanguageModel(llm_state=llm_state)
+        affective_model_instance = AffectiveLexicalLanguageModel(llm_state=llm_state)
+        identity_model_instance = EidosianIdentityModel(llm_state=llm_state)
 
         # Conversation Manager
         conversation_manager = ConversationManager(
@@ -199,7 +201,7 @@ def main() -> None:
 
         for conversation_data in sample_conversations:
             result = conversation_manager.start_conversation()
-            if result.is_ok():
+            if result.is_success:
                 conversation_id = result.unwrap()
                 logger.info(f"Created conversation {conversation_id}")
 

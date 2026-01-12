@@ -1,5 +1,5 @@
 """
-Protocols and placeholder implementations for the multi-model conversation system.
+Protocols and model implementations for the multi-model conversation system.
 """
 
 import json
@@ -26,6 +26,144 @@ from word_forge.conversation.conversation_types import (
     ReflexiveModel,  # Import ReflexiveModel protocol
 )
 from word_forge.parser.language_model import ModelState
+
+# --- LLM Implementations ---
+
+
+@dataclass
+class ReflexiveLanguageModel(ReflexiveModel):
+    """LLM-backed reflexive model for fast context updates."""
+
+    llm_state: ModelState
+    max_new_tokens: int = 64
+    temperature: float = 0.2
+
+    def generate_reflex(self, context: ModelContext) -> Result[ModelContext]:
+        """Generate a short reflexive update using the configured LLM."""
+        prompt = (
+            "Provide a brief reflexive note based on the user input.\n"
+            f"Input: {context.get('current_input', '')}\n"
+            "Reflexive note:"
+        )
+        output = self.llm_state.generate_text(
+            prompt, max_new_tokens=self.max_new_tokens, temperature=self.temperature
+        )
+        if not output:
+            error = Error.create(
+                message="Reflexive model failed to generate output.",
+                code="REFLEXIVE_GENERATION_FAILED",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+            )
+            return Result[ModelContext].failure(
+                error.code,
+                error.message,
+                error.context,
+                error.category,
+                error.severity,
+            )
+
+        context["reflexive_output"] = {
+            "timestamp": time.time(),
+            "note": output.strip(),
+        }
+        return Result[ModelContext].success(context)
+
+
+@dataclass
+class LightweightLanguageModel(LightweightModel):
+    """LLM-backed lightweight model for routing and quick analysis."""
+
+    llm_state: ModelState
+    max_new_tokens: int = 64
+    temperature: float = 0.3
+
+    def process(self, context: ModelContext) -> Result[ModelContext]:
+        """Process context and decide a routing hint using the configured LLM."""
+        prompt = (
+            "Classify the routing need for this user input as one of:\n"
+            "standard, escalated, informational.\n"
+            f"Input: {context.get('current_input', '')}\n"
+            "Routing decision:"
+        )
+        output = self.llm_state.generate_text(
+            prompt, max_new_tokens=self.max_new_tokens, temperature=self.temperature
+        )
+        if not output:
+            error = Error.create(
+                message="Lightweight model failed to generate output.",
+                code="LIGHTWEIGHT_GENERATION_FAILED",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+            )
+            return Result[ModelContext].failure(
+                error.code,
+                error.message,
+                error.context,
+                error.category,
+                error.severity,
+            )
+
+        decision_text = output.strip().lower()
+        if "escalated" in decision_text:
+            decision = "escalated"
+        elif "informational" in decision_text:
+            decision = "informational"
+        else:
+            decision = "standard"
+
+        if "additional_data" not in context:
+            context["additional_data"] = {}
+        context["additional_data"]["routing_decision"] = decision
+        return Result[ModelContext].success(context)
+
+
+@dataclass
+class AffectiveLexicalLanguageModel(AffectiveLexicalModel):
+    """LLM-backed affective model for core response generation."""
+
+    llm_state: ModelState
+    max_new_tokens: int = 128
+    temperature: float = 0.7
+
+    def generate_core_response(self, context: ModelContext) -> Result[ModelContext]:
+        """Generate the intermediate response and affective state."""
+        prompt = (
+            "Generate a concise assistant response to the user input.\n"
+            f"Input: {context.get('current_input', '')}\n"
+            "Response:"
+        )
+        output = self.llm_state.generate_text(
+            prompt, max_new_tokens=self.max_new_tokens, temperature=self.temperature
+        )
+        if not output:
+            error = Error.create(
+                message="Affective model failed to generate output.",
+                code="AFFECTIVE_GENERATION_FAILED",
+                category=ErrorCategory.RESOURCE,
+                severity=ErrorSeverity.ERROR,
+            )
+            return Result[ModelContext].failure(
+                error.code,
+                error.message,
+                error.context,
+                error.category,
+                error.severity,
+            )
+
+        context["intermediate_response"] = output.strip()
+
+        emotion_manager = context.get("emotion_manager")
+        if emotion_manager:
+            valence, arousal = emotion_manager.analyze_text_emotion(
+                context.get("current_input", "")
+            )
+            context["affective_state"] = {
+                "valence": valence,
+                "arousal": arousal,
+            }
+
+        return Result[ModelContext].success(context)
 
 # --- Mock Implementations ---
 
@@ -653,6 +791,9 @@ Example:
 
 
 __all__ = [
+    "ReflexiveLanguageModel",
+    "LightweightLanguageModel",
+    "AffectiveLexicalLanguageModel",
     "MockReflexiveModel",  # Export mock
     "MockLightweightModel",
     "MockAffectiveLexicalModel",

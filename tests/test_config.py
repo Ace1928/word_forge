@@ -1,18 +1,19 @@
 """Tests for :mod:`word_forge.config`."""
 
 import importlib
+import os
+import sys
 from pathlib import Path
 
 
-def test_get_full_path_joins_data_dir(monkeypatch, tmp_path):
+def test_get_full_path_joins_data_dir(tmp_path: Path) -> None:
     """Verify :func:`Config.get_full_path` joins ``parser.data_dir`` with a relative path."""
 
-    # Ensure repository source is on ``sys.path`` for import reliability
     repo_src = Path(__file__).resolve().parents[1] / "src"
-    monkeypatch.syspath_prepend(str(repo_src))
+    sys.path.insert(0, str(repo_src))
 
-    # Override parser data directory before reloading the config module
-    monkeypatch.setenv("WORD_FORGE_DATA_DIR", str(tmp_path))
+    os.environ["WORD_FORGE_DATA_DIR"] = str(tmp_path)
+
     import word_forge.config as cfg
 
     importlib.reload(cfg)

@@ -112,18 +112,32 @@ class ModelState:
             assert self.tokenizer is not None, "Tokenizer loading returned None"
 
             # Load model with appropriate configuration
+            model_kwargs: Dict[str, Any] = {
+                "torch_dtype": (
+                    torch.float16
+                    if getattr(self.device, "type", "cpu") == "cuda"
+                    else torch.float32
+                )
+            }
+            if getattr(self.device, "type", "cpu") == "cuda":
+                try:
+                    import accelerate  # type: ignore  # noqa: F401
+
+                    model_kwargs["device_map"] = "auto"
+                except Exception:
+                    model_kwargs["device_map"] = None
+
             self.model = cast(
                 PreTrainedModel,
                 AutoModelForCausalLM.from_pretrained(
                     cast(Union[str, PathLike], self.model_name),
-                    device_map=str(self.device),
-                    torch_dtype=(
-                        torch.float16
-                        if getattr(self.device, "type", "cpu") == "cuda"
-                        else torch.float32
-                    ),
+                    **model_kwargs,
                 ),
             )
+            if getattr(self.device, "type", "cpu") == "cpu":
+                self.model.to(self.device)
+            elif model_kwargs.get("device_map") is None:
+                self.model.to(self.device)
             assert self.model is not None, "Model loading returned None"
 
             self._initialized = True

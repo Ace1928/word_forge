@@ -17,7 +17,7 @@ import pytest
 class TestDatabaseGraphIntegration:
     """Integration tests for database and graph module interaction."""
 
-    def test_graph_manager_reads_from_database(self, tmp_path, monkeypatch):
+    def test_graph_manager_reads_from_database(self, tmp_path):
         """Test that GraphManager can read data from DBManager."""
         from word_forge.database.database_manager import DBManager
 

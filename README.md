@@ -109,6 +109,11 @@ word_forge --version
 # Start the processing pipeline with seed words
 word_forge start apple banana --minutes 5 --workers 4
 
+# Use custom database, vector, and LLM models (useful for isolating runs)
+word_forge start apple --db-path /tmp/word_forge.sqlite \
+  --vector-model sentence-transformers/all-MiniLM-L6-v2 \
+  --llm-model sshleifer/tiny-gpt2
+
 # Build the semantic graph
 word_forge graph build --timeout 180
 
@@ -145,6 +150,8 @@ word_forge --quiet start apple
 # Verbose mode (enable debug output)
 word_forge --verbose start apple
 ```
+
+Note: The first run may download NLTK corpora and sentence-transformer models.
 
 ### Demo Scripts
 

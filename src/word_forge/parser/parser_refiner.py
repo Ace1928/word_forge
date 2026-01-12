@@ -490,7 +490,9 @@ class ParserRefiner:
             model_name: Custom model name to use (if None, uses default)
         """
         self.db_manager = db_manager or DBManager()
-        self.queue_manager = queue_manager or QueueManager[str]()
+        self.queue_manager = (
+            queue_manager if queue_manager is not None else QueueManager[str]()
+        )
         self.resources = LexicalResources(data_dir)
         self.term_extractor = TermExtractor()
         self.stats = ProcessingStatistics()

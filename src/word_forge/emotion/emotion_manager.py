@@ -597,25 +597,29 @@ Return the analysis as a JSON object with these fields:
             polarity: float
             subjectivity: float
 
-        # TextBlob analysis (always available)
-        blob = TextBlob(text)
-        # Extract sentiment properties safely
-        try:
-            # Extract properties directly with safe fallbacks
-            polarity = getattr(blob.sentiment, "polarity", 0.0)  # type: ignore
-            subjectivity = getattr(blob.sentiment, "subjectivity", 0.0)  # type: ignore
-
-            # Create a properly typed TextBlobSentiment
-            sentiment_value = TextBlobSentiment(
-                polarity=float(polarity), subjectivity=float(subjectivity)
-            )
-
-            # Now we have a properly typed sentiment object
-            textblob_valence = sentiment_value.polarity
-            subjectivity = sentiment_value.subjectivity
-        except (AttributeError, TypeError, ValueError):
+        # TextBlob analysis (when available)
+        if TextBlob is None:
             textblob_valence = 0.0
             subjectivity = 0.0
+        else:
+            blob = TextBlob(text)
+            # Extract sentiment properties safely
+            try:
+                # Extract properties directly with safe fallbacks
+                polarity = getattr(blob.sentiment, "polarity", 0.0)  # type: ignore
+                subjectivity = getattr(blob.sentiment, "subjectivity", 0.0)  # type: ignore
+
+                # Create a properly typed TextBlobSentiment
+                sentiment_value = TextBlobSentiment(
+                    polarity=float(polarity), subjectivity=float(subjectivity)
+                )
+
+                # Now we have a properly typed sentiment object
+                textblob_valence = sentiment_value.polarity
+                subjectivity = sentiment_value.subjectivity
+            except (AttributeError, TypeError, ValueError):
+                textblob_valence = 0.0
+                subjectivity = 0.0
 
         exclamation_count = text.count("!")
         uppercase_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)

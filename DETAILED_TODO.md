@@ -1,7 +1,7 @@
 # Word Forge Comprehensive TODO
 
 > **Unified Improvement Roadmap**  
-> **Last Updated**: 2026-01-11  
+> **Last Updated**: 2026-01-12  
 > **Status**: Active Development
 >
 > This document consolidates ALL improvement opportunities, architectural enhancements, and planned features for Word Forge. It merges content from:
@@ -86,10 +86,10 @@ Item Format:
   - Status: Complete - 23 tests covering node/edge queries, subgraph extraction
 - [x] **`tests/test_language_model.py`** - LLM interface tests [P1]
   - Status: Complete - 23 tests covering initialization, generation, error handling
-- [x] **Heavy dependency mocking** - Stub torch, chromadb, transformers [P0]
-  - Impact: Tests can run without GPU/large downloads
-  - Implementation: `tests/conftest.py` with mock fixtures
-  - Status: Complete - CI environment uses mocked dependencies
+- [x] **Real dependency coverage** - Remove torch/chromadb/transformers stubs [P0]
+  - Impact: Integration tests validate actual ingestion, vector, and LLM flows
+  - Implementation: Replace mock fixtures with real instances; use small models in tests
+  - Status: Complete - Tests now run with real dependencies
 
 ### 1.2 Vectorization [P0]
 
@@ -134,6 +134,8 @@ Item Format:
   - Status: Complete - Added comprehensive module docstring
 - [x] **`src/word_forge/demos/*.py`** - Demo files lack docstrings
   - Status: Complete - Added docstrings to __init__.py, cli_demo.py, tools_demo.py
+- [x] **`src/word_forge/demos/conversation_worker_demo.py:202`** - Invalid Result API usage
+  - Status: Complete - Replaced `is_ok()` with `is_success`
 
 ### 2.2 File Organization [P2]
 
@@ -219,14 +221,18 @@ Item Format:
 | `test_graph_query.py` | ✅ Complete (23 tests) | P1 |
 | `test_language_model.py` | ✅ Complete (23 tests) | P1 |
 | `test_parser_config.py` | ✅ Complete (17 tests) | P2 |
+| `test_ingestion_pipeline.py` | ✅ Complete (end-to-end ingestion) | P0 |
 
 ### 5.2 Test Infrastructure [P1]
 
-- [x] **`tests/conftest.py`** - Shared fixtures (db, config, mocks)
-  - Status: Complete - Added queue_manager, parser_config, graph_manager, conversation_manager, sample data fixtures
+- [x] **`tests/conftest.py`** - Shared fixtures (db, config)
+  - Status: Complete - Added db + graph fixtures and sample data helpers (no mocks)
 - [x] **`tests/fixtures/`** - Sample data files
   - Status: Complete - Added sample_words.json, sample_conversations.json, sample_thesaurus.jsonl
+- [x] **`tests/test_lexical_proto.py`** - Remove dependency stubs
+  - Status: Complete - Use real dependencies to avoid cross-test contamination
 - [ ] **`pyproject.toml`** - Coverage thresholds
+- [ ] **CI cache for model/NLTK downloads** - Reduce runtime for integration tests [P1]
 
 ### 5.3 Test Quality [P2]
 
@@ -255,6 +261,12 @@ Item Format:
 - [ ] **Minimal profile** - Disable heavy features
 - [ ] **Hot reload propagation** - Update components on change
 
+### 6.4 Runtime Cache [P1]
+
+- [ ] **`src/word_forge/config.py:772`** - Invalidate `get_cached_value` LRU entries when config changes [P1]
+  - Impact: `set_runtime_value`/env updates can return stale values from `get_cached_value`.
+  - Implementation: remove unused `_value_cache` or add explicit `get_cached_value.cache_clear()` (or per-key invalidation) when mutating values.
+
 ---
 
 ## 7. Database
@@ -270,6 +282,9 @@ Item Format:
 - [ ] **Query analysis** - EXPLAIN for slow queries
 - [ ] **Indexes** - Frequent query columns
 - [ ] **Prepared statements** - Statement cache
+- [ ] **`src/word_forge/database/database_manager.py:543`** - Avoid returning pooled connections still stored in `_conn_pool` [P1]
+  - Impact: `create_connection()` appends to the pool and returns the same connection, allowing concurrent reuse and pool corruption.
+  - Implementation: only add connections to the pool after callers release them (or remove `create_connection` from pool management entirely).
 
 ### 7.3 Abstraction [P2]
 
@@ -352,6 +367,9 @@ Item Format:
 - [ ] **Persistence** - SQLite/Redis queue
 - [ ] **Dead letter queue** - Failed items
 - [ ] **Rate limiting** - Token bucket
+- [ ] **`src/word_forge/queue/queue_manager.py:370`** - Return a snapshot for iteration instead of a live iterator [P2]
+  - Impact: `__iter__` exposes the internal queue list without holding the lock, risking race conditions and inconsistent iteration.
+  - Implementation: copy `list(self._queue.queue)` under lock and iterate over the snapshot.
 
 ### 11.2 Workers [P2]
 
@@ -373,6 +391,8 @@ Item Format:
 - [ ] **SpaCy pipeline** - NER, dependencies
 - [ ] **MWE detection** - Multi-word expressions
 - [ ] **Domain dictionaries** - Technical terms
+- [x] **`src/word_forge/parser/parser_refiner.py:490`** - Respect provided queue manager even when empty
+  - Status: Complete - Switched to explicit None check to avoid replacing empty queues
 
 ### 12.2 Resources [P2]
 
@@ -384,6 +404,8 @@ Item Format:
 - [ ] **Remove ModelState singleton** - Dependency injection
 - [ ] **Configurable models** - Move names to config
 - [ ] **Memory management** - Model unloading
+- [x] **`src/word_forge/parser/language_model.py:80`** - Avoid accelerate requirement on CPU
+  - Status: Complete - Use device_map only when accelerate is available
 
 ---
 
@@ -394,6 +416,14 @@ Item Format:
 - [ ] **Full-text search** - Message search
 - [ ] **Summarization** - LLM-based summaries
 - [ ] **Branching** - Conversation trees
+- [x] **LLM-backed model implementations** - Replace mock-only conversation models [P1]
+  - Status: Complete - Added LLM-backed reflexive/lightweight/affective models and updated demos/tests
+- [ ] **`src/word_forge/conversation/conversation_manager.py:237`** - Fail fast if table creation fails during init [P1]
+  - Impact: initialization errors are printed then ignored, leaving a partially usable manager.
+  - Implementation: log and re-raise `ConversationError` so callers can handle startup failures explicitly.
+- [ ] **`src/word_forge/conversation/conversation_manager.py:151`** - Normalize DBManager exceptions into ConversationError [P2]
+  - Impact: `_db_connection` surfaces `DatabaseError` but callers only catch `ConversationError`, reducing error clarity.
+  - Implementation: catch `DatabaseError` in `_db_connection` and wrap/raise `ConversationError` with context.
 
 ### 13.2 Messages [P3]
 
@@ -414,6 +444,7 @@ Item Format:
 - [x] **`--version`** - Version display (added `--version` and `-V` flags)
 - [x] **`--config`** - Config file option (added `--config`/`-c` flag)
 - [x] **`--quiet`** - Suppress output (added `--quiet`/`-q` and `--verbose`/`-v` flags)
+- [x] **`--llm-model`** - Override example generation model
 
 ### 14.2 UX [P2]
 
@@ -559,6 +590,8 @@ Item Format:
 
 - [ ] **Upper bounds** - Prevent breaking changes
 - [ ] **Lock file** - pip-tools or Poetry
+- [x] **TextBlob dependency** - Ensure emotion analysis matches requirements
+  - Status: Complete - Added TextBlob to `requirements.txt` and added fallback guard
 
 ### 20.2 Compatibility [P2]
 

@@ -13,16 +13,17 @@ from typing import Optional
 
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.conversation.conversation_models import (
+    AffectiveLexicalLanguageModel,
     EidosianIdentityModel,
-    MockAffectiveLexicalModel,
-    MockLightweightModel,
-    MockReflexiveModel,
+    LightweightLanguageModel,
+    ReflexiveLanguageModel,
 )
 from word_forge.conversation.conversation_types import ConversationDict
 from word_forge.database.database_manager import DBManager
 from word_forge.demos.vector_worker_demo import temporary_database
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.parser.language_model import ModelState
 from word_forge.vectorizer.vector_store import StorageType, VectorStore
 
 
@@ -117,11 +118,12 @@ def main() -> None:
             )
             logger.info("Initialized DB, Emotion, Graph, and Vector managers.")
 
-            # Initialize Models (including Reflexive and actual Identity)
-            reflexive_model = MockReflexiveModel()
-            lightweight_model = MockLightweightModel()
-            affective_model = MockAffectiveLexicalModel()
-            identity_model = EidosianIdentityModel()
+            # Initialize Models (LLM-backed and identity)
+            llm_state = ModelState()
+            reflexive_model = ReflexiveLanguageModel(llm_state=llm_state)
+            lightweight_model = LightweightLanguageModel(llm_state=llm_state)
+            affective_model = AffectiveLexicalLanguageModel(llm_state=llm_state)
+            identity_model = EidosianIdentityModel(llm_state=llm_state)
             logger.info(
                 "Initialized conversation models (Reflexive, Lightweight, Affective, EidosianIdentity)."
             )

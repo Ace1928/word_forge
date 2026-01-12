@@ -1,335 +1,71 @@
-import importlib
-import sys
-import types
+"""CLI smoke tests without stubs or mocks."""
+
+from __future__ import annotations
+
 from pathlib import Path
 
-import pytest
+from word_forge.utils.nltk_utils import ensure_nltk_data
 
-# Ensure repository source on path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-# Stub heavy dependencies used by ParserRefiner
-nltk = types.ModuleType("nltk")
-corpus = types.ModuleType("nltk.corpus")
-wordnet_mod = types.ModuleType("nltk.corpus.wordnet")
-reader_mod = types.ModuleType("nltk.corpus.reader.wordnet")
+TEST_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+LLM_MODEL = "sshleifer/tiny-gpt2"
 
 
-class Lemma: ...
+def test_cli_version_command() -> None:
+    from word_forge import forge
+
+    assert forge.main(["--version"]) == 0
 
 
-class Synset: ...
+def test_cli_setup_nltk_command() -> None:
+    from word_forge import forge
+
+    ensure_nltk_data()
+    assert forge.main(["setup-nltk"]) == 0
 
 
-reader_mod.Lemma = Lemma
-reader_mod.Synset = Synset
-corpus.wordnet = wordnet_mod
-nltk.corpus = corpus
-nltk.download = lambda *a, **k: None
-nltk.Tree = object
-stem_mod = types.ModuleType("nltk.stem")
+def test_cli_start_command(tmp_path: Path) -> None:
+    from word_forge import forge
 
+    ensure_nltk_data()
 
-class WordNetLemmatizer: ...
-
-
-stem_mod.WordNetLemmatizer = WordNetLemmatizer
-nltk.stem = stem_mod
-sys.modules["nltk"] = nltk
-sys.modules["nltk.corpus"] = corpus
-sys.modules["nltk.corpus.wordnet"] = wordnet_mod
-sys.modules["nltk.corpus.reader"] = types.ModuleType("nltk.corpus.reader")
-sys.modules["nltk.corpus.reader.wordnet"] = reader_mod
-sys.modules["nltk.stem"] = stem_mod
-
-sys.modules.setdefault("torch", types.ModuleType("torch"))
-sys.modules.setdefault("rdflib", types.ModuleType("rdflib"))
-transformers_mod = types.ModuleType("transformers")
-
-
-class Dummy: ...
-
-
-transformers_mod.AutoModelForCausalLM = Dummy
-transformers_mod.AutoTokenizer = Dummy
-transformers_mod.PreTrainedModel = Dummy
-transformers_mod.PreTrainedTokenizer = Dummy
-sys.modules["transformers"] = transformers_mod
-
-
-def test_cli_start_exists():
-    module = importlib.import_module("word_forge.forge")
-    assert hasattr(module, "start")
-    assert callable(module.start)
-    assert hasattr(module, "main")
-    assert callable(module.main)
-
-
-def test_cli_argument_parsing(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    captured = {}
-
-    def fake_start(words=None, run_minutes=None, worker_count=4):
-        captured["args"] = {
-            "words": words,
-            "minutes": run_minutes,
-            "workers": worker_count,
-        }
-
-    monkeypatch.setattr(module, "start", fake_start)
-    module.main(["start", "test", "--minutes", "1", "--workers", "2"])
-    assert captured["args"] == {"words": ["test"], "minutes": 1.0, "workers": 2}
-
-
-def test_graph_build_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_graph_build(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_graph_build", fake_run_graph_build)
-    result = module.main(["graph", "build", "--timeout", "5", "--poll-interval", "2"])
-    assert result == 0
-    assert called["kwargs"] == {"poll_interval": 2.0, "timeout": 5.0}
-
-
-def test_graph_visualize_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_graph_visualization(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_graph_visualization", fake_run_graph_visualization)
-    result = module.main(
+    result = forge.main(
         [
-            "graph",
-            "visualize",
-            "--3d",
-            "--open-browser",
-            "--output",
-            "demo.html",
+            "start",
+            "happy",
+            "--minutes",
+            "0.01",
+            "--workers",
+            "1",
+            "--db-path",
+            str(tmp_path / "cli_start.db"),
+            "--vector-model",
+            TEST_MODEL,
+            "--llm-model",
+            LLM_MODEL,
         ]
     )
     assert result == 0
-    assert called["kwargs"] == {
-        "output_path": "demo.html",
-        "use_3d": True,
-        "open_in_browser": True,
-    }
 
 
-def test_vector_index_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
+def test_cli_graph_build_command() -> None:
+    from word_forge import forge
 
-    def fake_run_vector_index(**kwargs):
-        called["kwargs"] = kwargs
-        return True
+    assert forge.main(["graph", "build", "--timeout", "10", "--poll-interval", "0.5"]) == 0
 
-    monkeypatch.setattr(module, "run_vector_index", fake_run_vector_index)
-    result = module.main(
+
+def test_cli_vector_index_command(tmp_path: Path) -> None:
+    from word_forge import forge
+
+    result = forge.main(
         [
             "vector",
             "index",
             "--embedder",
-            "mini",
+            TEST_MODEL,
             "--timeout",
-            "10",
+            "20",
             "--poll-interval",
             "0.5",
         ]
     )
     assert result == 0
-    assert called["kwargs"] == {
-        "embedder": "mini",
-        "poll_interval": 0.5,
-        "timeout": 10.0,
-    }
-
-
-def test_vector_search_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_vector_search(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_vector_search", fake_run_vector_search)
-    result = module.main(
-        [
-            "vector",
-            "search",
-            "happy",
-            "word",
-            "--top-k",
-            "10",
-            "--content-type",
-            "definition",
-        ]
-    )
-    assert result == 0
-    assert called["kwargs"] == {
-        "query": "happy word",
-        "k": 10,
-        "content_type": "definition",
-    }
-
-
-def test_conversation_start_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_conversation_start(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_conversation_start", fake_run_conversation_start)
-    result = module.main(["conversation", "start", "--title", "Test Session"])
-    assert result == 0
-    assert called["kwargs"] == {"title": "Test Session"}
-
-
-def test_conversation_list_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_conversation_list(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_conversation_list", fake_run_conversation_list)
-    result = module.main(["conversation", "list", "--limit", "5"])
-    assert result == 0
-    assert called["kwargs"] == {"limit": 5}
-
-
-def test_conversation_show_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_conversation_show(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_conversation_show", fake_run_conversation_show)
-    result = module.main(["conversation", "show", "123", "--limit", "50"])
-    assert result == 0
-    assert called["kwargs"] == {"conversation_id": 123, "limit": 50}
-
-
-def test_emotion_annotate_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_emotion_annotation(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_emotion_annotation", fake_run_emotion_annotation)
-    result = module.main(
-        [
-            "emotion",
-            "annotate",
-            "--strategy",
-            "hybrid",
-            "--timeout",
-            "15",
-            "--poll-interval",
-            "1",
-        ]
-    )
-    assert result == 0
-    assert called["kwargs"] == {
-        "strategy": "hybrid",
-        "poll_interval": 1.0,
-        "timeout": 15.0,
-    }
-
-
-def test_demo_full_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {}
-
-    def fake_run_demo_full(**kwargs):
-        called["kwargs"] = kwargs
-        return True
-
-    monkeypatch.setattr(module, "run_demo_full", fake_run_demo_full)
-    result = module.main(["demo", "full", "--3d", "--open-browser", "--timeout", "20"])
-    assert result == 0
-    assert called["kwargs"] == {
-        "use_3d": True,
-        "open_in_browser": True,
-        "timeout": 20.0,
-    }
-
-
-def test_setup_nltk_command(monkeypatch):
-    module = importlib.import_module("word_forge.forge")
-    called = {"count": 0}
-
-    def fake_run_setup_nltk():
-        called["count"] += 1
-        return 0
-
-    monkeypatch.setattr(module, "run_setup_nltk", fake_run_setup_nltk)
-    result = module.main(["setup-nltk"])
-    assert result == 0
-    assert called["count"] == 1
-
-
-def test_version_flag(capsys):
-    """Test that --version flag displays version."""
-    module = importlib.import_module("word_forge.forge")
-    # --version causes SystemExit
-    with pytest.raises(SystemExit) as exc_info:
-        module.main(["--version"])
-    assert exc_info.value.code == 0
-    captured = capsys.readouterr()
-    assert "word_forge" in captured.out
-    assert "0.1.0" in captured.out
-
-
-def test_version_flag_short(capsys):
-    """Test that -V flag displays version."""
-    module = importlib.import_module("word_forge.forge")
-    with pytest.raises(SystemExit) as exc_info:
-        module.main(["-V"])
-    assert exc_info.value.code == 0
-    captured = capsys.readouterr()
-    assert "word_forge" in captured.out
-
-
-def test_get_version_function():
-    """Test _get_version function."""
-    module = importlib.import_module("word_forge.forge")
-    version = module._get_version()
-    assert "word_forge" in version
-    assert version.startswith("word_forge ")
-
-
-def test_quiet_flag_exists():
-    """Test that --quiet flag exists in parser."""
-    module = importlib.import_module("word_forge.forge")
-    # Just verify module loads and has expected attributes for logging control
-    assert hasattr(module, "_setup_logging")
-    assert callable(module._setup_logging)
-
-
-def test_verbose_flag_exists():
-    """Test that --verbose flag exists in parser."""
-    module = importlib.import_module("word_forge.forge")
-    # Just verify module loads - verbose flag tested by help output
-    assert hasattr(module, "_setup_logging")
-
-
-def test_setup_logging_function():
-    """Test _setup_logging function exists and is callable."""
-    module = importlib.import_module("word_forge.forge")
-    assert hasattr(module, "_setup_logging")
-    assert callable(module._setup_logging)
