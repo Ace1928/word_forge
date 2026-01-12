@@ -354,6 +354,9 @@ class DatabaseWorker(threading.Thread):
         # Thread control flags
         self._stop_flag = False
         self._pause_flag = False
+        self._wake_event = (
+            threading.Event()
+        )  # For interruptible sleep (stop or new operation)
         self._status_lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._current_state = DBWorkerState.STOPPED
@@ -408,9 +411,13 @@ class DatabaseWorker(threading.Thread):
         )
 
         while not self._stop_flag:
+            # Clear wake event at start of each iteration to avoid race conditions
+            self._wake_event.clear()
+
             # Skip processing if paused
             if self._pause_flag:
-                time.sleep(1.0)
+                # Use event.wait() for interruptible sleep during pause
+                self._wake_event.wait(timeout=1.0)
                 continue
 
             # Process any pending operations first
@@ -456,13 +463,14 @@ class DatabaseWorker(threading.Thread):
                 sleep_time = max(
                     0.1, min(next_op_time - time.time(), self.poll_interval)
                 )
-                time.sleep(sleep_time)
+                # Use event.wait() for interruptible sleep
+                self._wake_event.wait(timeout=sleep_time)
 
             except Exception as e:
                 self._handle_error(e)
 
-                # Sleep with exponential backoff during error state
-                time.sleep(self._backoff_time)
+                # Sleep with exponential backoff during error state (interruptible)
+                self._wake_event.wait(timeout=self._backoff_time)
 
         with self._status_lock:
             self._current_state = DBWorkerState.STOPPED
@@ -854,6 +862,9 @@ class DatabaseWorker(threading.Thread):
             # Add a more aggressive interrupt flag
             self._immediate_stop = True
 
+        # Signal the wake event to wake up any sleeping thread
+        self._wake_event.set()
+
     def restart(self) -> None:
         """
         Restart the worker thread.
@@ -955,6 +966,9 @@ class DatabaseWorker(threading.Thread):
         with self._operation_lock:
             self._pending_operations.append(("maintenance", {}, completion_event))
 
+        # Wake up the worker thread to process the operation immediately
+        self._wake_event.set()
+
         if wait and completion_event:
             self.logger.debug("Waiting for maintenance operation to complete")
             completion_event.wait(timeout=300)  # Wait up to 5 minutes
@@ -989,6 +1003,9 @@ class DatabaseWorker(threading.Thread):
                 ("optimization", {"level": level}, completion_event)
             )
 
+        # Wake up the worker thread to process the operation immediately
+        self._wake_event.set()
+
         if wait and completion_event:
             self.logger.debug("Waiting for optimization operation to complete")
             completion_event.wait(timeout=600)  # Wait up to 10 minutes
@@ -1019,6 +1036,9 @@ class DatabaseWorker(threading.Thread):
                 ("backup", {"target_path": target_path}, completion_event)
             )
 
+        # Wake up the worker thread to process the operation immediately
+        self._wake_event.set()
+
         if wait and completion_event:
             self.logger.debug("Waiting for backup operation to complete")
             completion_event.wait(timeout=300)  # Wait up to 5 minutes
@@ -1045,6 +1065,9 @@ class DatabaseWorker(threading.Thread):
 
         with self._operation_lock:
             self._pending_operations.append(("integrity_check", {}, completion_event))
+
+        # Wake up the worker thread to process the operation immediately
+        self._wake_event.set()
 
         if wait and completion_event:
             self.logger.debug("Waiting for integrity check operation to complete")
