@@ -647,11 +647,15 @@ class TransformerEmbedder:
             ) from e
 
         # Try to load the model with detailed error handling
+        # Note: We use string matching to detect error types because the
+        # sentence_transformers library raises generic OSError exceptions.
+        # This approach provides helpful user guidance while still falling
+        # back to the original error message if patterns don't match.
         try:
             self.model = SentenceTransformer(model_name)  # type: ignore
         except OSError as e:
             error_msg = str(e)
-            # Check for common error patterns
+            # Check for common error patterns in HuggingFace error messages
             if (
                 "not a local folder" in error_msg
                 or "not a valid model identifier" in error_msg
