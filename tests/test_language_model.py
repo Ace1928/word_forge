@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from word_forge.parser.language_model import ModelState
 
 TEST_MODEL = "sshleifer/tiny-gpt2"

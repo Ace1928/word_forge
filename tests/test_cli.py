@@ -50,7 +50,9 @@ def test_cli_start_command(tmp_path: Path) -> None:
 def test_cli_graph_build_command() -> None:
     from word_forge import forge
 
-    assert forge.main(["graph", "build", "--timeout", "10", "--poll-interval", "0.5"]) == 0
+    assert (
+        forge.main(["graph", "build", "--timeout", "10", "--poll-interval", "0.5"]) == 0
+    )
 
 
 def test_cli_vector_index_command(tmp_path: Path) -> None:
