@@ -57,6 +57,9 @@ class RecursiveEmotionProcessor:
         # Add vector cache
         self._vector_cache: Dict[str, Any] = {}
 
+        # Initialize NLP to None - will be set in _initialize_nlp() if spaCy is available
+        self.nlp: Any = None
+
         # Initialize hook registries
         self.meta_emotion_hooks: List[Callable[[EmotionalConcept], None]] = []
         self.pattern_hooks: List[Callable[[EmotionalConcept], None]] = []
