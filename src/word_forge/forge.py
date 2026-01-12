@@ -200,7 +200,7 @@ def start(
                 and (time.time() - start_time) > run_minutes * 60
             ):
                 break
-            if queue_manager.is_empty and not manager.any_alive():
+            if run_minutes is None and queue_manager.is_empty and not manager.any_alive():
                 break
     except KeyboardInterrupt:
         LOGGER.info("Interrupted by user")
