@@ -331,16 +331,16 @@ class VectorWorker(threading.Thread):
             try:
                 self.embedder = TransformerEmbedder(model_name=embedder)
                 if logger:
-                    logger.info(f"Created TransformerEmbedder with model '{embedder}'")
-            except EmbeddingError as exc:
-                install_hint = 'pip install "word_forge[vector]"'
-                raise EmbeddingError(
-                    "Transformer embeddings require the optional vector dependencies. "
-                    f"Install them via {install_hint} and retry."
-                ) from exc
+                    logger.info(
+                        f"Created TransformerEmbedder with model '{embedder}' "
+                        f"(dimension={self.embedder.dimension})"
+                    )
+            except EmbeddingError:
+                # Re-raise EmbeddingError as-is since it already has detailed info
+                raise
             except Exception as exc:
                 raise EmbeddingError(
-                    f"Failed to initialize transformer embedder '{embedder}': {exc}"
+                    f"Unexpected error initializing embedder with model '{embedder}': {exc}"
                 ) from exc
         else:
             self.embedder = embedder
@@ -611,12 +611,13 @@ class TransformerEmbedder:
     """
     High-quality embedding generator using transformer models.
 
-    Uses the Multilingual-E5-large-instruct model for sophisticated,
-    multilingual text embeddings optimized for search and retrieval tasks.
+    Uses sentence-transformer models for sophisticated text embeddings
+    optimized for search and retrieval tasks.
 
     Attributes:
         model: Sentence transformer model instance
         dimension: Dimension of the generated embeddings
+        model_name: Name of the model being used
     """
 
     def __init__(self, model_name: str = "intfloat/multilingual-e5-large-instruct"):
@@ -624,26 +625,93 @@ class TransformerEmbedder:
         Initialize with a pretrained transformer model.
 
         Args:
-            model_name: Name of the pretrained model to use
+            model_name: Name of the pretrained model to use. Should be a valid
+                HuggingFace model path (e.g., 'sentence-transformers/all-MiniLM-L6-v2'
+                or 'intfloat/multilingual-e5-large-instruct').
 
         Raises:
-            EmbeddingError: If model initialization fails
+            EmbeddingError: If model initialization fails with details about the cause
         """
+        self.model_name = model_name
+
+        # Try to import sentence_transformers
         try:
             from sentence_transformers import SentenceTransformer
-
-            self.model = SentenceTransformer(
-                model_name  # type: ignore
-            )  # Multilingual-E5-large-instruct
-            # Multilingual-E5-large-instruct has embedding dimension of 1024
-            self.dimension = 1024
-        except ImportError:
+        except ImportError as e:
             raise EmbeddingError(
-                'Failed to import sentence_transformers. Install the optional vector extras via: pip install "word_forge[vector]"'
-            )
+                "Missing required package: sentence-transformers.\n"
+                "To fix this, install the vector dependencies:\n"
+                '    pip install "word_forge[vector]"\n'
+                "Or install sentence-transformers directly:\n"
+                "    pip install sentence-transformers"
+            ) from e
+
+        # Try to load the model with detailed error handling
+        # Note: We use string matching to detect error types because the
+        # sentence_transformers library raises generic OSError exceptions.
+        # This approach provides helpful user guidance while still falling
+        # back to the original error message if patterns don't match.
+        try:
+            self.model = SentenceTransformer(model_name)  # type: ignore
+        except OSError as e:
+            error_msg = str(e)
+            # Check for common error patterns in HuggingFace error messages
+            if (
+                "not a local folder" in error_msg
+                or "not a valid model identifier" in error_msg
+            ):
+                raise EmbeddingError(
+                    f"Model not found: '{model_name}'.\n"
+                    "This model name is not recognized by HuggingFace.\n\n"
+                    "Common fixes:\n"
+                    "  1. Use the full model path (e.g., 'sentence-transformers/all-MiniLM-L6-v2')\n"
+                    "  2. Check spelling and capitalization\n"
+                    "  3. Verify the model exists at https://huggingface.co/models\n\n"
+                    "Popular embedding models:\n"
+                    "  - sentence-transformers/all-MiniLM-L6-v2 (fast, 384 dim)\n"
+                    "  - sentence-transformers/all-mpnet-base-v2 (balanced, 768 dim)\n"
+                    "  - intfloat/multilingual-e5-large-instruct (multilingual, 1024 dim)"
+                ) from e
+            elif "private" in error_msg.lower() or "gated" in error_msg.lower():
+                raise EmbeddingError(
+                    f"Access denied for model: '{model_name}'.\n"
+                    "This model may be private or require authentication.\n\n"
+                    "To fix this:\n"
+                    "  1. Log in with: huggingface-cli login\n"
+                    "  2. Or use a token: export HUGGING_FACE_HUB_TOKEN=your_token\n"
+                    "  3. Or choose a public model instead"
+                ) from e
+            else:
+                raise EmbeddingError(
+                    f"Failed to load model '{model_name}': {error_msg}"
+                ) from e
+        except ConnectionError as e:
+            raise EmbeddingError(
+                f"Network error while loading model '{model_name}'.\n"
+                "Could not connect to HuggingFace Hub.\n\n"
+                "To fix this:\n"
+                "  1. Check your internet connection\n"
+                "  2. Try again later if HuggingFace is experiencing issues\n"
+                "  3. If behind a proxy, configure HTTPS_PROXY environment variable"
+            ) from e
         except Exception as e:
             raise EmbeddingError(
-                f"Failed to initialize embedding model: {str(e)}"
+                f"Failed to initialize embedding model '{model_name}': {str(e)}"
+            ) from e
+
+        # Get the actual dimension from the loaded model
+        try:
+            model_dim = self.model.get_sentence_embedding_dimension()  # type: ignore
+            if model_dim is None or not isinstance(model_dim, int) or model_dim <= 0:
+                raise EmbeddingError(
+                    f"Model '{model_name}' returned invalid dimension: {model_dim}"
+                )
+            self.dimension: int = model_dim
+        except EmbeddingError:
+            raise
+        except Exception as e:
+            raise EmbeddingError(
+                f"Could not determine embedding dimension for model '{model_name}': {e}"
             ) from e
 
     def embed(self, text: str) -> NDArray[np.float32]:

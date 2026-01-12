@@ -129,7 +129,9 @@ def start(
 
     vector_store = VectorStore(db_manager=db_manager)
     vector_worker = VectorWorker(
-        db=db_manager, vector_store=vector_store, embedder="all-MiniLM-L6-v2"
+        db=db_manager,
+        vector_store=vector_store,
+        embedder="sentence-transformers/all-MiniLM-L6-v2",
     )
 
     manager = WorkerManager(logger=LOGGER)
@@ -306,8 +308,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     vector_index.add_argument(
         "--embedder",
-        default="all-MiniLM-L6-v2",
-        help="Sentence transformer model name",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="Sentence transformer model name (HuggingFace model path)",
     )
     vector_index.add_argument(
         "--timeout",
@@ -674,7 +676,7 @@ def run_graph_visualization(
 def run_vector_index(
     *,
     db_manager: Optional["DBManager"] = None,
-    embedder: str = "all-MiniLM-L6-v2",
+    embedder: str = "sentence-transformers/all-MiniLM-L6-v2",
     poll_interval: float = 0.25,
     timeout: float = 120.0,
 ) -> bool:

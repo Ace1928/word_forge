@@ -4,11 +4,15 @@ This module tests the VectorWorker class which handles vectorization of words.
 Note: Some tests require simplified implementations due to ML model dependencies.
 """
 
+import sys
 import time
+from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from word_forge.database.database_manager import DBManager
+from word_forge.vectorizer.vector_worker import EmbeddingError
 
 
 class SimpleEmbedder:
@@ -115,3 +119,84 @@ def test_vector_store_tracks_ids():
     store.upsert(3, np.zeros(3))
 
     assert store.ids == [1, 2, 3]
+
+
+class TestTransformerEmbedderErrorHandling:
+    """Test error handling for TransformerEmbedder initialization."""
+
+    def test_import_error_has_helpful_message(self):
+        """Test that ImportError gives helpful installation instructions."""
+        from word_forge.vectorizer.vector_worker import TransformerEmbedder
+
+        # Mock sentence_transformers import to raise ImportError
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with patch(
+                "word_forge.vectorizer.vector_worker.TransformerEmbedder.__init__"
+            ) as mock_init:
+                # Simulate the ImportError path
+                mock_init.side_effect = EmbeddingError(
+                    "Missing required package: sentence-transformers.\n"
+                    "To fix this, install the vector dependencies:\n"
+                    '    pip install "word_forge[vector]"'
+                )
+                with pytest.raises(EmbeddingError) as exc_info:
+                    TransformerEmbedder("test-model")
+
+                error_msg = str(exc_info.value)
+                assert "sentence-transformers" in error_msg
+                assert "pip install" in error_msg
+
+    def test_model_not_found_error_has_helpful_suggestions(self):
+        """Test that model not found errors provide helpful suggestions."""
+        from word_forge.vectorizer.vector_worker import TransformerEmbedder
+
+        with patch(
+            "word_forge.vectorizer.vector_worker.TransformerEmbedder.__init__"
+        ) as mock_init:
+            # Simulate a model not found error
+            mock_init.side_effect = EmbeddingError(
+                "Model not found: 'invalid-model'.\n"
+                "This model name is not recognized by HuggingFace.\n"
+                "Popular embedding models:\n"
+                "  - sentence-transformers/all-MiniLM-L6-v2"
+            )
+            with pytest.raises(EmbeddingError) as exc_info:
+                TransformerEmbedder("invalid-model")
+
+            error_msg = str(exc_info.value)
+            assert (
+                "not found" in error_msg.lower()
+                or "not recognized" in error_msg.lower()
+            )
+            assert "sentence-transformers/all-MiniLM-L6-v2" in error_msg
+
+    def test_embedding_error_is_propagated_from_vector_worker(self):
+        """Test that EmbeddingError is properly propagated from VectorWorker."""
+        from word_forge.vectorizer.vector_worker import VectorWorker
+
+        db = MagicMock()
+        store = MagicMock()
+
+        # Mock TransformerEmbedder to raise an EmbeddingError
+        with patch(
+            "word_forge.vectorizer.vector_worker.TransformerEmbedder"
+        ) as mock_embedder:
+            mock_embedder.side_effect = EmbeddingError("Test embedding error")
+
+            with pytest.raises(EmbeddingError) as exc_info:
+                VectorWorker(db, store, "some-model")
+
+            assert "Test embedding error" in str(exc_info.value)
+
+    def test_vector_worker_accepts_custom_embedder(self):
+        """Test that VectorWorker accepts a custom embedder object."""
+        from word_forge.vectorizer.vector_worker import VectorWorker
+
+        db = MagicMock()
+        store = MagicMock()
+        embedder = SimpleEmbedder(dimension=64)
+
+        # This should not raise any error
+        worker = VectorWorker(db, store, embedder)
+        assert worker.embedder is embedder
+        assert worker.embedder.dimension == 64
