@@ -116,7 +116,7 @@ word_forge graph build --timeout 180
 word_forge graph visualize --3d --open-browser
 
 # Index vectors
-word_forge vector index --embedder MiniLM-L6-v2
+word_forge vector index --embedder sentence-transformers/all-MiniLM-L6-v2
 
 # Search for similar terms
 word_forge vector search "happy" --top-k 10
@@ -233,7 +233,7 @@ Word Forge uses a centralized configuration system with environment variable ove
 |---------------------|-------------|---------|
 | `WORDFORGE_DB_PATH` | Database file path | `data/word_forge.sqlite` |
 | `WORDFORGE_LOG_LEVEL` | Logging level | `INFO` |
-| `WORDFORGE_VECTOR_MODEL` | Embedding model name | `all-MiniLM-L6-v2` |
+| `WORDFORGE_VECTOR_MODEL` | Embedding model name | `sentence-transformers/all-MiniLM-L6-v2` |
 
 Configuration can also be modified programmatically:
 
@@ -284,7 +284,7 @@ For systems with limited RAM:
 
 1. Use a smaller embedding model:
    ```bash
-   export WORDFORGE_VECTOR_MODEL="all-MiniLM-L6-v2"  # ~80MB
+   export WORDFORGE_VECTOR_MODEL="sentence-transformers/all-MiniLM-L6-v2"  # ~80MB
    ```
 
 2. Reduce batch sizes in configuration:
