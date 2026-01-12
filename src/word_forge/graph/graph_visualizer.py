@@ -448,12 +448,29 @@ class GraphVisualizer:
         # Add edges with attributes
         for u, v, attrs in graph.edges(data=True):
             rel_type = attrs.get("relationship", "")
-            edge_color = self._config.get_relationship_color(rel_type)
+            dimension = attrs.get("dimension", "lexical")
+
+            # Get color based on relationship type, falling back to dimension-based color
+            edge_color = self._get_edge_color(rel_type, dimension, attrs)
             edge_width = self._calculate_edge_width(attrs.get("weight", 1.0))
-            title = (
-                attrs.get("title", rel_type) if self._config.enable_tooltips else None
-            )
+
+            # Build informative tooltip
+            title_parts = []
+            if rel_type:
+                title_parts.append(f"Type: {rel_type}")
+            title_parts.append(f"Dimension: {dimension}")
+            if attrs.get("valence") is not None:
+                title_parts.append(f"Valence: {attrs['valence']:.2f}")
+            if attrs.get("arousal") is not None:
+                title_parts.append(f"Arousal: {attrs['arousal']:.2f}")
+            if attrs.get("weight") is not None:
+                title_parts.append(f"Weight: {attrs['weight']:.2f}")
+            title = "\n".join(title_parts) if self._config.enable_tooltips else None
+
+            # Use dashed style for cross-dimensional edges or emotional relationships
             style = attrs.get("style", "solid")
+            if dimension in ("emotional", "affective") and style == "solid":
+                style = self._config.cross_dimension_edge_style
 
             net.add_edge(
                 str(u),
@@ -748,3 +765,68 @@ class GraphVisualizer:
             )
 
         return "#6666ff"  # Default blueish color
+
+    def _get_edge_color(
+        self,
+        rel_type: str,
+        dimension: str,
+        attrs: Dict[str, Any],
+    ) -> ColorHex:
+        """
+        Determine edge color based on relationship type, dimension, and attributes.
+
+        Prioritizes relationship type colors, then dimension-based colors,
+        and finally considers emotional attributes like valence for coloring.
+
+        Args:
+            rel_type: The relationship type (e.g., 'synonym', 'emotional_synonym')
+            dimension: The relationship dimension (e.g., 'lexical', 'emotional')
+            attrs: Edge attributes dictionary
+
+        Returns:
+            ColorHex: A hex color string for the edge.
+        """
+        # First, try to get color by relationship type
+        color = self._config.get_relationship_color(rel_type)
+        if color and color != self._config.relationship_colors.get("default"):
+            return color
+
+        # For emotional dimensions, color by valence if available
+        if dimension in ("emotional", "affective"):
+            valence = attrs.get("valence")
+            if isinstance(valence, (int, float)):
+                if valence > 0.3:
+                    return self._config.affective_relationship_colors.get(
+                        "positive_valence", "#00cc66"
+                    )
+                elif valence < -0.3:
+                    return self._config.affective_relationship_colors.get(
+                        "negative_valence", "#cc3300"
+                    )
+                else:
+                    return self._config.affective_relationship_colors.get(
+                        "valence_neutral", "#cccccc"
+                    )
+
+            # Color by arousal if valence not available
+            arousal = attrs.get("arousal")
+            if isinstance(arousal, (int, float)):
+                if arousal > 0.5:
+                    return self._config.affective_relationship_colors.get(
+                        "high_arousal", "#ff9900"
+                    )
+                else:
+                    return self._config.affective_relationship_colors.get(
+                        "low_arousal", "#3366cc"
+                    )
+
+        # Dimension-based default colors
+        dimension_colors = {
+            "lexical": "#4287f5",  # Blue
+            "emotional": "#ff69b4",  # Hot pink
+            "affective": "#ff9900",  # Orange
+            "contextual": "#20b2aa",  # Light sea green
+            "connotative": "#daa520",  # Goldenrod
+        }
+
+        return dimension_colors.get(dimension, color or "#aaaaaa")

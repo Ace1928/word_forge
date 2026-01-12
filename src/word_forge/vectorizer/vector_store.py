@@ -930,11 +930,13 @@ class VectorStore:
         Returns:
             NDArray[np.float32]: Dimensionally aligned and normalized vector
         """
-        length = (
-            len(vector)
-            if not hasattr(vector, "shape")
-            else (vector.shape[0] if len(getattr(vector, "shape")) > 0 else 0)
-        )
+        # Handle both numpy arrays and plain lists/sequences
+        if hasattr(vector, "shape"):
+            length = vector.shape[0] if len(vector.shape) > 0 else 0
+        else:
+            length = len(vector)
+            # Convert to numpy array if not already
+            vector = np.asarray(vector, dtype=np.float32)
 
         if length == self.dimension:
             return vector
@@ -946,13 +948,13 @@ class VectorStore:
 
         if length > self.dimension:
             coerced = vector[: self.dimension]
-            self.logger.warning(
+            self.logger.debug(
                 "%s truncated from dimension %s to %s", context, length, self.dimension
             )
         else:
             pad_width = self.dimension - length
             coerced = np.pad(vector, (0, pad_width), mode="constant")
-            self.logger.warning(
+            self.logger.debug(
                 "%s padded from dimension %s to %s with zeros",
                 context,
                 length,
