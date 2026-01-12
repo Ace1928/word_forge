@@ -562,6 +562,15 @@ class ParallelWordProcessor:
         self._workers = []
         self.logger.info("Stopped parallel word processor")
 
+    def is_alive(self) -> bool:
+        """Check if any worker threads are still running."""
+        return self._active and any(w.is_alive() for w in self._workers)
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        """Wait for all worker threads to complete."""
+        for worker in self._workers:
+            worker.join(timeout=timeout)
+
     def _worker_loop(self) -> None:
         """
         Main worker thread processing loop.

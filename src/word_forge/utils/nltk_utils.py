@@ -21,16 +21,27 @@ _NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
     _NLTKResource("wordnet", "corpora/wordnet", "WordNet lexical database"),
     _NLTKResource("omw-1.4", "corpora/omw-1.4", "Open Multilingual WordNet"),
     _NLTKResource("punkt", "tokenizers/punkt", "Punkt sentence tokenizer"),
+    _NLTKResource("punkt_tab", "tokenizers/punkt_tab", "Punkt tokenizer (tabular)"),
     _NLTKResource(
         "averaged_perceptron_tagger",
         "taggers/averaged_perceptron_tagger",
         "Averaged perceptron POS tagger",
+    ),
+    _NLTKResource(
+        "averaged_perceptron_tagger_eng",
+        "taggers/averaged_perceptron_tagger_eng",
+        "Averaged perceptron POS tagger (English)",
     ),
     _NLTKResource("stopwords", "corpora/stopwords", "Common stop words"),
     _NLTKResource(
         "maxent_ne_chunker",
         "chunkers/maxent_ne_chunker",
         "Named entity chunker",
+    ),
+    _NLTKResource(
+        "maxent_ne_chunker_tab",
+        "chunkers/maxent_ne_chunker_tab",
+        "Named entity chunker (tabular)",
     ),
     _NLTKResource("words", "corpora/words", "Word frequency lists"),
     _NLTKResource(

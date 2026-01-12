@@ -408,3 +408,159 @@ class TestProcessingStatsIntegration:
         assert stats.error_count == 1
         assert stats.relationship_counts["synonym"] == 5
         assert stats.relationship_counts["antonym"] == 3
+
+
+class TestWordProcessingPipeline:
+    """Integration tests for the word processing pipeline."""
+
+    def test_queue_manager_shares_reference_with_parser(self, tmp_path):
+        """Test that QueueManager is properly shared between components.
+
+        This tests the fix for the bug where QueueManager was being duplicated
+        due to the `or` pattern evaluating empty queues as False.
+        """
+        from word_forge.database.database_manager import DBManager
+        from word_forge.queue.queue_manager import QueueManager
+        from word_forge.parser.parser_refiner import ParserRefiner
+
+        # Setup
+        db_path = tmp_path / "test_pipeline.db"
+        db = DBManager(db_path=db_path)
+        queue: QueueManager[str] = QueueManager()
+
+        # Create a mock model state to avoid heavy dependencies
+        class MockModelState:
+            def generate_text(self, prompt: str) -> str:
+                return "Example sentence."
+
+        # Create parser with the queue manager
+        parser = ParserRefiner(
+            db_manager=db,
+            queue_manager=queue,
+            llm_state=MockModelState(),
+        )
+
+        # Verify they share the same queue reference
+        assert queue is parser.queue_manager, (
+            "QueueManager should be the same instance after fix"
+        )
+
+        # Clean up
+        db.close()
+
+    def test_parallel_word_processor_processes_queue_items(self, tmp_path):
+        """Test that ParallelWordProcessor correctly processes items from queue."""
+        import time
+        import logging
+
+        from word_forge.database.database_manager import DBManager
+        from word_forge.queue.queue_manager import QueueManager
+        from word_forge.queue.queue_worker import (
+            ParallelWordProcessor,
+            WordProcessor,
+            WorkerPoolConfig,
+        )
+
+        # Setup
+        db_path = tmp_path / "test_parallel_processor.db"
+        db = DBManager(db_path=db_path)
+        queue: QueueManager[str] = QueueManager()
+        logger = logging.getLogger(__name__)
+
+        # Create a mock parser refiner that just stores words
+        class MockParserRefiner:
+            def __init__(self, db_manager, queue_manager):
+                self.db_manager = db_manager
+                self.queue_manager = queue_manager
+
+            def process_word(self, term: str) -> bool:
+                self.db_manager.insert_or_update_word(
+                    term=term,
+                    definition=f"Definition of {term}",
+                    part_of_speech="noun",
+                )
+                return True
+
+        mock_parser = MockParserRefiner(db_manager=db, queue_manager=queue)
+        processor = WordProcessor(
+            db_manager=db,
+            parser_refiner=mock_parser,
+            logger=logger,
+        )
+        pool = ParallelWordProcessor(
+            processor,
+            config=WorkerPoolConfig(worker_count=2),
+            logger=logger,
+        )
+
+        # Enqueue test items
+        queue.enqueue("apple")
+        queue.enqueue("banana")
+        queue.enqueue("cherry")
+
+        # Start processing
+        pool.start()
+        time.sleep(1)  # Allow time for processing
+        pool.stop()
+
+        # Verify results
+        words = db.get_all_words()
+        assert len(words) == 3, f"Expected 3 words, got {len(words)}"
+        terms = {w["term"] for w in words}
+        assert terms == {"apple", "banana", "cherry"}
+
+        # Clean up
+        db.close()
+
+    def test_parallel_word_processor_is_alive(self, tmp_path):
+        """Test the is_alive method on ParallelWordProcessor."""
+        import logging
+
+        from word_forge.database.database_manager import DBManager
+        from word_forge.queue.queue_manager import QueueManager
+        from word_forge.queue.queue_worker import (
+            ParallelWordProcessor,
+            WordProcessor,
+            WorkerPoolConfig,
+        )
+
+        # Setup
+        db_path = tmp_path / "test_is_alive.db"
+        db = DBManager(db_path=db_path)
+        queue: QueueManager[str] = QueueManager()
+        logger = logging.getLogger(__name__)
+
+        # Mock parser
+        class MockParserRefiner:
+            def __init__(self, db_manager, queue_manager):
+                self.db_manager = db_manager
+                self.queue_manager = queue_manager
+
+            def process_word(self, term: str) -> bool:
+                return True
+
+        mock_parser = MockParserRefiner(db_manager=db, queue_manager=queue)
+        processor = WordProcessor(
+            db_manager=db,
+            parser_refiner=mock_parser,
+            logger=logger,
+        )
+        pool = ParallelWordProcessor(
+            processor,
+            config=WorkerPoolConfig(worker_count=1),
+            logger=logger,
+        )
+
+        # Before starting
+        assert not pool.is_alive(), "Pool should not be alive before start"
+
+        # After starting
+        pool.start()
+        assert pool.is_alive(), "Pool should be alive after start"
+
+        # After stopping
+        pool.stop()
+        assert not pool.is_alive(), "Pool should not be alive after stop"
+
+        # Clean up
+        db.close()
