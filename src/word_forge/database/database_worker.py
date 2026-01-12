@@ -354,6 +354,7 @@ class DatabaseWorker(threading.Thread):
         # Thread control flags
         self._stop_flag = False
         self._pause_flag = False
+        self._stop_event = threading.Event()  # For interruptible sleep
         self._status_lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._current_state = DBWorkerState.STOPPED
@@ -410,7 +411,8 @@ class DatabaseWorker(threading.Thread):
         while not self._stop_flag:
             # Skip processing if paused
             if self._pause_flag:
-                time.sleep(1.0)
+                # Use event.wait() for interruptible sleep during pause
+                self._stop_event.wait(timeout=1.0)
                 continue
 
             # Process any pending operations first
@@ -456,13 +458,14 @@ class DatabaseWorker(threading.Thread):
                 sleep_time = max(
                     0.1, min(next_op_time - time.time(), self.poll_interval)
                 )
-                time.sleep(sleep_time)
+                # Use event.wait() for interruptible sleep
+                self._stop_event.wait(timeout=sleep_time)
 
             except Exception as e:
                 self._handle_error(e)
 
-                # Sleep with exponential backoff during error state
-                time.sleep(self._backoff_time)
+                # Sleep with exponential backoff during error state (interruptible)
+                self._stop_event.wait(timeout=self._backoff_time)
 
         with self._status_lock:
             self._current_state = DBWorkerState.STOPPED
@@ -853,6 +856,9 @@ class DatabaseWorker(threading.Thread):
 
             # Add a more aggressive interrupt flag
             self._immediate_stop = True
+
+        # Signal the stop event to wake up any sleeping thread
+        self._stop_event.set()
 
     def restart(self) -> None:
         """
