@@ -26,7 +26,7 @@ import logging
 import traceback
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional
 
 import networkx as nx
 
@@ -48,6 +48,12 @@ except ImportError:
     go = None  # Define for type checking
 
 _VISUALIZATION_INSTALL_HINT = 'pip install "word_forge[visualization]"'
+
+# Emotional dimension thresholds for color classification
+# These can be adjusted to tune sensitivity of emotional coloring
+VALENCE_HIGH_THRESHOLD: Final[float] = 0.3  # Above this = positive
+VALENCE_LOW_THRESHOLD: Final[float] = -0.3  # Below this = negative
+AROUSAL_HIGH_THRESHOLD: Final[float] = 0.5  # Above this = high arousal
 
 # Import necessary components
 from word_forge.exceptions import GraphVisualizationError
@@ -786,20 +792,27 @@ class GraphVisualizer:
         Returns:
             ColorHex: A hex color string for the edge.
         """
-        # First, try to get color by relationship type
-        color = self._config.get_relationship_color(rel_type)
-        if color and color != self._config.relationship_colors.get("default"):
-            return color
+        # First, try to get color by relationship type if it's a known type
+        if rel_type and rel_type.lower() in self._config.relationship_colors:
+            return self._config.relationship_colors[rel_type.lower()]
+
+        # Check emotional relationship colors
+        if rel_type and rel_type.lower() in self._config.emotional_relationship_colors:
+            return self._config.emotional_relationship_colors[rel_type.lower()]
+
+        # Check affective relationship colors
+        if rel_type and rel_type.lower() in self._config.affective_relationship_colors:
+            return self._config.affective_relationship_colors[rel_type.lower()]
 
         # For emotional dimensions, color by valence if available
         if dimension in ("emotional", "affective"):
             valence = attrs.get("valence")
             if isinstance(valence, (int, float)):
-                if valence > 0.3:
+                if valence > VALENCE_HIGH_THRESHOLD:
                     return self._config.affective_relationship_colors.get(
                         "positive_valence", "#00cc66"
                     )
-                elif valence < -0.3:
+                elif valence < VALENCE_LOW_THRESHOLD:
                     return self._config.affective_relationship_colors.get(
                         "negative_valence", "#cc3300"
                     )
@@ -811,7 +824,7 @@ class GraphVisualizer:
             # Color by arousal if valence not available
             arousal = attrs.get("arousal")
             if isinstance(arousal, (int, float)):
-                if arousal > 0.5:
+                if arousal > AROUSAL_HIGH_THRESHOLD:
                     return self._config.affective_relationship_colors.get(
                         "high_arousal", "#ff9900"
                     )
@@ -829,4 +842,4 @@ class GraphVisualizer:
             "connotative": "#daa520",  # Goldenrod
         }
 
-        return dimension_colors.get(dimension, color or "#aaaaaa")
+        return dimension_colors.get(dimension, "#aaaaaa")

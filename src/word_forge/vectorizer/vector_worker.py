@@ -518,8 +518,9 @@ class VectorWorker(threading.Thread):
                 # Generate embedding - prefer VectorStore's method for consistency
                 if hasattr(self.vector_store, "embed_text"):
                     try:
+                        # Use "definition" template for word processing (documents, not queries)
                         vector = self.vector_store.embed_text(
-                            text, template_key="search", is_query=False
+                            text, template_key="definition", is_query=False
                         )
                     except Exception as embed_err:
                         # Fall back to worker's embedder if VectorStore embedding fails
