@@ -23,9 +23,9 @@ try:
     _rdflib_available = True
 except ImportError:
     _rdflib_available = False
-    Graph = None  # type: ignore[misc,assignment]
-    RdfLiteral = None  # type: ignore[misc,assignment]
-    ResultRow = None  # type: ignore[misc,assignment]
+    Graph = None  # type: ignore[assignment]
+    RdfLiteral = None  # type: ignore[assignment]
+    ResultRow = None  # type: ignore[assignment]
 
 from word_forge.utils.nltk_utils import ensure_nltk_data
 
