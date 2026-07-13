@@ -19,10 +19,10 @@ class TestDatabaseGraphIntegration:
 
     def test_graph_manager_reads_from_database(self, tmp_path):
         """Test that GraphManager can read data from DBManager."""
-        from word_forge.database.database_manager import DBManager
-
         # Import the real GraphManager directly from its module
         import importlib
+
+        from word_forge.database.database_manager import DBManager
 
         graph_module = importlib.import_module("word_forge.graph.graph_manager")
         # Reload to get the real class, not a stub
@@ -73,7 +73,7 @@ class TestEmotionVectorOperations:
 
     def test_emotion_vector_blend_chain(self):
         """Test chaining multiple emotion vector operations."""
-        from word_forge.emotion.emotion_types import EmotionVector, EmotionDimension
+        from word_forge.emotion.emotion_types import EmotionDimension, EmotionVector
 
         # Create two vectors
         happy = EmotionVector(
@@ -119,12 +119,7 @@ class TestResultMonadChaining:
             return Result.success(x + 10)
 
         # Chain operations
-        result = (
-            Result.success(5)
-            .flat_map(validate_positive)
-            .flat_map(double)
-            .flat_map(add_ten)
-        )
+        result = Result.success(5).flat_map(validate_positive).flat_map(double).flat_map(add_ten)
 
         assert result.is_success
         assert result.unwrap() == 20  # (5 * 2) + 10 = 20
@@ -160,14 +155,10 @@ class TestConfigurationPipeline:
         config = QueueConfig()
 
         # Apply high throughput profile
-        high_throughput = config.with_performance_profile(
-            QueuePerformanceProfile.HIGH_THROUGHPUT
-        )
+        high_throughput = config.with_performance_profile(QueuePerformanceProfile.HIGH_THROUGHPUT)
 
         # Apply low latency profile
-        low_latency = config.with_performance_profile(
-            QueuePerformanceProfile.LOW_LATENCY
-        )
+        low_latency = config.with_performance_profile(QueuePerformanceProfile.LOW_LATENCY)
 
         # High throughput should have larger batch size
         assert high_throughput.batch_size > low_latency.batch_size
@@ -192,9 +183,7 @@ class TestEmotionConfigMetrics:
 
         # Simulate many correct HAPPINESS detections
         for _ in range(20):
-            metrics.record_detection(
-                EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS
-            )
+            metrics.record_detection(EmotionCategory.HAPPINESS, EmotionCategory.HAPPINESS)
 
         # Simulate some incorrect SADNESS detections
         for _ in range(5):
@@ -225,9 +214,9 @@ class TestExceptionHierarchy:
     def test_exception_inheritance_chain(self):
         """Test that exception classes maintain proper inheritance."""
         from word_forge.exceptions import (
-            WordForgeError,
             GraphError,
             NodeNotFoundError,
+            WordForgeError,
         )
 
         # Create a node not found error
@@ -261,13 +250,13 @@ class TestRelationshipProcessing:
         """Test that relationship properties are consistent."""
         from word_forge.relationships import (
             RELATIONSHIP_TYPES,
+            get_relationship_color,
             get_relationship_properties,
             get_relationship_weight,
-            get_relationship_color,
             is_bidirectional,
         )
 
-        for rel_type, props in RELATIONSHIP_TYPES.items():
+        for rel_type, _props in RELATIONSHIP_TYPES.items():
             # Get properties using different methods
             full_props = get_relationship_properties(rel_type)
             weight = get_relationship_weight(rel_type)
@@ -310,7 +299,7 @@ class TestEmotionVectorConversion:
 
     def test_emotion_vector_serialization_roundtrip(self):
         """Test that emotion vectors can be serialized and deserialized."""
-        from word_forge.emotion.emotion_types import EmotionVector, EmotionDimension
+        from word_forge.emotion.emotion_types import EmotionDimension, EmotionVector
 
         original = EmotionVector(
             dimensions={
@@ -339,8 +328,8 @@ class TestEmotionalContextIntegration:
         """Test applying emotional context to vector."""
         from word_forge.emotion.emotion_types import (
             EmotionalContext,
-            EmotionVector,
             EmotionDimension,
+            EmotionVector,
         )
 
         # Create vector and context
@@ -383,8 +372,8 @@ class TestProcessingStatsIntegration:
         """Test that processing stats accumulate correctly."""
         pytest.importorskip("nltk", reason="NLTK required for queue_worker")
         from word_forge.queue.queue_worker import (
-            ProcessingStats,
             ProcessingResult,
+            ProcessingStats,
             ProcessingStatus,
         )
 

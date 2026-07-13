@@ -10,10 +10,10 @@ classes that can be imported independently.
 
 import sys
 import time
-from pathlib import Path
-from threading import Lock
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -164,9 +164,7 @@ class ProcessingMetrics:
                 ),
                 "task_type_distribution": dict(self.task_types),
                 "error_type_distribution": dict(self.error_types),
-                "success_rate": round(
-                    self.success_count / max(1, self.processed_count) * 100, 2
-                ),
+                "success_rate": round(self.success_count / max(1, self.processed_count) * 100, 2),
             }
 
 

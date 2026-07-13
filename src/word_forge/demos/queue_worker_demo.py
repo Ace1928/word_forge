@@ -6,6 +6,7 @@ import logging
 import time
 
 from word_forge.database.database_manager import DBManager
+from word_forge.observability import eidosian
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager
 from word_forge.queue.queue_worker import (
@@ -15,6 +16,7 @@ from word_forge.queue.queue_worker import (
 )
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrate WordProcessor functionality with comprehensive examples.
@@ -148,20 +150,20 @@ def main() -> None:
             stats = status["stats"]
 
             # Check for new processed items
-            current_count = stats["processed_count"]
+            raw_count = stats.get("processed_count")
+            current_count = raw_count if isinstance(raw_count, int) else 0
+            raw_rate = stats.get("processing_rate_per_minute")
+            processing_rate = float(raw_rate) if isinstance(raw_rate, (int, float)) else 0.0
             if current_count > previous_count:
                 logger.info(
                     f"Progress: {current_count}/{len(sample_terms)} terms processed "
-                    f"({stats['processing_rate_per_minute']:.1f} terms/min)"
+                    f"({processing_rate:.1f} terms/min)"
                 )
                 previous_count = current_count
                 wait_start = time.time()  # Reset wait timer
 
             # All terms processed or timeout
-            if (
-                current_count >= len(sample_terms)
-                or time.time() - wait_start > max_wait
-            ):
+            if current_count >= len(sample_terms) or time.time() - wait_start > max_wait:
                 break
 
             time.sleep(0.1)
@@ -178,12 +180,8 @@ def main() -> None:
         logger.info(f"Successful: {final_stats['success_count']}")
         logger.info(f"Duplicates: {final_stats['duplicate_count']}")
         logger.info(f"Errors: {final_stats['error_count']}")
-        logger.info(
-            f"Average processing time: {final_stats['avg_processing_time_ms']:.2f}ms"
-        )
-        logger.info(
-            f"Processing rate: {final_stats['processing_rate_per_minute']:.2f} terms/min"
-        )
+        logger.info(f"Average processing time: {final_stats['avg_processing_time_ms']:.2f}ms")
+        logger.info(f"Processing rate: {final_stats['processing_rate_per_minute']:.2f} terms/min")
 
         if final_stats["relationship_counts"]:
             logger.info("\nRelationship Types Discovered:")
@@ -193,7 +191,7 @@ def main() -> None:
         logger.info("\nWordProcessor demonstration completed successfully!")
 
     except Exception as e:
-        logger.error(f"Demonstration failed: {str(e)}", exc_info=True)
+        logger.error(f"Demonstration failed: {e!s}", exc_info=True)
     finally:
         # Clean up resources
         try:

@@ -1,428 +1,252 @@
 # Word Forge
 
 [![CI](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Word Forge is a modular lexical processing and enrichment toolkit that builds a comprehensive semantic network while providing vector search, emotion analysis, and graph visualization capabilities. The project embraces the **Eidosian** design philosophy—typed interfaces, clear separation of concerns, and recursive self‑improvement.
+Word Forge is a local-first multilingual living lexicon. It stores words and
+phrases, definitions, examples, translations, semantic relationships, emotional
+dimensions, graph structure, and optional neural embeddings in one inspectable
+system.
 
-## Features
+In plain language: Word Forge lets you build a dictionary that understands how
+its entries connect. It works offline for core use, keeps your data on your
+computer, and adds model-powered enrichment only when you explicitly enable it.
 
-- **Lexical Data Aggregation**: Combines data from WordNet, thesauruses, and other linguistic resources
-- **Semantic Graph**: Builds a multidimensional knowledge graph using NetworkX with relationship types including synonyms, antonyms, hypernyms, and emotional associations
-- **Emotion Analysis**: Dimensional (valence/arousal) and categorical emotion detection using VADER, TextBlob, and optional LLM integration
-- **Vector Search**: Semantic similarity search powered by sentence transformers and ChromaDB/FAISS backends
-- **CLI Interface**: Full-featured command-line interface for all major operations
-- **Background Workers**: Threaded workers for graph building, vector indexing, and emotion annotation
+## Why Word Forge
 
-## Architecture
+- Multilingual by design: store language-tagged lexemes and bidirectional
+  translations without flattening them into one language.
+- Highly connected: model synonyms, antonyms, hypernyms, hyponyms, morphology,
+  phonetics, phrases, emotion, and custom relationship types.
+- Meaning-aware: keep several independently sourced and reviewed senses for one
+  spelling without flattening them into a single definition.
+- Local and portable: SQLite is the source of truth. A lexicon is a normal file
+  that can be backed up, copied, inspected, and versioned.
+- Durable and conflict-aware: stable record identities, transactional schema
+  upgrades, audit history, and optimistic revisions protect long-lived data.
+- Useful without a GPU: manual editing, algorithmic NLP, graph operations, and
+  search have a lightweight install.
+- Neural when wanted: sentence-transformer search, local GGUF models,
+  Hugging Face models, and Ollama-compatible services are optional.
+- Automation friendly: every approachable CLI command has stable exit codes and
+  JSON output.
+- A real Python library: the `Lexicon` API is small, typed, documented, and
+  independent of the original Eidosian Forge monorepo.
 
-```
-┌────────────────────┐
-│    word_forge      │  CLI entry point
-└─────────┬──────────┘
-          │
-┌─────────▼──────────┐
-│       config       │  Centralized configuration
-└─────────┬──────────┘
-          │
-┌─────────┴─────────────────────────────────────────┐
-│                    Core Modules                    │
-├──────────┬───────────┬──────────┬────────────────┤
-│ database │   graph   │ emotion  │   vectorizer   │
-│(SQLite)  │(NetworkX) │(VADER/TB)│ (Transformers) │
-└──────────┴───────────┴──────────┴────────────────┘
-          │
-┌─────────▼──────────┐
-│   queue/workers    │  Background processing
-└────────────────────┘
-```
+## Five-minute start
 
-## Installation
-
-Word Forge targets **Python 3.8 or newer**.
-
-### Basic Installation
+Word Forge supports Python 3.10 through 3.13.
 
 ```bash
-# Clone and install locally
 git clone https://github.com/Ace1928/word_forge.git
 cd word_forge
-pip install -e .
-
-# Or install directly from Git
-pip install git+https://github.com/Ace1928/word_forge.git
+python -m venv .venv
 ```
 
-### Development Installation
-
-Install with development tools (formatter, linter, tests):
+Activate the environment:
 
 ```bash
-pip install -e .[dev]
+# Linux and macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 ```
 
-### Optional Feature Extras
+Install and create a lexicon:
 
-Install feature bundles based on your needs:
+```bash
+python -m pip install --upgrade pip
+python -m pip install .
+word-forge doctor
+word-forge init
+```
 
-| Extra | Command | Includes |
-|-------|---------|----------|
-| `vector` | `pip install -e .[vector]` | sentence-transformers, ChromaDB, FAISS |
-| `visualization` | `pip install -e .[visualization]` | Pyvis, Plotly |
-| `dev` | `pip install -e .[dev]` | black, ruff, pytest, mypy, pre-commit |
+Add and connect entries:
 
-**Note**: The `word_forge` CLI relies on the `vector` extra for semantic search operations.
+```bash
+word-forge add recursion \
+  --part-of-speech noun \
+  --definition "A process that refers to itself." \
+  --example "Recursion can traverse a tree."
 
-## Quick Start
+word-forge add casa --language es \
+  --definition "Edificio para habitar." \
+  --base-term house
 
-### Python API
+word-forge translate house Haus --from en --to de
+word-forge relate algorithm procedure --kind synonym
+```
+
+Find and inspect data:
+
+```bash
+word-forge show recursion
+word-forge find process
+word-forge find edificio --language es
+word-forge stats
+word-forge stats --json
+```
+
+No model is downloaded by these commands.
+
+Create a consistent snapshot whenever the lexicon becomes valuable:
+
+```bash
+word-forge integrity
+word-forge backup lexicon-backup.sqlite
+```
+
+Open the full local workspace:
+
+```bash
+python -m pip install ".[gui]"
+word-forge gui
+```
+
+The server binds only to loopback and generates a new browser-session secret on
+every launch. The responsive workspace includes structured entry views and a
+coordinated live network explorer; the graph is never the only way to access
+information.
+
+## Python API
 
 ```python
-from word_forge.config import config
-from word_forge.database.database_manager import DBManager
+from word_forge import Lexicon
 
-# Initialize database
-db = DBManager()
-db.create_tables()
+with Lexicon("research.sqlite") as lexicon:
+    lexicon.add(
+        "emergence",
+        definition="Complex behavior arising from simple interactions.",
+        part_of_speech="noun",
+        examples=["Flocking is an example of emergence."],
+    )
+    lexicon.relate("emergence", "complexity", kind="associated_with")
+    lexicon.add_sense(
+        "emergence",
+        "A property present at one scale but not its individual components.",
+        domain="systems science",
+        source="research notes",
+    )
 
-# Add a word entry
-db.insert_or_update_word(
-    term="algorithm",
-    definition="A step-by-step procedure for solving a problem",
-    part_of_speech="noun"
-)
-
-# Create relationships
-db.insert_relationship("algorithm", "procedure", "synonym")
+    entry = lexicon.get("emergence")
+    print(entry.definition)
+    print(entry.as_dict())
 ```
 
-### Command Line Interface
+`Lexicon` accepts an explicit SQLite path. If omitted, Word Forge uses the
+operating system's normal per-user application-data directory.
 
-The package installs a `word_forge` executable:
+## Core and optional installs
+
+The default install is dependency-free and contains the complete SQLite-backed
+lexicon, multilingual records, senses, provenance, revisions, audit history,
+search, bounded network snapshots, backup, restore, and CLI. It imports in a
+fraction of a second and works offline.
+
+Install only the feature groups you need:
 
 ```bash
-# Show version
-word_forge --version
-
-# Start the processing pipeline with seed words
-word_forge start apple banana --minutes 5 --workers 4
-
-# Use custom database, vector, and LLM models (useful for isolating runs)
-word_forge start apple --db-path /tmp/word_forge.sqlite \
-  --vector-model sentence-transformers/all-MiniLM-L6-v2 \
-  --llm-model sshleifer/tiny-gpt2
-
-# Build the semantic graph
-word_forge graph build --timeout 180
-
-# Generate visualization (requires visualization extra)
-word_forge graph visualize --3d --open-browser
-
-# Index vectors
-word_forge vector index --embedder sentence-transformers/all-MiniLM-L6-v2
-
-# Search for similar terms
-word_forge vector search "happy" --top-k 10
-
-# Start a new conversation
-word_forge conversation start --title "My Session"
-
-# List conversations
-word_forge conversation list --limit 5
-
-# Show messages in a conversation
-word_forge conversation show 1 --limit 20
-
-# Annotate emotions
-word_forge emotion annotate --strategy hybrid
-
-# Run full demo pipeline
-word_forge demo full --3d --open-browser
-
-# Setup NLTK data
-word_forge setup-nltk
-
-# Quiet mode (suppress non-error output)
-word_forge --quiet start apple
-
-# Verbose mode (enable debug output)
-word_forge --verbose start apple
+python -m pip install ".[nlp]"            # NLTK, NumPy, validation
+python -m pip install ".[graph]"          # NetworkX and community analysis
+python -m pip install ".[gui]"            # local visual workspace
+python -m pip install ".[emotion]"
+python -m pip install ".[vector]"
+python -m pip install ".[visualization]"
+python -m pip install ".[llm]"
+python -m pip install ".[linguistics,metrics]"
+python -m pip install ".[full]"
 ```
 
-Note: The first run may download NLTK corpora and sentence-transformer models.
-
-### Demo Scripts
+For the local visual workspace:
 
 ```bash
-# Explore configuration
-python -m word_forge.demos.config_demo --validate
-
-# Vector worker demo
-python -m word_forge.demos.vector_worker_demo
-
-# Generate lexical data for a word
-python - <<'PY'
-from word_forge.parser.lexical_functions import create_lexical_dataset
-
-print(create_lexical_dataset("recursion"))
-PY
-
-# Database demo
-python -m word_forge.demos.database_demo
+python -m pip install ".[gui]"
+word-forge gui
 ```
 
-## Project Structure
+The workspace binds to the loopback interface, opens in the default browser,
+and renders the live multilingual network without external JavaScript, fonts,
+or telemetry. `word-forge serve` remains an alias for scripts written against
+the early workspace preview.
 
-```
-word_forge/
-├── src/word_forge/        # Main package
-│   ├── config.py          # Central configuration
-│   ├── forge.py           # CLI entry point
-│   ├── configs/           # Configuration components
-│   ├── database/          # SQLite persistence layer
-│   ├── emotion/           # Emotion analysis system
-│   ├── graph/             # Semantic graph operations
-│   ├── parser/            # Text parsing and lexical extraction
-│   ├── queue/             # Worker queue management
-│   ├── vectorizer/        # Vector embeddings and search
-│   └── demos/             # Example scripts
-├── tests/                 # Test suite (pytest)
-├── docs/                  # Documentation
-├── data/                  # Data directory (created at runtime)
-└── pyproject.toml         # Project configuration
-```
-
-## Development
-
-### Code Style
-
-Word Forge uses **Black** for formatting and **Ruff** for linting:
+Then prepare NLTK's open lexical datasets when you want automatic WordNet and
+sentiment enrichment:
 
 ```bash
-# Format code
-black .
-
-# Lint code
-ruff check .
-
-# Auto-fix lint issues
-ruff check . --fix
+python -m pip install ".[nlp]"
+word-forge setup-nltk
 ```
 
-### Running Tests
+Neural processing is opt-in at runtime:
 
 ```bash
-# Run all tests
-pytest
-
-# Run with verbose output
-pytest -v
-
-# Run specific test file
-pytest tests/test_config.py
-
-# Run with coverage
-pytest --cov=word_forge --cov-report=html
+word-forge start language knowledge --minutes 2 --with-vector
+word-forge start language knowledge --minutes 2 --with-llm
 ```
 
-### Pre-commit Hooks
+These modes may download model files. `word-forge doctor` reports which optional
+features are currently installed.
 
-Install pre-commit hooks to automatically format and lint on commit:
+## Where data goes
 
-```bash
-pip install pre-commit
-pre-commit install
+| Platform | Default home |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/word-forge`, or `~/.local/share/word-forge` |
+| macOS | `~/Library/Application Support/WordForge` |
+| Windows | `%LOCALAPPDATA%\WordForge` |
+
+Set `WORD_FORGE_HOME` to make an installation portable or place it on another
+drive. `WORD_FORGE_DATA_DIR`, `WORD_FORGE_LOG_DIR`, and
+`WORD_FORGE_MODELS_DIR` provide narrower overrides. `WORD_FORGE_DB_PATH`
+selects one exact default SQLite file.
+
+## Architecture at a glance
+
+```text
+CLI / Lexicon API
+       |
+       v
+Validated domain services
+       |
+       +--> SQLite lexicon and multilingual records
+       +--> bounded dependency-free network snapshots
+       +--> optional NetworkX analysis and exports
+       +--> emotion and phrase processing
+       +--> optional vector indexes and model providers
+       |
+       v
+Typed results, JSON, graphs, and portable exports
 ```
 
-## Configuration
-
-Word Forge uses a centralized configuration system with environment variable overrides:
-
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `WORDFORGE_DB_PATH` | Database file path | `data/word_forge.sqlite` |
-| `WORDFORGE_LOG_LEVEL` | Logging level | `INFO` |
-| `WORDFORGE_VECTOR_MODEL` | Embedding model name | `sentence-transformers/all-MiniLM-L6-v2` |
-
-Configuration can also be modified programmatically:
-
-```python
-from word_forge.config import config
-
-# Access configuration
-print(config.database.db_path)
-print(config.vectorizer.model_name)
-
-# Export configuration
-config.export_to_file("config.json")
-```
-
-## NLTK Data
-
-Word Forge uses NLTK for WordNet and other linguistic resources. Data is downloaded automatically on first use, or can be pre-downloaded:
-
-```bash
-word_forge setup-nltk
-```
-
-Required corpora: WordNet, Punkt, stopwords, VADER lexicon.
-
-## Troubleshooting
-
-### Common Issues
-
-#### NLTK Data Not Found
-
-If you encounter errors about missing NLTK corpora:
-
-```bash
-# Download required NLTK data
-word_forge setup-nltk
-
-# Or manually in Python
-import nltk
-nltk.download('wordnet')
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('vader_lexicon')
-```
-
-#### Memory Issues with Large Models
-
-For systems with limited RAM:
-
-1. Use a smaller embedding model:
-   ```bash
-   export WORDFORGE_VECTOR_MODEL="sentence-transformers/all-MiniLM-L6-v2"  # ~80MB
-   ```
-
-2. Reduce batch sizes in configuration:
-   ```python
-   from word_forge.config import config
-   config.vectorizer.batch_size = 16
-   ```
-
-3. Use the low-memory profile:
-   ```bash
-   python -m word_forge.demos.config_demo --profile low_memory
-   ```
-
-#### ChromaDB/FAISS Import Errors
-
-These heavy dependencies are optional. Install them explicitly:
-
-```bash
-pip install -e .[vector]
-```
-
-#### SQLite Database Locked
-
-If you see "database is locked" errors:
-
-1. Ensure only one process writes to the database at a time
-2. Check for zombie processes: `ps aux | grep word_forge`
-3. Use WAL mode (enabled by default) for better concurrency
-
-#### Tests Failing with Import Errors
-
-CI uses a lightweight test configuration. For full tests locally:
-
-```bash
-pip install -e .[dev]
-pytest
-```
-
-### Getting Help
-
-- Check [docs/overview.md](docs/overview.md) for detailed component documentation
-- Review [docs/glossary.md](docs/glossary.md) for term definitions
-- Open an issue on GitHub for bugs or feature requests
-
-## API Quick Reference
-
-### Core Classes
-
-| Class | Module | Description |
-|-------|--------|-------------|
-| `DBManager` | `database.database_manager` | SQLite database operations |
-| `GraphManager` | `graph.graph_manager` | Semantic graph construction |
-| `EmotionManager` | `emotion.emotion_manager` | Emotion analysis |
-| `VectorStore` | `vectorizer.vector_store` | Vector embeddings & search |
-| `QueueManager` | `queue.queue_manager` | Task queue management |
-| `ParserRefiner` | `parser.parser_refiner` | Text parsing pipeline |
-| `ConversationManager` | `conversation.conversation_manager` | Multi-turn conversations |
-
-### Common Operations
-
-```python
-# Database operations
-from word_forge.database.database_manager import DBManager
-db = DBManager()
-db.create_tables()
-db.insert_or_update_word("example", "a representative sample", "noun")
-entry = db.get_word_entry("example")
-
-# Graph operations
-from word_forge.graph.graph_manager import GraphManager
-graph = GraphManager(db_manager=db)
-graph.build_graph()
-graph.visualize(output_path="graph.html")
-
-# Emotion analysis
-from word_forge.emotion.emotion_manager import EmotionManager
-em = EmotionManager(db)
-valence, arousal = em.analyze_text_emotion("I love this!")
-
-# Vector search
-from word_forge.vectorizer.vector_store import VectorStore
-vs = VectorStore(db_manager=db)
-results = vs.search(query_text="happy", k=5)
-```
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `word_forge start [WORDS...]` | Start processing pipeline |
-| `word_forge graph build` | Build semantic graph |
-| `word_forge graph visualize` | Generate visualization |
-| `word_forge vector index` | Index word vectors |
-| `word_forge vector search QUERY` | Search for similar terms |
-| `word_forge conversation start` | Start new conversation |
-| `word_forge conversation list` | List conversations |
-| `word_forge conversation show ID` | Show messages in a conversation |
-| `word_forge emotion annotate` | Run emotion annotation |
-| `word_forge demo full` | Run full demo pipeline |
-| `word_forge setup-nltk` | Download NLTK data |
+Heavy libraries are imported lazily. Optional failures produce installation
+hints rather than making core lexicon operations unusable.
 
 ## Documentation
 
-- [`docs/overview.md`](docs/overview.md) - Developer guide
-- [`docs/glossary.md`](docs/glossary.md) - Term definitions
-- [`docs/templates/`](docs/templates/) - Docstring templates
+- [Getting started](docs/getting-started.md)
+- [Concepts for non-technical readers](docs/concepts.md)
+- [Command-line reference](docs/cli.md)
+- [Python API guide](docs/api.md)
+- [Visual workspace guide](docs/gui.md)
+- [Configuration and data locations](docs/configuration.md)
+- [Architecture and data flow](docs/architecture.md)
+- [Performance and scale](docs/performance.md)
+- [Security and privacy](docs/security.md)
+- [Internal module map](docs/internals.md)
+- [Database evolution and recovery](docs/database-evolution.md)
+- [Contributing guide](CONTRIBUTING.md)
 
-## Contributing
+## Quality and support
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make changes and add tests
-4. Ensure tests pass (`pytest`)
-5. Ensure code is formatted (`black . && ruff check .`)
-6. Commit changes (`git commit -m 'Add amazing feature'`)
-7. Push to branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
+The repository checks supported Python versions on Linux, macOS, and Windows,
+runs unit and integration tests, lints and type-checks stable public modules,
+builds both wheel and source distributions, and smoke-tests the built wheel in a
+clean environment.
 
-All pull requests must pass CI checks before merging.
+For bugs and feature requests, use [GitHub Issues](https://github.com/Ace1928/word_forge/issues).
+Security reports follow [SECURITY.md](SECURITY.md). Development expectations are
+in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [NetworkX](https://networkx.org/) - Graph operations
-- [NLTK](https://www.nltk.org/) - Natural language processing
-- [Sentence Transformers](https://www.sbert.net/) - Semantic embeddings
-- [ChromaDB](https://www.trychroma.com/) - Vector database
+Word Forge is licensed under the [MIT License](LICENSE).

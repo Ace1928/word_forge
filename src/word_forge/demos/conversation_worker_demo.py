@@ -11,7 +11,7 @@ import logging
 import random
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Union
 
 # Word Forge Components
 from word_forge.conversation.conversation_manager import ConversationManager
@@ -21,18 +21,18 @@ from word_forge.conversation.conversation_models import (
     LightweightLanguageModel,
     ReflexiveLanguageModel,
 )
-from word_forge.conversation.conversation_worker import ConversationWorker
+from word_forge.conversation.conversation_worker import ConversationTask, ConversationWorker
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager
 from word_forge.vectorizer.vector_store import VectorStore
 
 # Eidosian Type Alias for clarity and precision
-QueueItem = Union["ConversationTask", str, Dict[str, Any]]
-ConversationTask = Dict[str, Any]
+QueueItem = Union["ConversationTask", str, dict[str, Any]]
 
 # Constants for configuration
 DB_PATH = "word_forge_demo.sqlite"
@@ -107,6 +107,7 @@ def _log_worker_status(worker: ConversationWorker) -> None:
         logger.error(f"Failed to retrieve worker status: {e}", exc_info=True)
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrates the setup and operation of the ConversationWorker.
@@ -117,8 +118,8 @@ def main() -> None:
     worker's status, demonstrates pause/resume functionality, and finally
     stops the worker gracefully.
     """
-    worker: Optional[ConversationWorker] = None
-    db_manager: Optional[DBManager] = None
+    worker: ConversationWorker | None = None
+    db_manager: DBManager | None = None
 
     try:
         # Component Initialization
@@ -160,9 +161,7 @@ def main() -> None:
         # Queue Managers
         queue_manager_for_parser = QueueManager[str]()
         # Use the explicit type expected by ConversationWorker
-        queue_manager_for_worker = QueueManager[
-            ConversationTask | str | Dict[str, Any]
-        ]()
+        queue_manager_for_worker = QueueManager[ConversationTask | str | dict[str, Any]]()
 
         # Parser Refiner
         parser_refiner = ParserRefiner(db_manager, queue_manager_for_parser)
@@ -187,7 +186,7 @@ def main() -> None:
 
         # Task Submission
         logger.info("Submitting sample conversation tasks...")
-        sample_conversations: List[List[Tuple[str, str]]] = [
+        sample_conversations: list[list[tuple[str, str]]] = [
             [
                 ("user", "Tell me about algorithms"),
                 ("user", "How are algorithms used in AI?"),
@@ -213,12 +212,13 @@ def main() -> None:
                     )
                     time.sleep(0.1)
             else:
-                logger.error(f"Failed to start conversation: {result.unwrap_err()}")
+                error_message = result.error.message if result.error else "unknown error"
+                logger.error(f"Failed to start conversation: {error_message}")
 
         # Monitoring
         logger.info("Monitoring worker status...")
         for i in range(MONITORING_ITERATIONS):
-            logger.info(f"Monitoring check {i+1}/{MONITORING_ITERATIONS}...")
+            logger.info(f"Monitoring check {i + 1}/{MONITORING_ITERATIONS}...")
             _log_worker_status(worker)
             time.sleep(MONITORING_INTERVAL)
 

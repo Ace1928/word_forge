@@ -1,0 +1,15 @@
+include CHANGELOG.md
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include SECURITY.md
+include SUPPORT.md
+include package.json
+include package-lock.json
+include tsconfig.json
+include vite.config.ts
+recursive-include completions *
+recursive-include data/samples *
+recursive-include docs *.md
+recursive-include scripts *.py
+recursive-include tests *.json *.py
+recursive-include webui *.css *.html *.ts

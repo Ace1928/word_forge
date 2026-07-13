@@ -9,8 +9,10 @@ from word_forge.config import config  # Import necessary items
 
 # Import serialize_config explicitly
 from word_forge.configs.config_essentials import ConfigValue, serialize_config
+from word_forge.observability import eidosian
 
 
+@eidosian()
 def main() -> None:
     """
     Display current configuration settings.
@@ -87,7 +89,7 @@ def main() -> None:
             config.apply_profile(args.profile)
             print(f"✅ Applied configuration profile: {args.profile}")
         except Exception as e:
-            print(f"❌ Failed to apply profile: {str(e)}")
+            print(f"❌ Failed to apply profile: {e!s}")
             return
 
     # Set a specific value if requested
@@ -101,9 +103,7 @@ def main() -> None:
                 return
 
             if not hasattr(component, attr_name):
-                print(
-                    f"❌ Attribute '{attr_name}' not found in component '{component_name}'"
-                )
+                print(f"❌ Attribute '{attr_name}' not found in component '{component_name}'")
                 return
 
             current_value = getattr(component, attr_name)
@@ -112,6 +112,7 @@ def main() -> None:
             # Need to import Enum for this check
             from enum import Enum
 
+            value: ConfigValue
             if isinstance(current_value, bool):
                 value = value_str.lower() in ("true", "yes", "1", "y")
             elif isinstance(current_value, int):
@@ -119,8 +120,7 @@ def main() -> None:
             elif isinstance(current_value, float):
                 value = float(value_str)
             elif isinstance(current_value, Enum):
-                # Assuming the Enum class is accessible via current_value.__class__
-                value = current_value.__class__(value_str)
+                value = current_value.__class__(value_str).value
             else:
                 value = value_str
 
@@ -128,20 +128,18 @@ def main() -> None:
             config.set_runtime_value(component_name, attr_name, value)
             print(f"✅ Set {component_name}.{attr_name} = {value!r}")
         except Exception as e:
-            print(f"❌ Failed to set value: {str(e)}")
+            print(f"❌ Failed to set value: {e!s}")
             return
 
     # Validate if requested
     if args.validate:
         validation_results = config.validate_all()
-        invalid_components = {
-            comp: errors for comp, errors in validation_results.items() if errors
-        }
+        invalid_components = {comp: errors for comp, errors in validation_results.items() if errors}
 
         if invalid_components:
             print("❌ Configuration validation failed:")
-            for component, errors in invalid_components.items():
-                print(f"  • {component}: {'; '.join(errors)}")
+            for invalid_component, errors in invalid_components.items():
+                print(f"  • {invalid_component}: {'; '.join(errors)}")
         else:
             print("✅ Configuration validation passed for all components")
 
@@ -151,7 +149,7 @@ def main() -> None:
             config.export_to_file(args.export)
             print(f"✅ Configuration exported to {args.export}")
         except Exception as e:
-            print(f"❌ Export failed: {str(e)}")
+            print(f"❌ Export failed: {e!s}")
             return
 
     # Show component status if requested
@@ -166,14 +164,10 @@ def main() -> None:
             errors = status["error_count"]
 
             status_icon = (
-                "✅"
-                if validation == "valid"
-                else "⚠️" if validation.startswith("not") else "❌"
+                "✅" if validation == "valid" else "⚠️" if validation.startswith("not") else "❌"
             )
 
-            print(
-                f"{status_icon} {component_name}: Accessed={accessed}, Errors={errors}"
-            )
+            print(f"{status_icon} {component_name}: Accessed={accessed}, Errors={errors}")
 
             # Show dependencies if any
             if status["dependencies"]:
@@ -198,9 +192,7 @@ def main() -> None:
                     continue
 
                 try:
-                    value, source = config.get_value_with_source(
-                        component_name, attr_name
-                    )
+                    value, source = config.get_value_with_source(component_name, attr_name)
                     source_type = source.type.name
                     location = f" ({source.location})" if source.location else ""
 
@@ -225,9 +217,7 @@ def main() -> None:
             print("=" * (len(args.component) + 14))
 
             # Serialize and print component config
-            component_dict: ConfigValue = serialize_config(
-                component
-            )  # Use ConfigValue type hint
+            component_dict: ConfigValue = serialize_config(component)  # Use ConfigValue type hint
             # Ensure component_dict is a dictionary before passing to json.dumps
             if isinstance(component_dict, dict):
                 print(json.dumps(component_dict, indent=2))
@@ -263,8 +253,8 @@ def main() -> None:
             f"Accessed components: {', '.join(sorted(config.get_accessed_components())) or 'None'}"
         )
         print("\nAvailable Components:")
-        for component in sorted(config.get_available_components()):
-            print(f"  • {component}")
+        for available_component in sorted(config.get_available_components()):
+            print(f"  • {available_component}")
 
         print("\nFor detailed information, use --component COMPONENT")
         print("For validation, use --validate")

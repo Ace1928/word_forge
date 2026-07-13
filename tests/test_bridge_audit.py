@@ -1,0 +1,412 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+from word_forge.bridge.audit import build_bridge_audit, run_bridge_audit
+from word_forge.database.database_manager import DBManager
+from word_forge.linguistics.morphology import MorphologyManager
+
+
+def _create_file_library(
+    repo_root: Path,
+    records: list[dict[str, object]],
+) -> None:
+    """Create the minimal documented File Forge SQLite interchange contract."""
+
+    library_path = repo_root / "data" / "file_forge" / "library.sqlite"
+    library_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(library_path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE file_records (
+                file_path TEXT PRIMARY KEY,
+                text_preview TEXT
+            );
+            CREATE TABLE file_links (
+                file_path TEXT NOT NULL,
+                forge_name TEXT NOT NULL,
+                relation_type TEXT NOT NULL,
+                detail_json TEXT
+            );
+            CREATE TABLE file_relationships (
+                src_path TEXT NOT NULL,
+                dst_path TEXT NOT NULL,
+                rel_type TEXT NOT NULL
+            );
+            """
+        )
+        for record in records:
+            file_path = str(record["file_path"])
+            connection.execute(
+                "INSERT INTO file_records (file_path, text_preview) VALUES (?, ?)",
+                (file_path, str(record.get("text_preview") or "")),
+            )
+            for link in record.get("links", []):
+                assert isinstance(link, dict)
+                connection.execute(
+                    """
+                    INSERT INTO file_links
+                        (file_path, forge_name, relation_type, detail_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        file_path,
+                        str(link.get("forge") or "file_forge"),
+                        str(link.get("relation") or "manages"),
+                        json.dumps(link.get("detail") or {}, sort_keys=True),
+                    ),
+                )
+
+
+def test_build_bridge_audit_counts_word_knowledge_and_code_matches(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("hello", "A greeting", "noun", ["hello there"])
+    db.insert_or_update_lexeme("bonjour", "fr", base_term="hello", gloss="hello", source="test")
+    morph = MorphologyManager(db)
+    morph.set_word_morphemes(
+        db.get_word_id("hello"), [morph.upsert_morpheme("hel"), morph.upsert_morpheme("lo")]
+    )
+    lexeme_id = db.get_lexeme_id("bonjour", "fr")
+    db.add_translation(lexeme_id, "en", "hello", source="test")
+
+    kb_path = repo_root / "data" / "kb.json"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "n1": {
+                        "id": "n1",
+                        "content": "hello systems integration",
+                        "metadata": {"tags": ["hello", "greeting"]},
+                        "links": [],
+                    }
+                },
+                "concept_map": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    archive_file = repo_root / "archive_forge" / "hello_archive.txt"
+    archive_file.parent.mkdir(parents=True, exist_ok=True)
+    archive_file.write_text("hello archive", encoding="utf-8")
+    _create_file_library(
+        repo_root,
+        [{"file_path": archive_file, "text_preview": "hello archive"}],
+    )
+
+    prov_path = repo_root / "data" / "code_forge" / "run1" / "provenance_links.json"
+    prov_path.parent.mkdir(parents=True, exist_ok=True)
+    prov_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-03-28T00:00:00Z",
+                "stage": "hello_stage",
+                "root_path": "/tmp/hello_repo",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    assert report["word_metrics"]["base_aligned_count"] == 1
+    assert report["bridge_counts"]["word"] == 1
+    assert report["bridge_counts"]["knowledge"] == 1
+    assert report["bridge_counts"]["code"] == 1
+    assert report["bridge_counts"]["file"] == 1
+    assert report["bridge_counts"]["morpheme"] == 1
+    assert report["bridge_quality"]["morpheme_supported_ratio"] == 1.0
+    assert report["bridge_counts"]["fully_bridged"] == 1
+    assert report["bridge_counts"]["partially_bridged"] == 1
+    assert report["bridge_counts"]["any_bridged"] == 1
+    assert report["bridge_quality"]["candidate_term_count"] == 1
+    assert report["bridge_quality"]["fully_bridged_ratio"] == 1.0
+
+
+def test_run_bridge_audit_writes_runtime_and_latest_report(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("atlas", "A support system", "noun", ["atlas route"])
+    db.insert_or_update_lexeme("atlas", "en", base_term="atlas", source="test")
+    (repo_root / "data").mkdir(parents=True, exist_ok=True)
+    (repo_root / "data" / "kb.json").write_text(
+        json.dumps({"nodes": {}, "concept_map": {}}), encoding="utf-8"
+    )
+
+    result = run_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    assert result["status"]["status"] == "completed"
+    assert (repo_root / "data" / "runtime" / "word_forge_bridge_audit_status.json").exists()
+    assert (repo_root / "data" / "runtime" / "word_forge_bridge_audit_history.jsonl").exists()
+    assert Path(result["artifacts"]["latest_json"]).exists()
+    assert Path(result["artifacts"]["latest_markdown"]).exists()
+
+
+def test_build_bridge_audit_uses_fileforge_semantic_tokens_and_code_library(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("pipeline", "A connected flow", "noun", ["pipeline route"])
+    db.insert_or_update_lexeme("pipeline", "en", base_term="pipeline", source="test")
+
+    kb_path = repo_root / "data" / "kb.json"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(json.dumps({"nodes": {}, "concept_map": {}}), encoding="utf-8")
+
+    _create_file_library(
+        repo_root,
+        [
+            {
+                "file_path": repo_root / "notes.txt",
+                "text_preview": "pipeline orchestration notes",
+                "links": [
+                    {
+                        "forge": "knowledge_forge",
+                        "relation": "documents",
+                        "detail": {"topic": "pipeline"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    code_db_path = repo_root / "data" / "code_forge" / "library.sqlite"
+    code_db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(code_db_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE code_units (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                qualified_name TEXT,
+                name TEXT,
+                language TEXT,
+                unit_type TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE file_records (
+                file_path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                analysis_version INTEGER,
+                updated_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO code_units (id, file_path, qualified_name, name, language, unit_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "u1",
+                str(repo_root / "pipeline_runner.py"),
+                "pipeline.runner.main",
+                "main",
+                "python",
+                "function",
+                "2026-03-28T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO file_records (file_path, content_hash, analysis_version, updated_at) VALUES (?, ?, ?, ?)",
+            (str(repo_root / "pipeline_runner.py"), "abc", 1, "2026-03-28T00:00:00Z"),
+        )
+
+    report = build_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    assert report["bridge_counts"]["code"] == 1
+    assert report["bridge_counts"]["file"] == 1
+    assert report["code_metrics"]["code_library_unit_count"] == 1
+    assert report["file_metrics"]["link_count"] == 1
+
+
+def test_build_bridge_audit_reports_recent_morpheme_decompositions(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("integration", "A joining together", "noun", ["system integration"])
+    db.insert_or_update_lexeme(
+        "integracion", "es", base_term="integration", gloss="integration", source="test"
+    )
+    lexeme_id = db.get_lexeme_id("integracion", "es")
+    morph = MorphologyManager(db)
+    morph_ids = [morph.upsert_morpheme("integr"), morph.upsert_morpheme("acion")]
+    morph.set_lexeme_morphemes(lexeme_id, morph_ids)
+    (repo_root / "data").mkdir(parents=True, exist_ok=True)
+    (repo_root / "data" / "kb.json").write_text(
+        json.dumps({"nodes": {}, "concept_map": {}}), encoding="utf-8"
+    )
+
+    report = build_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    assert report["morpheme_metrics"]["morpheme_count"] >= 2
+    assert report["morpheme_metrics"]["decomposed_lexeme_count"] == 1
+    assert report["morpheme_metrics"]["recent_decompositions"][0]["term"] == "integration"
+    assert report["top_bridged_terms"][0]["morphemes"] == ["integr", "acion"]
+
+
+def test_build_bridge_audit_uses_code_fts_term_hits(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("proof", "Evidence", "noun", ["proof trail"])
+    db.insert_or_update_lexeme("proof", "en", base_term="proof", source="test")
+    (repo_root / "data").mkdir(parents=True, exist_ok=True)
+    (repo_root / "data" / "kb.json").write_text(
+        json.dumps({"nodes": {}, "concept_map": {}}), encoding="utf-8"
+    )
+
+    code_db = repo_root / "data" / "code_forge" / "library.sqlite"
+    code_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(code_db)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE code_units (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                qualified_name TEXT,
+                name TEXT,
+                content_hash TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE code_text (
+                content_hash TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE code_units_fts USING fts5(unit_id UNINDEXED, text);
+            """
+        )
+        conn.execute(
+            "INSERT INTO code_text (content_hash, content) VALUES (?, ?)",
+            ("h1", "This module builds proof bundles and proof validation summaries."),
+        )
+        conn.execute(
+            "INSERT INTO code_units (id, file_path, qualified_name, name, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "u1",
+                "reports/proof_bundle.py",
+                "reports.proof_bundle.build",
+                "build",
+                "h1",
+                "2026-03-29T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO code_units_fts (unit_id, text) VALUES (?, ?)",
+            ("u1", "reports proof bundle build proof validation summaries"),
+        )
+
+    report = build_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    assert report["bridge_counts"]["code"] == 1
+    assert report["code_metrics"]["term_hit_count"] == 1
+    assert (
+        report["top_bridged_terms"][0]["code_examples"][0]["file_path"] == "reports/proof_bundle.py"
+    )
+
+
+def test_build_bridge_audit_filters_recent_terms_to_multi_substrate_anchors(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    db_path = repo_root / "word_forge" / "data" / "word_forge.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = DBManager(db_path=db_path)
+    db.insert_or_update_word("archive", "Archive system", "noun", ["archive plan"])
+    db.insert_or_update_word("agent", "Autonomous agent", "noun", ["agent loop"])
+    db.insert_or_update_word("ability", "A generic capability", "noun", ["ability overview"])
+    db.insert_or_update_lexeme("archivo", "es", base_term="archive", gloss="archive", source="test")
+
+    kb_path = repo_root / "data" / "kb.json"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "n1": {
+                        "id": "n1",
+                        "content": "agent orchestration for archive workflows",
+                        "metadata": {"tags": ["archive", "agent", "ability"]},
+                        "links": [],
+                    }
+                },
+                "concept_map": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    files_root = repo_root / "archive_forge"
+    files_root.mkdir(parents=True, exist_ok=True)
+    (files_root / "agent_notes.txt").write_text("agent workflows", encoding="utf-8")
+    (files_root / "ability_notes.txt").write_text("ability overview", encoding="utf-8")
+    _create_file_library(
+        repo_root,
+        [
+            {
+                "file_path": files_root / "agent_notes.txt",
+                "text_preview": "agent workflows",
+            },
+            {
+                "file_path": files_root / "ability_notes.txt",
+                "text_preview": "ability overview",
+            },
+        ],
+    )
+
+    code_db = repo_root / "data" / "code_forge" / "library.sqlite"
+    code_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(code_db)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE code_units (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                qualified_name TEXT,
+                name TEXT,
+                content_hash TEXT,
+                created_at TEXT
+            );
+            CREATE TABLE code_text (
+                content_hash TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE code_units_fts USING fts5(unit_id UNINDEXED, text);
+            """
+        )
+        conn.execute(
+            "INSERT INTO code_text (content_hash, content) VALUES (?, ?)",
+            ("h1", "The agent coordinates archive lifecycle tasks."),
+        )
+        conn.execute(
+            "INSERT INTO code_units (id, file_path, qualified_name, name, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "u1",
+                "src/agent_runner.py",
+                "runtime.agent.loop",
+                "agent_loop",
+                "h1",
+                "2026-03-29T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO code_units_fts (unit_id, text) VALUES (?, ?)",
+            ("u1", "agent coordinates archive lifecycle tasks"),
+        )
+
+    report = build_bridge_audit(repo_root=repo_root, db_path=db_path)
+
+    terms = {row["term"] for row in report["top_bridged_terms"]}
+    assert "archive" in terms
+    assert "agent" in terms
+    assert "ability" not in terms
+    assert report["candidate_count"] == 2

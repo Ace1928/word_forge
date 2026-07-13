@@ -18,8 +18,7 @@ Error Code Format:
     - GN: General errors (WF-GN-xxx)
 """
 
-from typing import ClassVar, Optional
-
+from typing import ClassVar
 
 # =============================================================================
 # Error Code Registry
@@ -99,7 +98,7 @@ class WordForgeError(Exception):
 
     error_code: ClassVar[str] = ErrorCode.GENERAL_ERROR
 
-    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
         """Initialize with detailed error message and optional cause.
 
         Args:
@@ -115,7 +114,7 @@ class WordForgeError(Exception):
         """Provide detailed error message including cause if available."""
         error_msg = f"[{self.error_code}] {self.message}"
         if self.cause:
-            error_msg += f" | Cause: {str(self.cause)}"
+            error_msg += f" | Cause: {self.cause!s}"
         return error_msg
 
 

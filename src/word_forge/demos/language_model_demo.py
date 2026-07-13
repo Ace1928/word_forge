@@ -2,9 +2,11 @@
 Demonstration of the language model state and generation.
 """
 
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
 
 
+@eidosian()
 def main():
     # Example usage
     model_state = ModelState()

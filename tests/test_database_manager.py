@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
+
 from word_forge.database.database_manager import DBManager, TermNotFoundError
 
 

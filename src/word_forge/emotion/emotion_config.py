@@ -66,19 +66,19 @@ from math import isclose
 from typing import (
     Any,
     ClassVar,
-    Dict,
     Final,
-    List,
     Literal,
     NamedTuple,
     Protocol,
     TypedDict,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
 from word_forge.configs.config_essentials import EmotionRange, EnvMapping
+from word_forge.observability import eidosian
 
 # Legacy type definition for backward compatibility
 EmotionCategoryLiteral = Literal[
@@ -149,6 +149,7 @@ class EmotionCategory(Enum):
 EmotionCategoryType = Union[EmotionCategory, EmotionCategoryLiteral]
 
 
+@eidosian()
 def normalize_emotion_category(category: EmotionCategoryType) -> EmotionCategory:
     """
     Convert any emotion category representation to an EmotionCategory enum.
@@ -217,13 +218,13 @@ class SQLTemplateProtocol(Protocol):
 class EmotionKeywordsDict(TypedDict):
     """Type definition for the emotion keywords dictionary."""
 
-    happiness: List[str]
-    sadness: List[str]
-    anger: List[str]
-    fear: List[str]
-    surprise: List[str]
-    disgust: List[str]
-    neutral: List[str]
+    happiness: list[str]
+    sadness: list[str]
+    anger: list[str]
+    fear: list[str]
+    surprise: list[str]
+    disgust: list[str]
+    neutral: list[str]
 
 
 # Define a TypedDict for VADER sentiment scores
@@ -242,9 +243,7 @@ class VaderSentimentScores(TypedDict):
 # Exported at module level for backward compatibility
 
 #: SQL schema for word emotion table
-SQL_CREATE_WORD_EMOTION_TABLE: Final[
-    str
-] = """
+SQL_CREATE_WORD_EMOTION_TABLE: Final[str] = """
     CREATE TABLE IF NOT EXISTS word_emotion (
         word_id INTEGER PRIMARY KEY,
         valence REAL NOT NULL,
@@ -255,9 +254,7 @@ SQL_CREATE_WORD_EMOTION_TABLE: Final[
 """
 
 #: SQL schema for message emotion table
-SQL_CREATE_MESSAGE_EMOTION_TABLE: Final[
-    str
-] = """
+SQL_CREATE_MESSAGE_EMOTION_TABLE: Final[str] = """
     CREATE TABLE IF NOT EXISTS message_emotion (
         message_id INTEGER PRIMARY KEY,
         label TEXT NOT NULL,
@@ -267,36 +264,28 @@ SQL_CREATE_MESSAGE_EMOTION_TABLE: Final[
 """
 
 #: SQL query for inserting word emotion data
-SQL_INSERT_WORD_EMOTION: Final[
-    str
-] = """
+SQL_INSERT_WORD_EMOTION: Final[str] = """
     INSERT OR REPLACE INTO word_emotion
     (word_id, valence, arousal, timestamp)
     VALUES (?, ?, ?, ?)
 """
 
 #: SQL query for retrieving word emotion data
-SQL_GET_WORD_EMOTION: Final[
-    str
-] = """
+SQL_GET_WORD_EMOTION: Final[str] = """
     SELECT word_id, valence, arousal, timestamp
     FROM word_emotion
     WHERE word_id = ?
 """
 
 #: SQL query for inserting message emotion data
-SQL_INSERT_MESSAGE_EMOTION: Final[
-    str
-] = """
+SQL_INSERT_MESSAGE_EMOTION: Final[str] = """
     INSERT OR REPLACE INTO message_emotion
     (message_id, label, confidence, timestamp)
     VALUES (?, ?, ?, ?)
 """
 
 #: SQL query for retrieving message emotion data
-SQL_GET_MESSAGE_EMOTION: Final[
-    str
-] = """
+SQL_GET_MESSAGE_EMOTION: Final[str] = """
     SELECT message_id, label, confidence, timestamp
     FROM message_emotion
     WHERE message_id = ?
@@ -335,6 +324,7 @@ class EmotionSQLTemplates:
 
     dialect: SQLDialect = SQLDialect.SQLITE
 
+    @eidosian()
     def get_template(self, operation: str) -> str:
         """
         Get SQL template for a specific operation with dialect adaptations.
@@ -391,9 +381,7 @@ class EmotionSQLTemplates:
             return template.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
         elif self.dialect == SQLDialect.MYSQL:
             # Convert SQLite syntax to MySQL
-            return template.replace(
-                "INTEGER PRIMARY KEY", "INT AUTO_INCREMENT PRIMARY KEY"
-            )
+            return template.replace("INTEGER PRIMARY KEY", "INT AUTO_INCREMENT PRIMARY KEY")
         return template
 
 
@@ -415,9 +403,10 @@ class EmotionKeywordRegistry:
         _sources: List of data sources that have been loaded
     """
 
-    _keywords: Dict[EmotionCategory, List[str]] = field(default_factory=dict)
-    _sources: List[str] = field(default_factory=list)
+    _keywords: dict[EmotionCategory, list[str]] = field(default_factory=dict)
+    _sources: list[str] = field(default_factory=list)
 
+    @eidosian()
     def load_from_json(self, path: str) -> None:
         """
         Load emotion keywords from a JSON file.
@@ -438,11 +427,12 @@ class EmotionKeywordRegistry:
         """
         import json
 
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
             self._update_from_dict(data)
             self._sources.append(path)
 
+    @eidosian()
     def load_from_database(self, connection: Any, query: str) -> None:
         """
         Load emotion keywords from a database.
@@ -457,7 +447,7 @@ class EmotionKeywordRegistry:
         cursor = connection.cursor()
         cursor.execute(query)
 
-        emotion_keywords: Dict[str, List[str]] = {}
+        emotion_keywords: dict[str, list[str]] = {}
         for emotion_label, keyword in cursor.fetchall():
             if emotion_label not in emotion_keywords:
                 emotion_keywords[emotion_label] = []
@@ -467,12 +457,13 @@ class EmotionKeywordRegistry:
         self._sources.append(f"database:{query}")
 
     @overload
-    def get_keywords(self, emotion: EmotionCategory) -> List[str]: ...
+    def get_keywords(self, emotion: EmotionCategory) -> list[str]: ...
 
     @overload
-    def get_keywords(self, emotion: EmotionCategoryLiteral) -> List[str]: ...
+    def get_keywords(self, emotion: EmotionCategoryLiteral) -> list[str]: ...
 
-    def get_keywords(self, emotion: EmotionCategoryType) -> List[str]:
+    @eidosian()
+    def get_keywords(self, emotion: EmotionCategoryType) -> list[str]:
         """
         Get keywords for a specific emotion category.
 
@@ -494,18 +485,13 @@ class EmotionKeywordRegistry:
         return self._keywords.get(category, [])
 
     @overload
-    def register_keywords(
-        self, emotion: EmotionCategory, keywords: List[str]
-    ) -> None: ...
+    def register_keywords(self, emotion: EmotionCategory, keywords: list[str]) -> None: ...
 
     @overload
-    def register_keywords(
-        self, emotion: EmotionCategoryLiteral, keywords: List[str]
-    ) -> None: ...
+    def register_keywords(self, emotion: EmotionCategoryLiteral, keywords: list[str]) -> None: ...
 
-    def register_keywords(
-        self, emotion: EmotionCategoryType, keywords: List[str]
-    ) -> None:
+    @eidosian()
+    def register_keywords(self, emotion: EmotionCategoryType, keywords: list[str]) -> None:
         """
         Register new keywords for an emotion category.
 
@@ -526,7 +512,7 @@ class EmotionKeywordRegistry:
         else:
             self._keywords[category] = keywords.copy()
 
-    def _update_from_dict(self, data: Dict[str, List[str]]) -> None:
+    def _update_from_dict(self, data: dict[str, list[str]]) -> None:
         """
         Update registry from a dictionary mapping.
 
@@ -540,12 +526,14 @@ class EmotionKeywordRegistry:
             except ValueError:
                 continue  # Skip unknown emotion categories
 
+    @eidosian()
     def clear(self) -> None:
         """Clear all registered keywords and sources."""
         self._keywords.clear()
         self._sources.clear()
 
-    def get_sources(self) -> List[str]:
+    @eidosian()
+    def get_sources(self) -> list[str]:
         """Get list of loaded data sources."""
         return self._sources.copy()
 
@@ -570,29 +558,26 @@ class EmotionDetectionMetrics:
     """
 
     total_detections: int = 0
-    true_positives: Dict[EmotionCategory, int] = field(
+    true_positives: dict[EmotionCategory, int] = field(
         default_factory=lambda: {e: 0 for e in EmotionCategory}
     )
-    false_positives: Dict[EmotionCategory, int] = field(
+    false_positives: dict[EmotionCategory, int] = field(
         default_factory=lambda: {e: 0 for e in EmotionCategory}
     )
-    false_negatives: Dict[EmotionCategory, int] = field(
+    false_negatives: dict[EmotionCategory, int] = field(
         default_factory=lambda: {e: 0 for e in EmotionCategory}
     )
 
     @overload
-    def record_detection(
-        self, predicted: EmotionCategory, actual: EmotionCategory
-    ) -> None: ...
+    def record_detection(self, predicted: EmotionCategory, actual: EmotionCategory) -> None: ...
 
     @overload
     def record_detection(
         self, predicted: EmotionCategoryLiteral, actual: EmotionCategoryLiteral
     ) -> None: ...
 
-    def record_detection(
-        self, predicted: EmotionCategoryType, actual: EmotionCategoryType
-    ) -> None:
+    @eidosian()
+    def record_detection(self, predicted: EmotionCategoryType, actual: EmotionCategoryType) -> None:
         """
         Record a detection result for optimization metrics.
 
@@ -616,17 +601,12 @@ class EmotionDetectionMetrics:
 
         self.total_detections += 1
         if pred_category == actual_category:
-            self.true_positives[pred_category] = (
-                self.true_positives.get(pred_category, 0) + 1
-            )
+            self.true_positives[pred_category] = self.true_positives.get(pred_category, 0) + 1
         else:
-            self.false_positives[pred_category] = (
-                self.false_positives.get(pred_category, 0) + 1
-            )
-            self.false_negatives[actual_category] = (
-                self.false_negatives.get(actual_category, 0) + 1
-            )
+            self.false_positives[pred_category] = self.false_positives.get(pred_category, 0) + 1
+            self.false_negatives[actual_category] = self.false_negatives.get(actual_category, 0) + 1
 
+    @eidosian()
     def get_precision(self, category: EmotionCategoryType) -> float:
         """
         Calculate precision for a specific emotion category.
@@ -651,6 +631,7 @@ class EmotionDetectionMetrics:
         fp = self.false_positives.get(cat, 0)
         return tp / (tp + fp) if (tp + fp) > 0 else 0.0
 
+    @eidosian()
     def get_recall(self, category: EmotionCategoryType) -> float:
         """
         Calculate recall for a specific emotion category.
@@ -668,6 +649,7 @@ class EmotionDetectionMetrics:
         fn = self.false_negatives.get(cat, 0)
         return tp / (tp + fn) if (tp + fn) > 0 else 0.0
 
+    @eidosian()
     def get_f1_score(self, category: EmotionCategoryType) -> float:
         """
         Calculate F1 score for a specific emotion category.
@@ -682,13 +664,10 @@ class EmotionDetectionMetrics:
         """
         precision = self.get_precision(category)
         recall = self.get_recall(category)
-        return (
-            2 * (precision * recall) / (precision + recall)
-            if (precision + recall) > 0
-            else 0.0
-        )
+        return 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
-    def optimize_weights(self, config: "EmotionConfig") -> Dict[EmotionCategory, float]:
+    @eidosian()
+    def optimize_weights(self, config: "EmotionConfig") -> dict[EmotionCategory, float]:
         """
         Recursively optimize category weights based on detection performance.
 
@@ -708,7 +687,7 @@ class EmotionDetectionMetrics:
             >>> optimized_weights = metrics.optimize_weights(config)
             >>> config.per_category_weights.update(optimized_weights)
         """
-        new_weights: Dict[EmotionCategory, float] = {}
+        new_weights: dict[EmotionCategory, float] = {}
 
         # If we don't have enough data, return current weights
         if self.total_detections < 10:
@@ -732,6 +711,7 @@ class EmotionDetectionMetrics:
 
         return new_weights
 
+    @eidosian()
     def reset(self) -> None:
         """Reset all metrics to zero."""
         self.total_detections = 0
@@ -810,7 +790,7 @@ class EmotionConfig:
     # ==========================================
 
     #: SQL templates for emotion database operations
-    sql_templates: Dict[str, str] = field(
+    sql_templates: dict[str, str] = field(
         default_factory=lambda: {
             "create_word_emotion_table": SQL_CREATE_WORD_EMOTION_TABLE,
             "create_message_emotion_table": SQL_CREATE_MESSAGE_EMOTION_TABLE,
@@ -827,41 +807,44 @@ class EmotionConfig:
 
     #: Dictionary mapping emotion categories to keywords
     emotion_keywords: EmotionKeywordsDict = field(
-        default_factory=lambda: {
-            "happiness": ["happy", "joy", "delight", "pleased", "glad", "excited"],
-            "sadness": [
-                "sad",
-                "unhappy",
-                "depressed",
-                "down",
-                "miserable",
-                "gloomy",
-            ],
-            "anger": ["angry", "furious", "enraged", "mad", "irritated", "annoyed"],
-            "fear": [
-                "afraid",
-                "scared",
-                "frightened",
-                "terrified",
-                "anxious",
-                "worried",
-            ],
-            "surprise": [
-                "surprised",
-                "astonished",
-                "amazed",
-                "shocked",
-                "startled",
-            ],
-            "disgust": [
-                "disgusted",
-                "revolted",
-                "repulsed",
-                "sickened",
-                "appalled",
-            ],
-            "neutral": ["okay", "fine", "neutral", "indifferent", "average"],
-        }
+        default_factory=lambda: cast(
+            EmotionKeywordsDict,
+            {
+                "happiness": ["happy", "joy", "delight", "pleased", "glad", "excited"],
+                "sadness": [
+                    "sad",
+                    "unhappy",
+                    "depressed",
+                    "down",
+                    "miserable",
+                    "gloomy",
+                ],
+                "anger": ["angry", "furious", "enraged", "mad", "irritated", "annoyed"],
+                "fear": [
+                    "afraid",
+                    "scared",
+                    "frightened",
+                    "terrified",
+                    "anxious",
+                    "worried",
+                ],
+                "surprise": [
+                    "surprised",
+                    "astonished",
+                    "amazed",
+                    "shocked",
+                    "startled",
+                ],
+                "disgust": [
+                    "disgusted",
+                    "revolted",
+                    "repulsed",
+                    "sickened",
+                    "appalled",
+                ],
+                "neutral": ["okay", "fine", "neutral", "indifferent", "average"],
+            },
+        )
     )
 
     #: Minimum confidence value when no keywords are found
@@ -875,15 +858,13 @@ class EmotionConfig:
     # ==========================================
 
     #: Registry for dynamic emotion keyword management
-    keyword_registry: EmotionKeywordRegistry = field(
-        default_factory=EmotionKeywordRegistry
-    )
+    keyword_registry: EmotionKeywordRegistry = field(default_factory=EmotionKeywordRegistry)
 
     #: SQL dialect to use for database operations
     sql_dialect: SQLDialect = SQLDialect.SQLITE
 
     #: Category-specific weights for classification
-    per_category_weights: Dict[EmotionCategory, float] = field(default_factory=dict)
+    per_category_weights: dict[EmotionCategory, float] = field(default_factory=dict)
 
     #: Whether to cache emotion analysis results
     enable_caching: bool = True
@@ -914,6 +895,7 @@ class EmotionConfig:
     # Validation Methods
     # ==========================================
 
+    @eidosian()
     def is_valid_valence(self, value: float) -> bool:
         """
         Check if a valence value is within the configured range.
@@ -937,6 +919,7 @@ class EmotionConfig:
         min_val, max_val = self.valence_range
         return min_val <= value <= max_val
 
+    @eidosian()
     def validate_valence(self, value: float) -> EmotionValidationResult:
         """
         Validate a valence value with detailed contextual information.
@@ -968,18 +951,15 @@ class EmotionConfig:
         is_valid = min_val <= value <= max_val
 
         if is_valid:
-            message = (
-                f"Valence value {value} is within valid range ({min_val}, {max_val})"
-            )
+            message = f"Valence value {value} is within valid range ({min_val}, {max_val})"
         else:
-            message = (
-                f"Valence value {value} is outside valid range ({min_val}, {max_val})"
-            )
+            message = f"Valence value {value} is outside valid range ({min_val}, {max_val})"
 
         return EmotionValidationResult(
             is_valid=is_valid, message=message, value=value, range=self.valence_range
         )
 
+    @eidosian()
     def is_valid_arousal(self, value: float) -> bool:
         """
         Check if an arousal value is within the configured range.
@@ -1003,6 +983,7 @@ class EmotionConfig:
         min_val, max_val = self.arousal_range
         return min_val <= value <= max_val
 
+    @eidosian()
     def validate_arousal(self, value: float) -> EmotionValidationResult:
         """
         Validate an arousal value with detailed contextual information.
@@ -1034,18 +1015,15 @@ class EmotionConfig:
         is_valid = min_val <= value <= max_val
 
         if is_valid:
-            message = (
-                f"Arousal value {value} is within valid range ({min_val}, {max_val})"
-            )
+            message = f"Arousal value {value} is within valid range ({min_val}, {max_val})"
         else:
-            message = (
-                f"Arousal value {value} is outside valid range ({min_val}, {max_val})"
-            )
+            message = f"Arousal value {value} is outside valid range ({min_val}, {max_val})"
 
         return EmotionValidationResult(
             is_valid=is_valid, message=message, value=value, range=self.arousal_range
         )
 
+    @eidosian()
     def is_valid_confidence(self, value: float) -> bool:
         """
         Check if a confidence value is within the configured range.
@@ -1069,6 +1047,7 @@ class EmotionConfig:
         min_val, max_val = self.confidence_range
         return min_val <= value <= max_val
 
+    @eidosian()
     def validate_confidence(self, value: float) -> EmotionValidationResult:
         """
         Validate a confidence value with detailed contextual information.
@@ -1100,9 +1079,7 @@ class EmotionConfig:
         is_valid = min_val <= value <= max_val
 
         if is_valid:
-            message = (
-                f"Confidence value {value} is within valid range ({min_val}, {max_val})"
-            )
+            message = f"Confidence value {value} is within valid range ({min_val}, {max_val})"
         else:
             message = f"Confidence value {value} is outside valid range ({min_val}, {max_val})"
 
@@ -1110,6 +1087,7 @@ class EmotionConfig:
             is_valid=is_valid, message=message, value=value, range=self.confidence_range
         )
 
+    @eidosian()
     def is_valid_emotion_category_string(self, category: str) -> bool:
         """
         Check if an emotion category string is valid according to configuration.
@@ -1132,14 +1110,13 @@ class EmotionConfig:
         return category in self.emotion_keywords
 
     @overload
-    def get_keywords_for_emotion(self, emotion: EmotionCategory) -> List[str]: ...
+    def get_keywords_for_emotion(self, emotion: EmotionCategory) -> list[str]: ...
 
     @overload
-    def get_keywords_for_emotion(
-        self, emotion: EmotionCategoryLiteral
-    ) -> List[str]: ...
+    def get_keywords_for_emotion(self, emotion: EmotionCategoryLiteral) -> list[str]: ...
 
-    def get_keywords_for_emotion(self, emotion: EmotionCategoryType) -> List[str]:
+    @eidosian()
+    def get_keywords_for_emotion(self, emotion: EmotionCategoryType) -> list[str]:
         """
         Get the list of keywords associated with an emotion category.
 
@@ -1174,13 +1151,14 @@ class EmotionConfig:
         else:
             emotion_label = emotion
 
-        return self.emotion_keywords.get(emotion_label, [])
+        return cast(list[str], self.emotion_keywords.get(emotion_label, []))
 
     # ==========================================
     # Enhanced Configuration Methods
     # ==========================================
 
-    def validate_configuration(self) -> List[str]:
+    @eidosian()
+    def validate_configuration(self) -> list[str]:
         """
         Validate the entire configuration for consistency and correctness.
 
@@ -1198,14 +1176,12 @@ class EmotionConfig:
             >>> "weights should sum to 1.0" in issues[0]
             True
         """
-        issues: List[str] = []
+        issues: list[str] = []
 
         # Check weight normalization
         vader_tb_sum = self.vader_weight + self.textblob_weight
         if not isclose(vader_tb_sum, 1.0, abs_tol=0.01):
-            issues.append(
-                f"Vader and TextBlob weights should sum to 1.0, got {vader_tb_sum}"
-            )
+            issues.append(f"Vader and TextBlob weights should sum to 1.0, got {vader_tb_sum}")
 
         # Check range validations
         for name, range_val in [
@@ -1215,9 +1191,7 @@ class EmotionConfig:
         ]:
             min_val, max_val = range_val
             if min_val >= max_val:
-                issues.append(
-                    f"{name.capitalize()} range is invalid: {min_val} >= {max_val}"
-                )
+                issues.append(f"{name.capitalize()} range is invalid: {min_val} >= {max_val}")
 
         # Check per-category weights
         for category in EmotionCategory:
@@ -1231,6 +1205,7 @@ class EmotionConfig:
 
         return issues
 
+    @eidosian()
     def get_category_weight(self, category: EmotionCategoryType) -> float:
         """
         Get the weight for a specific emotion category, with fallback to default.
@@ -1252,6 +1227,7 @@ class EmotionConfig:
         cat = normalize_emotion_category(category)
         return self.per_category_weights.get(cat, self.keyword_match_weight)
 
+    @eidosian()
     def get_sql_template(self, operation: str) -> str:
         """
         Get SQL template for a specific operation with dialect support.
@@ -1271,6 +1247,7 @@ class EmotionConfig:
         templates = EmotionSQLTemplates(dialect=self.sql_dialect)
         return templates.get_template(operation)
 
+    @eidosian()
     def is_valid_emotion_category(self, category: EmotionCategoryType) -> bool:
         """
         Check if an emotion category is valid according to configuration.

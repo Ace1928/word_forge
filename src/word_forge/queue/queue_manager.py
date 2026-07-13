@@ -17,23 +17,20 @@ tasks with proper concurrency control and instrumentation.
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, auto
 from typing import (
     Any,  # Keep Any for ErrorContext context
-    Dict,
     Generic,
-    Iterator,
-    List,
-    Optional,
     Protocol,
-    Set,
     TypedDict,
     TypeVar,
-    Union,
     cast,  # Keep cast for Result.unwrap
     final,
 )
+
+from word_forge.observability import eidosian
 
 # Type variable for queue items - allows for generic queue
 T = TypeVar("T")
@@ -54,7 +51,7 @@ class QueueError(Exception):
         cause: Original exception that triggered this error
     """
 
-    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
         """
         Initialize with detailed error message and optional cause.
 
@@ -71,7 +68,7 @@ class QueueError(Exception):
         """Provide detailed error message including cause if available."""
         error_msg = self.message
         if self.cause:
-            error_msg += f" | Cause: {str(self.cause)}"
+            error_msg += f" | Cause: {self.cause!s}"
         return error_msg
 
 
@@ -167,14 +164,15 @@ class QueueMetrics:
     dequeued_count: int = 0
     rejected_count: int = 0
     error_count: int = 0
-    last_enqueued: Optional[str] = None
-    last_dequeued: Optional[str] = None
+    last_enqueued: str | None = None
+    last_dequeued: str | None = None
     avg_wait_time_ms: float = 0.0
     high_priority_count: int = 0
     normal_priority_count: int = 0
     low_priority_count: int = 0
-    wait_times: List[float] = field(default_factory=list)
+    wait_times: list[float] = field(default_factory=list)
 
+    @eidosian()
     def update_wait_time(self, wait_time_ms: float) -> None:
         """
         Update the average wait time with a new data point.
@@ -189,6 +187,7 @@ class QueueMetrics:
             sum(self.wait_times) / len(self.wait_times) if self.wait_times else 0.0
         )
 
+    @eidosian()
     def increment_by_priority(self, priority: TaskPriority) -> None:
         """
         Increment the counter for a specific priority level.
@@ -235,7 +234,7 @@ class ErrorContext:
     error_code: str
     message: str
     timestamp: float = field(default_factory=time.time)
-    context: Dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -250,8 +249,8 @@ class Result(Generic[T]):
         error: Error context (if operation failed)
     """
 
-    value: Optional[T] = None
-    error: Optional[ErrorContext] = None
+    value: T | None = None
+    error: ErrorContext | None = None
 
     @property
     def is_success(self) -> bool:
@@ -263,6 +262,7 @@ class Result(Generic[T]):
         """Check if the operation failed."""
         return self.error is not None
 
+    @eidosian()
     def unwrap(self) -> T:
         """
         Safely extract the success value, raising an exception if failed.
@@ -285,13 +285,11 @@ class Result(Generic[T]):
 
     @classmethod
     def failure(
-        cls, error_code: str, message: str, context: Optional[Dict[str, Any]] = None
+        cls, error_code: str, message: str, context: dict[str, Any] | None = None
     ) -> "Result[T]":
         """Create a failed result with error information."""
         return cls(
-            error=ErrorContext(
-                error_code=error_code, message=message, context=context or {}
-            )
+            error=ErrorContext(error_code=error_code, message=message, context=context or {})
         )
 
 
@@ -302,6 +300,7 @@ class QueueProcessor(Protocol, Generic[T_contra]):
     Ensures type safety when working with queue processors.
     """
 
+    @eidosian()
     def process(self, item: T_contra) -> Result[bool]:
         """
         Process a queue item.
@@ -346,11 +345,11 @@ class QueueManager(Generic[T]):
         self._queue: queue.PriorityQueue[PrioritizedItem[T]] = queue.PriorityQueue(
             maxsize=size_limit
         )
-        self._seen_items: Set[str] = set()
+        self._seen_items: set[str] = set()
         self._lock = threading.RLock()
         self._state = QueueState.INITIALIZED
         self._size_limit = size_limit
-        self._entry_times: Dict[str, float] = {}
+        self._entry_times: dict[str, float] = {}
 
         # Public attributes
         self.metrics = QueueMetrics()
@@ -377,11 +376,13 @@ class QueueManager(Generic[T]):
         with self._lock:
             return iter(self._seen_items)
 
-    def seen_items(self) -> List[str]:
+    @eidosian()
+    def seen_items(self) -> list[str]:
         """Return a list of seen item keys."""
         with self._lock:
             return list(self._seen_items)
 
+    @eidosian()
     def iter_seen(self) -> Iterator[str]:
         """Return an iterator over the seen item keys."""
         with self._lock:
@@ -446,9 +447,8 @@ class QueueManager(Generic[T]):
         # Handle objects with a proper string representation
         return str(item).strip().lower()
 
-    def enqueue(
-        self, item: T, priority: TaskPriority = TaskPriority.NORMAL
-    ) -> Result[bool]:
+    @eidosian()
+    def enqueue(self, item: T, priority: TaskPriority = TaskPriority.NORMAL) -> Result[bool]:
         """
         Add an item to the queue if not already present.
 
@@ -485,9 +485,7 @@ class QueueManager(Generic[T]):
                     return Result[bool].success(False)
 
                 # Add to the queue with priority
-                prioritized = PrioritizedItem(
-                    priority=priority, timestamp=time.time(), item=item
-                )
+                prioritized = PrioritizedItem(priority=priority, timestamp=time.time(), item=item)
 
                 # Try to add to the queue
                 try:
@@ -513,13 +511,12 @@ class QueueManager(Generic[T]):
             self.metrics.error_count += 1
             return Result[bool].failure(
                 "ENQUEUE_ERROR",
-                f"Error enqueueing item: {str(e)}",
+                f"Error enqueueing item: {e!s}",
                 {"error_type": type(e).__name__},
             )
 
-    def dequeue(
-        self, block: bool = False, timeout: Optional[float] = None
-    ) -> Result[T]:
+    @eidosian()
+    def dequeue(self, block: bool = False, timeout: float | None = None) -> Result[T]:
         """
         Get the next item from the queue based on priority.
 
@@ -550,9 +547,7 @@ class QueueManager(Generic[T]):
         try:
             try:
                 # Get the next item
-                prioritized: PrioritizedItem[T] = self._queue.get(
-                    block=block, timeout=timeout
-                )
+                prioritized: PrioritizedItem[T] = self._queue.get(block=block, timeout=timeout)
                 item = prioritized.item
 
                 # Update metrics
@@ -572,18 +567,17 @@ class QueueManager(Generic[T]):
                 return Result[T].success(item)
 
             except queue.Empty:
-                return Result[T].failure(
-                    "QUEUE_EMPTY", "Queue is empty, no items to dequeue", {}
-                )
+                return Result[T].failure("QUEUE_EMPTY", "Queue is empty, no items to dequeue", {})
 
         except Exception as e:
             self.metrics.error_count += 1
             return Result[T].failure(
                 "DEQUEUE_ERROR",
-                f"Error dequeuing item: {str(e)}",
+                f"Error dequeuing item: {e!s}",
                 {"error_type": type(e).__name__},
             )
 
+    @eidosian()
     def clear(self) -> Result[int]:
         """
         Clear all items from the queue.
@@ -624,10 +618,11 @@ class QueueManager(Generic[T]):
             self.metrics.error_count += 1
             return Result[int].failure(
                 "CLEAR_ERROR",
-                f"Error clearing queue: {str(e)}",
+                f"Error clearing queue: {e!s}",
                 {"error_type": type(e).__name__},
             )
 
+    @eidosian()
     def mark_seen(self, item: T) -> None:
         """
         Mark an item as seen without adding it to the queue.
@@ -648,6 +643,7 @@ class QueueManager(Generic[T]):
             item_key = self._item_to_key(item)
             self._seen_items.add(item_key)
 
+    @eidosian()
     def is_seen(self, item: T) -> bool:
         """
         Check if an item has been seen before.
@@ -673,6 +669,7 @@ class QueueManager(Generic[T]):
             item_key = self._item_to_key(item)
             return item_key in self._seen_items
 
+    @eidosian()
     def reset_seen(self) -> None:
         """
         Clear the set of seen items.
@@ -691,6 +688,7 @@ class QueueManager(Generic[T]):
         with self._lock:
             self._seen_items.clear()
 
+    @eidosian()
     def process_with(self, processor: QueueProcessor[T], count: int = 1) -> Result[int]:
         """
         Process a specific number of items using the provided processor.
@@ -736,6 +734,7 @@ class QueueManager(Generic[T]):
 
         return Result[int].success(processed)
 
+    @eidosian()
     def start(self) -> None:
         """
         Start or resume queue processing.
@@ -751,6 +750,7 @@ class QueueManager(Generic[T]):
         """
         self.state = QueueState.RUNNING
 
+    @eidosian()
     def pause(self) -> None:
         """
         Pause queue processing.
@@ -765,6 +765,7 @@ class QueueManager(Generic[T]):
         """
         self.state = QueueState.PAUSED
 
+    @eidosian()
     def stop(self) -> None:
         """
         Stop queue processing.
@@ -779,7 +780,8 @@ class QueueManager(Generic[T]):
         """
         self.state = QueueState.STOPPED
 
-    def get_stats(self) -> Dict[str, Union[int, float, str, None]]:
+    @eidosian()
+    def get_stats(self) -> dict[str, int | float | str | None]:
         """
         Get comprehensive queue statistics.
 
@@ -810,7 +812,8 @@ class QueueManager(Generic[T]):
                 "low_priority_count": self.metrics.low_priority_count,
             }
 
-    def get_sample(self, count: int = 10) -> Result[List[T]]:
+    @eidosian()
+    def get_sample(self, count: int = 10) -> Result[list[T]]:
         """
         Get a sample of items from the queue without removing them.
 
@@ -834,7 +837,7 @@ class QueueManager(Generic[T]):
             ...         print(f"Queue contains: {item}")
         """
         if count < 1:
-            return Result[List[T]].failure(
+            return Result[list[T]].failure(
                 "INVALID_COUNT",
                 "Sample count must be at least 1",
                 {"requested_count": str(count)},
@@ -844,12 +847,12 @@ class QueueManager(Generic[T]):
             with self._lock:
                 # If queue is empty, return empty list
                 if self._queue.empty():
-                    return Result[List[T]].success([])
+                    return Result[list[T]].success([])
 
                 # Make a copy of the queue items without removing them
                 # We need to be careful to maintain the original queue state
-                items: List[T] = []
-                temp_storage: List[PrioritizedItem[T]] = []
+                items: list[T] = []
+                temp_storage: list[PrioritizedItem[T]] = []
 
                 # Get items from the queue (temporarily)
                 sample_count = min(count, self.size)
@@ -867,13 +870,13 @@ class QueueManager(Generic[T]):
                 for prioritized in temp_storage:
                     self._queue.put(prioritized)
 
-                return Result[List[T]].success(items)
+                return Result[list[T]].success(items)
 
         except Exception as e:
             self.metrics.error_count += 1
-            return Result[List[T]].failure(
+            return Result[list[T]].failure(
                 "SAMPLE_ERROR",
-                f"Error retrieving queue sample: {str(e)}",
+                f"Error retrieving queue sample: {e!s}",
                 {"error_type": type(e).__name__},
             )
 
@@ -888,8 +891,8 @@ class WorkerMetrics(TypedDict):
     items_processed: int
     errors: int
     start_time: float
-    worker_states: Dict[int, str]  # State description is string
-    last_processed_item: Optional[str]
+    worker_states: dict[int, str]  # State description is string
+    last_processed_item: str | None
 
 
 class WorkDistributor(Generic[T]):
@@ -922,7 +925,7 @@ class WorkDistributor(Generic[T]):
         self.queue_manager = queue_manager
         self.processor = processor
         self.max_workers = max_workers
-        self._workers: List[threading.Thread] = []
+        self._workers: list[threading.Thread] = []
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
@@ -934,6 +937,7 @@ class WorkDistributor(Generic[T]):
             "last_processed_item": None,
         }
 
+    @eidosian()
     def start_processing(self) -> None:
         """
         Start parallel processing of queue items.
@@ -959,6 +963,7 @@ class WorkDistributor(Generic[T]):
                 worker.start()
                 self.metrics["worker_states"][i] = "started"
 
+    @eidosian()
     def stop_processing(self, timeout: float = 5.0) -> None:
         """
         Stop all processing workers.
@@ -1002,9 +1007,7 @@ class WorkDistributor(Generic[T]):
             # Process the item
             try:
                 item = result.unwrap()
-                self.metrics["worker_states"][
-                    worker_id
-                ] = f"processing {str(item)[:20]}"
+                self.metrics["worker_states"][worker_id] = f"processing {str(item)[:20]}"
 
                 process_result = self.processor.process(item)
 
@@ -1023,13 +1026,13 @@ class WorkDistributor(Generic[T]):
 
 # Export public elements
 __all__ = [
-    "QueueManager",
-    "TaskPriority",
-    "QueueState",
-    "QueueProcessor",
-    "Result",
-    "QueueError",
     "EmptyQueueError",
+    "QueueError",
     "QueueFullError",
+    "QueueManager",
+    "QueueProcessor",
+    "QueueState",
+    "Result",
+    "TaskPriority",
     "WorkDistributor",
 ]

@@ -24,7 +24,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, cast
+from typing import TYPE_CHECKING, cast
 
 # Import necessary components (adjust paths as needed)
 from word_forge.exceptions import GraphDataError, GraphError
@@ -35,6 +35,7 @@ from word_forge.graph.graph_config import (
     WordId,
     WordTuple,
 )
+from word_forge.observability import eidosian
 from word_forge.relationships import RelationshipProperties
 
 # Type hint for the main GraphManager to avoid circular imports
@@ -108,15 +109,13 @@ class GraphBuilder:
     def _ensure_metadata_table(self, conn: sqlite3.Connection) -> None:
         """Ensure the metadata table needed for graph watermarks exists."""
 
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS graph_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at REAL NOT NULL
             )
-            """
-        )
+            """)
 
     def _load_last_refresh_watermark(self) -> float:
         """Load the persisted watermark indicating the last processed timestamp."""
@@ -133,9 +132,7 @@ class GraphBuilder:
                 if row and row[0] is not None:
                     return float(row[0])
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            self.logger.debug(
-                "Unable to load graph watermark from metadata table: %s", exc
-            )
+            self.logger.debug("Unable to load graph watermark from metadata table: %s", exc)
         return 0.0
 
     def _persist_watermark(self, value: float) -> None:
@@ -166,6 +163,7 @@ class GraphBuilder:
                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
             )
 
+    @eidosian()
     def build_graph(self) -> None:
         """
         Construct the graph from the database, replacing any existing graph.
@@ -187,13 +185,9 @@ class GraphBuilder:
 
         try:
             words, relationships, latest_refresh = self._fetch_data()
-            self.logger.info(
-                f"Fetched {len(words)} words and {len(relationships)} relationships."
-            )
+            self.logger.info(f"Fetched {len(words)} words and {len(relationships)} relationships.")
         except sqlite3.Error as db_err:
-            raise GraphDataError(
-                "Database error during data fetch.", db_err
-            ) from db_err
+            raise GraphDataError("Database error during data fetch.", db_err) from db_err
         except Exception as e:
             raise GraphDataError(f"Unexpected error fetching data: {e}", e) from e
 
@@ -207,9 +201,7 @@ class GraphBuilder:
                 # Store lowercase term for case-insensitive lookup
                 self.manager._term_to_id[term.lower()] = word_id
             else:
-                self.logger.warning(
-                    f"Skipping node with ID {word_id} due to missing term."
-                )
+                self.logger.warning(f"Skipping node with ID {word_id} due to missing term.")
             if idx % max(total_words // 10, 1) == 0:
                 self.logger.info("Node build progress: %d/%d", idx, total_words)
 
@@ -233,9 +225,7 @@ class GraphBuilder:
 
             # Validate target node exists
             if related_id is None or related_id not in self.manager.g.nodes():
-                self.logger.debug(
-                    f"Skipping edge to non-existent term '{related_term}'."
-                )
+                self.logger.debug(f"Skipping edge to non-existent term '{related_term}'.")
                 continue
 
             # Prevent self-loops unless explicitly allowed by config (future)
@@ -275,6 +265,7 @@ class GraphBuilder:
         )
         self._persist_watermark(latest_refresh)
 
+    @eidosian()
     def update_graph(self) -> int:
         """
         Incrementally update the existing graph with new data from the database.
@@ -291,16 +282,12 @@ class GraphBuilder:
             GraphError: For other graph update issues.
         """
         if self.manager.g.number_of_nodes() == 0:
-            self.logger.info(
-                "Graph is empty, performing initial build instead of update."
-            )
+            self.logger.info("Graph is empty, performing initial build instead of update.")
             self.build_graph()
             return self.manager.g.number_of_nodes()
 
         self.logger.info("Initiating incremental graph update.")
-        since = (
-            self._last_refresh_watermark if self._last_refresh_watermark > 0 else None
-        )
+        since = self._last_refresh_watermark if self._last_refresh_watermark > 0 else None
         if since is None:
             self.logger.debug(
                 "No persisted watermark detected; falling back to full dataset fetch."
@@ -308,16 +295,12 @@ class GraphBuilder:
         try:
             all_words, all_relationships, latest_refresh = self._fetch_data(since=since)
         except sqlite3.Error as db_err:
-            raise GraphDataError(
-                "Database error during data fetch for update.", db_err
-            ) from db_err
+            raise GraphDataError("Database error during data fetch for update.", db_err) from db_err
         except Exception as e:
-            raise GraphDataError(
-                f"Unexpected error fetching data for update: {e}", e
-            ) from e
+            raise GraphDataError(f"Unexpected error fetching data for update: {e}", e) from e
 
-        current_node_ids: Set[WordId] = set(self.manager.g.nodes())
-        new_nodes_added: List[WordId] = []
+        current_node_ids: set[WordId] = set(self.manager.g.nodes())
+        new_nodes_added: list[WordId] = []
         new_edges_added_count = 0
 
         # --- Add New Nodes ---
@@ -395,9 +378,9 @@ class GraphBuilder:
         target_id: WordId,
         rel_type: RelType,
         *,
-        dimension: Optional[RelationshipDimension] = None,
-        valence: Optional[float] = None,
-        arousal: Optional[float] = None,
+        dimension: RelationshipDimension | None = None,
+        valence: float | None = None,
+        arousal: float | None = None,
     ) -> None:
         """
         Adds a single relationship edge to the graph with calculated attributes.
@@ -412,9 +395,7 @@ class GraphBuilder:
         """
         # Use manager's helper to get properties and determine dimension
         # Provide a default RelationshipProperties if type is unknown
-        rel_props: RelationshipProperties = self.manager._get_relationship_properties(
-            rel_type
-        )
+        rel_props: RelationshipProperties = self.manager._get_relationship_properties(rel_type)
         resolved_dimension = dimension or self.manager._determine_dimension(rel_type)
 
         # Safely get term text for title, providing defaults
@@ -429,9 +410,7 @@ class GraphBuilder:
             "color": rel_props.get(
                 "color", self._config.relationship_colors.get("default", "#aaaaaa")
             ),  # Default color
-            "bidirectional": rel_props.get(
-                "bidirectional", False
-            ),  # Default directionality
+            "bidirectional": rel_props.get("bidirectional", False),  # Default directionality
             "dimension": resolved_dimension,
             # Ensure title generation handles potential None terms gracefully
             "title": f"{rel_type}: {source_term_text or '?'} {'↔' if rel_props.get('bidirectional', False) else '→'} {target_term_text or '?'}",
@@ -450,8 +429,8 @@ class GraphBuilder:
         self.manager._relationship_counts.update([rel_type])
 
     def _fetch_data(
-        self, since: Optional[float] = None
-    ) -> Tuple[List[WordTuple], List[RelationshipTuple], float]:
+        self, since: float | None = None
+    ) -> tuple[list[WordTuple], list[RelationshipTuple], float]:
         """
         Fetch words and relationships from the database.
 
@@ -469,8 +448,8 @@ class GraphBuilder:
             sqlite3.Error: For underlying database connection or query errors.
         """
         self.logger.debug("Fetching graph data from database.")
-        words: List[WordTuple] = []
-        relationships: List[RelationshipTuple] = []
+        words: list[WordTuple] = []
+        relationships: list[RelationshipTuple] = []
         latest_refresh = self._last_refresh_watermark
 
         try:
@@ -481,19 +460,15 @@ class GraphBuilder:
                 # Verify 'words' table exists
                 cursor.execute(self._config.sql_templates["check_words_table"])
                 if not cursor.fetchone():
-                    raise GraphDataError(
-                        "Database table 'words' not found. Cannot build graph."
-                    )
+                    raise GraphDataError("Database table 'words' not found. Cannot build graph.")
 
                 # Fetch words: Ensure id and term are not NULL
-                word_query_key = (
-                    "fetch_words_since" if since is not None else "fetch_all_words"
-                )
+                word_query_key = "fetch_words_since" if since is not None else "fetch_all_words"
                 word_query = self._config.sql_templates.get(word_query_key)
                 if word_query is None:
                     raise GraphDataError(f"SQL template '{word_query_key}' is missing.")
-                params: Tuple[float, ...] = (since,) if since is not None else tuple()
-                cursor.execute(word_query, params)
+                params: tuple[float, ...] = (float(since),) if since is not None else tuple()
+                cursor.execute(cast(str, word_query), params)
                 words_raw = cursor.fetchall()
                 words = [
                     cast(WordTuple, (row["id"], row["term"]))
@@ -515,26 +490,24 @@ class GraphBuilder:
                         "Database table 'relationships' not found. Graph will have no edges."
                     )
                     # Return words only if relationships table is missing
-                    return words, []
+                    return words, [], latest_refresh
 
                 # Fetch relationships: Ensure all parts are not NULL
                 rel_query_key = (
-                    "fetch_relationships_since"
-                    if since is not None
-                    else "fetch_all_relationships"
+                    "fetch_relationships_since" if since is not None else "fetch_all_relationships"
                 )
                 rel_query = self._config.sql_templates.get(rel_query_key)
-                rel_params: Tuple[float, ...] = (
-                    (since,)
-                    if rel_query_key == "fetch_relationships_since"
+                rel_params: tuple[float, ...] = (
+                    (float(since),)
+                    if rel_query_key == "fetch_relationships_since" and since is not None
                     else tuple()
                 )
                 if rel_query is None:
                     rel_query = self._config.sql_templates["fetch_all_relationships"]
                     rel_params = tuple()
-                cursor.execute(rel_query, rel_params)
+                cursor.execute(cast(str, rel_query), rel_params)
                 relationships_raw = cursor.fetchall()
-                lexical_relationships: List[RelationshipTuple] = [
+                lexical_relationships: list[RelationshipTuple] = [
                     cast(
                         RelationshipTuple,
                         (
@@ -561,24 +534,22 @@ class GraphBuilder:
                         if since is not None
                         else "get_all_emotional_relationships"
                     )
-                    emotional_query = self._config.sql_templates.get(
-                        emotional_query_key
-                    )
+                    emotional_query = self._config.sql_templates.get(emotional_query_key)
                     if emotional_query is None:
                         emotional_query = self._config.sql_templates[
                             "get_all_emotional_relationships"
                         ]
-                        emotional_params: Tuple[float, ...] = tuple()
+                        emotional_params: tuple[float, ...] = tuple()
                     else:
                         emotional_params = (
-                            (since,)
-                            if emotional_query_key
-                            == "get_emotional_relationships_since"
+                            (float(since),)
+                            if emotional_query_key == "get_emotional_relationships_since"
+                            and since is not None
                             else tuple()
                         )
-                    cursor.execute(emotional_query, emotional_params)
+                    cursor.execute(cast(str, emotional_query), emotional_params)
                     emotional_rows = cursor.fetchall()
-                    emotional_relationships: List[RelationshipTuple] = [
+                    emotional_relationships: list[RelationshipTuple] = [
                         cast(
                             RelationshipTuple,
                             (
@@ -598,9 +569,7 @@ class GraphBuilder:
                     relationships.extend(emotional_relationships)
                     emotional_count = len(emotional_relationships)
                 except sqlite3.Error as emotional_err:
-                    self.logger.debug(
-                        "Emotional relationships unavailable: %s", emotional_err
-                    )
+                    self.logger.debug("Emotional relationships unavailable: %s", emotional_err)
 
                 self.logger.debug(
                     "Fetched %d lexical and %d emotional relationship entries.",
@@ -612,9 +581,7 @@ class GraphBuilder:
         except sqlite3.Error as db_err:
             # Log specific DB error and re-raise as GraphDataError
             self.logger.error(f"Database query failed during data fetch: {db_err}")
-            raise GraphDataError(
-                f"Failed to fetch graph data: {db_err}", db_err
-            ) from db_err
+            raise GraphDataError(f"Failed to fetch graph data: {db_err}", db_err) from db_err
         except Exception as e:
             # Catch any other unexpected errors during fetch
             self.logger.error(f"Unexpected error during data fetch: {e}")
@@ -622,6 +589,7 @@ class GraphBuilder:
                 f"An unexpected error occurred while fetching graph data: {e}", e
             ) from e
 
+    @eidosian()
     def ensure_sample_data(self) -> bool:
         """
         Ensure the database contains sample data if it's currently empty.
@@ -635,9 +603,7 @@ class GraphBuilder:
         Raises:
             GraphError: If adding sample data fails due to database issues.
         """
-        self.logger.debug(
-            "Checking for existing data before potentially adding samples."
-        )
+        self.logger.debug("Checking for existing data before potentially adding samples.")
         try:
             # Check word count first as a proxy for existing data
             with self.manager._db_connection() as conn:
@@ -657,9 +623,7 @@ class GraphBuilder:
                 f"Could not check for existing data (table might be missing): {e}. Attempting sample data insertion."
             )
         except Exception as e:
-            self.logger.error(
-                f"Unexpected error checking for existing data: {e}", exc_info=True
-            )
+            self.logger.error(f"Unexpected error checking for existing data: {e}", exc_info=True)
             # Decide whether to proceed or raise based on policy
             raise GraphError("Failed to verify existing data presence.", e) from e
 
@@ -674,7 +638,7 @@ class GraphBuilder:
                 cursor = conn.cursor()
                 # Ensure tables exist first (idempotent operation) - Moved outside the 'with' block
 
-                inserted_word_ids: Dict[str, WordId] = {}
+                inserted_word_ids: dict[str, WordId] = {}
                 # Use sample data from config - Ensure config has sample_words
                 sample_words = getattr(self._config, "sample_words", [])
                 sample_relationships = self._config.sample_relationships
@@ -700,12 +664,8 @@ class GraphBuilder:
                         )
                         inserted_id = cursor.lastrowid
                         # Fetch ID if lastrowid is not reliable (e.g., certain SQLite versions/configs)
-                        if (
-                            inserted_id is None or inserted_id == 0
-                        ):  # Check for 0 as well
-                            cursor.execute(
-                                "SELECT id FROM words WHERE term = ?", (term,)
-                            )
+                        if inserted_id is None or inserted_id == 0:  # Check for 0 as well
+                            cursor.execute("SELECT id FROM words WHERE term = ?", (term,))
                             row = cursor.fetchone()
                             if row:
                                 inserted_id = row[0]
@@ -739,9 +699,7 @@ class GraphBuilder:
                         )
 
                 # --- Insert Sample Relationships ---
-                self.logger.debug(
-                    f"Inserting {len(sample_relationships)} sample relationships."
-                )
+                self.logger.debug(f"Inserting {len(sample_relationships)} sample relationships.")
                 for rel_data in sample_relationships:
                     # Ensure rel_data is a tuple/list of expected length
                     if not isinstance(rel_data, (tuple, list)) or len(rel_data) != 3:
@@ -767,9 +725,7 @@ class GraphBuilder:
                     ):  # Check both terms were successfully added/found
                         try:
                             cursor.execute(
-                                self._config.sql_templates[
-                                    "insert_sample_relationship"
-                                ],
+                                self._config.sql_templates["insert_sample_relationship"],
                                 (
                                     id1,
                                     term2,  # Insert using term2 text as per schema
@@ -814,6 +770,7 @@ class GraphBuilder:
                 f"An unexpected error occurred while adding sample data: {e}", e
             ) from e
 
+    @eidosian()
     def verify_database_tables(self) -> bool:
         """
         Verify that required database tables ('words', 'relationships') exist.
@@ -833,17 +790,13 @@ class GraphBuilder:
                 relationships_exists = cursor.fetchone() is not None
 
                 if words_exists and relationships_exists:
-                    self.logger.debug(
-                        "Database tables 'words' and 'relationships' verified."
-                    )
+                    self.logger.debug("Database tables 'words' and 'relationships' verified.")
                     return True
                 elif words_exists:
                     self.logger.warning(
                         "Database table 'words' exists, but 'relationships' is missing."
                     )
-                    return (
-                        False  # Or True depending on whether relationships are optional
-                    )
+                    return False  # Or True depending on whether relationships are optional
                 else:
                     self.logger.error("Essential database table 'words' is missing.")
                     return False
@@ -851,7 +804,5 @@ class GraphBuilder:
             self.logger.error(f"Database error during table verification: {e}")
             return False
         except Exception as e:
-            self.logger.error(
-                f"Unexpected error during database table verification: {e}"
-            )
+            self.logger.error(f"Unexpected error during database table verification: {e}")
             return False

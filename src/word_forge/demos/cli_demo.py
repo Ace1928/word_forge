@@ -16,7 +16,10 @@ For the main CLI entry point, use:
     word_forge --help
 """
 
+from word_forge.observability import eidosian
 
+
+@eidosian()
 def main() -> None:
     """Run CLI demonstration showcasing available commands.
 

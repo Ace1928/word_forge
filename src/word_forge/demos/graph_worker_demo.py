@@ -13,8 +13,10 @@ from word_forge.config import config
 from word_forge.database.database_manager import DBManager
 from word_forge.graph.graph_manager import GraphManager
 from word_forge.graph.graph_worker import GraphWorker
+from word_forge.observability import eidosian
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrate usage of the GraphWorker to maintain a lexical graph.
@@ -84,8 +86,7 @@ def main() -> None:
         final_status = worker.get_status()
         logger.info(f"Final worker status: {final_status}")
         logger.info(
-            f"Graph saved to {worker.output_path}, "
-            f"visualization available at {worker.visualization_path}"
+            f"Graph saved to {worker.output_path}, visualization available at {worker.visualization_path}"
         )
 
     except Exception as e:

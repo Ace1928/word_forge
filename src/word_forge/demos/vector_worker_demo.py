@@ -5,19 +5,22 @@ Demonstration of VectorWorker functionality.
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from word_forge.database.database_manager import DBManager
+from word_forge.observability import eidosian
 from word_forge.vectorizer.vector_store import StorageType, VectorStore
 from word_forge.vectorizer.vector_worker import (
+    Embedder,
     SimpleEmbedder,
     TransformerEmbedder,
     VectorWorker,
 )
 
 
+@eidosian()
 @contextmanager
 def temporary_database(path: Path) -> Iterator[Path]:
     """
@@ -40,16 +43,14 @@ def temporary_database(path: Path) -> Iterator[Path]:
         cursor = conn.cursor()
 
         # Create schema
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS words (
                 id INTEGER PRIMARY KEY,
                 term TEXT NOT NULL,
                 definition TEXT NOT NULL,
                 usage_examples TEXT
             )
-            """
-        )
+            """)
 
         # Add sample data
         sample_words = [
@@ -67,9 +68,7 @@ def temporary_database(path: Path) -> Iterator[Path]:
             ),
         ]
 
-        cursor.executemany(
-            "INSERT OR REPLACE INTO words VALUES (?, ?, ?, ?)", sample_words
-        )
+        cursor.executemany("INSERT OR REPLACE INTO words VALUES (?, ?, ?, ?)", sample_words)
         conn.commit()
 
         # Yield the path to the caller
@@ -90,6 +89,7 @@ def temporary_database(path: Path) -> Iterator[Path]:
                 pass
 
 
+@eidosian()
 def main() -> None:
     """Demonstrate VectorWorker initialization and operation."""
     logging.basicConfig(level=logging.INFO)
@@ -112,6 +112,7 @@ def main() -> None:
             )
 
             # Initialize Embedder (Simple for speed, Transformer if available)
+            embedder: Embedder
             try:
                 embedder = TransformerEmbedder()
                 logger.info("Using TransformerEmbedder")

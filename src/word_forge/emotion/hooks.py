@@ -15,19 +15,19 @@ These hooks can be registered with the RecursiveEmotionProcessor to extend its
 capabilities without modifying its core logic.
 """
 
-from typing import Dict, List, Optional
-
 from word_forge.emotion.emotion_types import (
     EmotionalConcept,
     EmotionDimension,
     EmotionVector,
 )
+from word_forge.observability import eidosian
 
 # ==========================================
 # Meta-Emotion Hooks
 # ==========================================
 
 
+@eidosian()
 def add_clarity_meta_emotion(concept: EmotionalConcept) -> None:
     """
     Add meta-emotions related to emotional clarity/awareness.
@@ -54,6 +54,7 @@ def add_clarity_meta_emotion(concept: EmotionalConcept) -> None:
         )
 
 
+@eidosian()
 def add_arousal_meta_emotion(concept: EmotionalConcept) -> None:
     """
     Add meta-emotions related to emotional arousal/activation.
@@ -81,6 +82,7 @@ def add_arousal_meta_emotion(concept: EmotionalConcept) -> None:
         )
 
 
+@eidosian()
 def add_complexity_meta_emotion(concept: EmotionalConcept) -> None:
     """
     Add meta-emotions related to emotional complexity.
@@ -107,6 +109,7 @@ def add_complexity_meta_emotion(concept: EmotionalConcept) -> None:
         )
 
 
+@eidosian()
 def add_congruence_meta_emotion(concept: EmotionalConcept) -> None:
     """
     Add meta-emotions related to emotional congruence.
@@ -170,6 +173,7 @@ def add_congruence_meta_emotion(concept: EmotionalConcept) -> None:
 # ==========================================
 
 
+@eidosian()
 def add_temporal_sequence(concept: EmotionalConcept) -> None:
     """
     Add temporal sequence pattern (how the emotion evolves over time).
@@ -181,7 +185,7 @@ def add_temporal_sequence(concept: EmotionalConcept) -> None:
         concept: The emotional concept to enhance with patterns
     """
     primary = concept.primary_emotion
-    timeline: List[EmotionVector] = []
+    timeline: list[EmotionVector] = []
 
     # Starting emotion (onset)
     start_emotion = primary.diminish(0.7)
@@ -196,13 +200,12 @@ def add_temporal_sequence(concept: EmotionalConcept) -> None:
     end_dims = dict(end_emotion.dimensions)
     if EmotionDimension.VALENCE in end_dims:
         end_dims[EmotionDimension.VALENCE] *= 0.7  # Reduce valence intensity
-    timeline.append(
-        EmotionVector(dimensions=end_dims, confidence=end_emotion.confidence)
-    )
+    timeline.append(EmotionVector(dimensions=end_dims, confidence=end_emotion.confidence))
 
     concept.add_emotional_pattern("temporal_sequence", timeline)
 
 
+@eidosian()
 def add_intensity_gradation(concept: EmotionalConcept) -> None:
     """
     Add intensity gradation pattern (emotion at different intensity levels).
@@ -214,7 +217,7 @@ def add_intensity_gradation(concept: EmotionalConcept) -> None:
         concept: The emotional concept to enhance with patterns
     """
     primary = concept.primary_emotion
-    gradation: List[EmotionVector] = []
+    gradation: list[EmotionVector] = []
 
     # Minimal intensity (threshold of perception)
     minimal = EmotionVector(
@@ -235,18 +238,13 @@ def add_intensity_gradation(concept: EmotionalConcept) -> None:
 
     # High intensity
     high = EmotionVector(
-        dimensions={
-            dim: max(-1.0, min(1.0, val * 1.5))
-            for dim, val in primary.dimensions.items()
-        },
+        dimensions={dim: max(-1.0, min(1.0, val * 1.5)) for dim, val in primary.dimensions.items()},
         confidence=0.8,
     )
     gradation.append(high)
 
     # Extreme intensity (may have different qualities)
-    extreme_dims = {
-        dim: max(-1.0, min(1.0, val * 2.0)) for dim, val in primary.dimensions.items()
-    }
+    extreme_dims = {dim: max(-1.0, min(1.0, val * 2.0)) for dim, val in primary.dimensions.items()}
 
     # Extreme intensity often has different emotional qualities
     # Add some complexity/instability for extreme emotions
@@ -261,6 +259,7 @@ def add_intensity_gradation(concept: EmotionalConcept) -> None:
     concept.add_emotional_pattern("intensity_gradation", gradation)
 
 
+@eidosian()
 def add_contextual_variations(concept: EmotionalConcept) -> None:
     """
     Add contextual variations pattern (emotion in different contexts).
@@ -272,7 +271,7 @@ def add_contextual_variations(concept: EmotionalConcept) -> None:
         concept: The emotional concept to enhance with patterns
     """
     primary = concept.primary_emotion
-    variations: List[EmotionVector] = []
+    variations: list[EmotionVector] = []
 
     # Personal/intimate context
     personal_dims = dict(primary.dimensions)
@@ -302,10 +301,7 @@ def add_contextual_variations(concept: EmotionalConcept) -> None:
 
     # Social context
     social_dims = dict(primary.dimensions)
-    if (
-        EmotionDimension.VALENCE in social_dims
-        and social_dims[EmotionDimension.VALENCE] < 0
-    ):
+    if EmotionDimension.VALENCE in social_dims and social_dims[EmotionDimension.VALENCE] < 0:
         # Negative emotions often moderated in social contexts
         social_dims[EmotionDimension.VALENCE] *= 0.7
         social_dims[EmotionDimension.INTENSITY] = max(
@@ -335,6 +331,7 @@ def add_contextual_variations(concept: EmotionalConcept) -> None:
 # ==========================================
 
 
+@eidosian()
 def add_secondary_emotions(concept: EmotionalConcept) -> None:
     """
     Add secondary emotions based on related terms.
@@ -352,6 +349,7 @@ def add_secondary_emotions(concept: EmotionalConcept) -> None:
     pass
 
 
+@eidosian()
 def add_emotional_patterns(concept: EmotionalConcept) -> None:
     """
     Add all standard emotional patterns to a concept.
@@ -368,9 +366,10 @@ def add_emotional_patterns(concept: EmotionalConcept) -> None:
     add_contextual_variations(concept)
 
 
+@eidosian()
 def add_relationship_context(
     concept: EmotionalConcept,
-    related_concepts: Optional[Dict[str, EmotionalConcept]] = None,
+    related_concepts: dict[str, EmotionalConcept] | None = None,
 ) -> None:
     """
     Add relationship context between this emotion and related emotions.
@@ -421,9 +420,7 @@ def add_relationship_context(
 # ==========================================
 
 
-def _calculate_intensity_ratio(
-    emotion1: EmotionVector, emotion2: EmotionVector
-) -> float:
+def _calculate_intensity_ratio(emotion1: EmotionVector, emotion2: EmotionVector) -> float:
     """Calculate the intensity ratio between two emotions."""
     intensity1 = sum(abs(v) for v in emotion1.dimensions.values()) / max(
         1, len(emotion1.dimensions)
@@ -434,9 +431,7 @@ def _calculate_intensity_ratio(
     return intensity1 / max(0.0001, intensity2)  # Avoid division by zero
 
 
-def _calculate_temporal_relationship(
-    emotion1: EmotionVector, emotion2: EmotionVector
-) -> float:
+def _calculate_temporal_relationship(emotion1: EmotionVector, emotion2: EmotionVector) -> float:
     """Calculate likelihood of temporal relationship between emotions."""
     # Check for arousal pattern typical of emotional sequences
     arousal1 = emotion1.dimensions.get(EmotionDimension.AROUSAL, 0)

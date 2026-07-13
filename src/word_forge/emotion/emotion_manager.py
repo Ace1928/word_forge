@@ -36,20 +36,22 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
+from typing import Any, NamedTuple, cast
+
+from word_forge.observability import eidosian
 
 try:  # Optional dependencies
-    from nltk.sentiment.vader import SentimentIntensityAnalyzer  # type: ignore
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
     VADER_AVAILABLE = True
 except Exception:  # pragma: no cover - allow missing VADER
-    SentimentIntensityAnalyzer = None  # type: ignore
+    SentimentIntensityAnalyzer = None
     VADER_AVAILABLE = False
 
 try:
-    from textblob import TextBlob  # type: ignore
+    from textblob import TextBlob
 except Exception:  # pragma: no cover - allow missing TextBlob
-    TextBlob = None  # type: ignore
+    TextBlob = None
 
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_config import (
@@ -170,7 +172,8 @@ class EmotionManager:
         self.llm_weight = getattr(self.config, "llm_weight", 0.0)
 
         # Initialize recursive emotion processor lazily
-        self._recursive_processor = None
+        self._recursive_processor: Any | None = None
+        self.llm_interface: ModelState | None = None
 
         # Track detection counts for optimization
         self._detection_count = 0
@@ -202,16 +205,14 @@ class EmotionManager:
                 self.vader = None
         except Exception as e:
             self.vader = None
-            logger.warning(f"VADER initialization failed: {str(e)}")
+            logger.warning(f"VADER initialization failed: {e!s}")
 
         # Initialize LLM if available
         try:
             if LLM_AVAILABLE:
                 self.llm_interface = ModelState()
                 if self.llm_interface.initialize():
-                    logger.info(
-                        f"LLM initialized successfully: {self.llm_interface.model_name}"
-                    )
+                    logger.info(f"LLM initialized successfully: {self.llm_interface.model_name}")
                 else:
                     self.llm_interface = None
                     logger.warning(
@@ -221,8 +222,9 @@ class EmotionManager:
                 self.llm_interface = None
         except Exception as e:
             self.llm_interface = None
-            logger.warning(f"LLM initialization failed: {str(e)}")
+            logger.warning(f"LLM initialization failed: {e!s}")
 
+    @eidosian()
     def init_analysis_tools(self) -> None:
         """Reinitialize analysis tools.
 
@@ -277,12 +279,8 @@ class EmotionManager:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
                 # Use dialect-specific SQL templates
-                cursor.execute(
-                    self.config.get_sql_template("create_word_emotion_table")
-                )
-                cursor.execute(
-                    self.config.get_sql_template("create_message_emotion_table")
-                )
+                cursor.execute(self.config.get_sql_template("create_word_emotion_table"))
+                cursor.execute(self.config.get_sql_template("create_message_emotion_table"))
                 conn.commit()
         except sqlite3.Error as e:
             raise EmotionError(
@@ -291,14 +289,13 @@ class EmotionManager:
             ) from e
 
     @lru_cache(maxsize=256)
-    def _clamp_emotional_values(
-        self, valence: float, arousal: float
-    ) -> Tuple[float, float]:
+    def _clamp_emotional_values(self, valence: float, arousal: float) -> tuple[float, float]:
         """Clamp valence and arousal values to their valid ranges."""
         valence = max(self.VALENCE_RANGE[0], min(self.VALENCE_RANGE[1], valence))
         arousal = max(self.AROUSAL_RANGE[0], min(self.AROUSAL_RANGE[1], arousal))
         return valence, arousal
 
+    @eidosian()
     def set_word_emotion(self, word_id: int, valence: float, arousal: float) -> None:
         """Store or update emotional values for a word.
 
@@ -323,9 +320,7 @@ class EmotionManager:
         """
         valence, arousal = self._clamp_emotional_values(valence, arousal)
 
-        relationship_type, anchor_term = self._derive_emotional_relationship(
-            valence, arousal
-        )
+        relationship_type, anchor_term = self._derive_emotional_relationship(valence, arousal)
         self._ensure_emotion_anchor(anchor_term)
 
         try:
@@ -352,8 +347,9 @@ class EmotionManager:
                 {"word_id": word_id, "valence": valence, "arousal": arousal},
             ) from e
 
+    @eidosian()
     @lru_cache(maxsize=256)
-    def get_word_emotion(self, word_id: int) -> Optional[WordEmotionDict]:
+    def get_word_emotion(self, word_id: int) -> WordEmotionDict | None:
         """Retrieve emotional data for a word.
 
         Args:
@@ -378,10 +374,8 @@ class EmotionManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    self.config.get_sql_template("get_word_emotion"), (word_id,)
-                )
-                row: Optional[sqlite3.Row] = cursor.fetchone()
+                cursor.execute(self.config.get_sql_template("get_word_emotion"), (word_id,))
+                row: sqlite3.Row | None = cursor.fetchone()
 
                 if row:
                     return WordEmotionDict(
@@ -389,20 +383,15 @@ class EmotionManager:
                         valence=float(row["valence"]),
                         arousal=float(row["arousal"]),
                         timestamp=float(row["timestamp"]),
-                        dominance=(
-                            float(row["dominance"])
-                            if "dominance" in row.keys()
-                            else 0.0
-                        ),
+                        dominance=(float(row["dominance"]) if "dominance" in row.keys() else 0.0),
                     )
                 return None
         except sqlite3.Error as e:
-            raise EmotionError(
-                f"Failed to retrieve word emotion: {e}", {"word_id": word_id}
-            ) from e
+            raise EmotionError(f"Failed to retrieve word emotion: {e}", {"word_id": word_id}) from e
 
+    @eidosian()
     @lru_cache(maxsize=256)
-    def get_message_emotion(self, message_id: int) -> Optional[MessageEmotionDict]:
+    def get_message_emotion(self, message_id: int) -> MessageEmotionDict | None:
         """Retrieve emotional data for a message.
 
         Args:
@@ -426,10 +415,8 @@ class EmotionManager:
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    self.config.get_sql_template("get_message_emotion"), (message_id,)
-                )
-                row: Optional[sqlite3.Row] = cursor.fetchone()
+                cursor.execute(self.config.get_sql_template("get_message_emotion"), (message_id,))
+                row: sqlite3.Row | None = cursor.fetchone()
 
                 if row:
                     return MessageEmotionDict(
@@ -445,7 +432,7 @@ class EmotionManager:
             ) from e
 
     @lru_cache(maxsize=256)
-    def _analyze_with_vader(self, input_text: str) -> Tuple[float, float]:
+    def _analyze_with_vader(self, input_text: str) -> tuple[float, float]:
         """Analyze text sentiment using VADER.
 
         VADER is specifically tuned for social media content and handles
@@ -466,7 +453,7 @@ class EmotionManager:
         input_text = input_text.strip()
 
         # Get sentiment scores from VADER analyzer
-        raw_scores = self.vader.polarity_scores(input_text)  # type: ignore
+        raw_scores = self.vader.polarity_scores(input_text)
         vader_scores: VaderSentimentScores = cast(VaderSentimentScores, raw_scores)
 
         # Map VADER compound score (-1 to 1) directly to valence
@@ -480,7 +467,7 @@ class EmotionManager:
         return valence, arousal
 
     @lru_cache(maxsize=256)
-    def _analyze_with_llm(self, text: str) -> Tuple[float, float, Dict[str, float]]:
+    def _analyze_with_llm(self, text: str) -> tuple[float, float, dict[str, float]]:
         """Analyze text sentiment using LLM for deeper emotional understanding.
 
         Uses structured prompting of the language model to extract nuanced
@@ -516,15 +503,13 @@ Return the analysis as a JSON object with these fields:
             response_raw = self.llm_interface.query(prompt)
 
             # Process response into dict format - handle both string and dict responses
-            response: Dict[str, Any] = {}
+            response: dict[str, Any] = {}
             try:
                 if response_raw is not None:
-                    response = cast(Dict[str, Any], json.loads(response_raw))
+                    response = cast(dict[str, Any], json.loads(response_raw))
             except json.JSONDecodeError as decode_error:
                 # Log the invalid JSON input for debugging
-                logger.error(
-                    f"Invalid JSON response: {response_raw}. Error: {decode_error}"
-                )
+                logger.error(f"Invalid JSON response: {response_raw}. Error: {decode_error}")
 
             # If not valid JSON, create minimal response
             response = {}
@@ -548,11 +533,11 @@ Return the analysis as a JSON object with these fields:
 
             # Additional emotional dimensions
             emotion_dimensions_raw: Any = response.get("emotion_dimensions", {})
-            emotion_dimensions: Dict[str, float] = {}
+            emotion_dimensions: dict[str, float] = {}
 
             # Ensure emotion_dimensions is a valid dictionary with float values
             if isinstance(emotion_dimensions_raw, dict):
-                typed_dimensions = cast(Dict[Any, Any], emotion_dimensions_raw)
+                typed_dimensions = emotion_dimensions_raw
                 for key_raw, value_raw in typed_dimensions.items():
                     key = str(key_raw)
                     try:
@@ -567,8 +552,9 @@ Return the analysis as a JSON object with these fields:
             print(f"LLM emotion analysis failed (continuing with other methods): {e}")
             return 0.0, 0.0, {}
 
+    @eidosian()
     @lru_cache(maxsize=256)
-    def analyze_text_emotion(self, text: str) -> Tuple[float, float]:
+    def analyze_text_emotion(self, text: str) -> tuple[float, float]:
         """Analyze text to determine emotional valence and arousal.
 
         Uses a hybrid approach combining TextBlob, VADER (when available),
@@ -606,8 +592,8 @@ Return the analysis as a JSON object with these fields:
             # Extract sentiment properties safely
             try:
                 # Extract properties directly with safe fallbacks
-                polarity = getattr(blob.sentiment, "polarity", 0.0)  # type: ignore
-                subjectivity = getattr(blob.sentiment, "subjectivity", 0.0)  # type: ignore
+                polarity = getattr(blob.sentiment, "polarity", 0.0)
+                subjectivity = getattr(blob.sentiment, "subjectivity", 0.0)
 
                 # Create a properly typed TextBlobSentiment
                 sentiment_value = TextBlobSentiment(
@@ -625,10 +611,8 @@ Return the analysis as a JSON object with these fields:
         uppercase_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
 
         # Initialize weighted results
-        valence_components: List[Tuple[float, float]] = [
-            (textblob_valence, self.textblob_weight)
-        ]
-        arousal_factors: List[Tuple[float, float]] = [
+        valence_components: list[tuple[float, float]] = [(textblob_valence, self.textblob_weight)]
+        arousal_factors: list[tuple[float, float]] = [
             (subjectivity, 1.0),
             (min(exclamation_count / 5, 1.0), 1.0),
             (uppercase_ratio * 2, 1.0),
@@ -638,9 +622,7 @@ Return the analysis as a JSON object with these fields:
         if self.vader:
             vader_valence, vader_arousal = self._analyze_with_vader(text)
             valence_components.append((vader_valence, self.vader_weight))
-            arousal_factors.append(
-                (vader_arousal * 2, 2.0)
-            )  # VADER's arousal weighted higher
+            arousal_factors.append((vader_arousal * 2, 2.0))  # VADER's arousal weighted higher
 
         # LLM analysis (when available)
         if self.llm_interface and self.llm_weight > 0:
@@ -651,20 +633,14 @@ Return the analysis as a JSON object with these fields:
         # Weighted fusion of all analyzers
         total_valence_weight = sum(weight for _, weight in valence_components)
         if total_valence_weight > 0:
-            valence = (
-                sum(val * weight for val, weight in valence_components)
-                / total_valence_weight
-            )
+            valence = sum(val * weight for val, weight in valence_components) / total_valence_weight
         else:
             valence = textblob_valence  # Fallback
 
         # Combine all arousal factors with their respective weights
         total_arousal_weight = sum(weight for _, weight in arousal_factors)
         if total_arousal_weight > 0:
-            arousal = (
-                sum(val * weight for val, weight in arousal_factors)
-                / total_arousal_weight
-            )
+            arousal = sum(val * weight for val, weight in arousal_factors) / total_arousal_weight
         else:
             # Original arousal calculation as fallback
             arousal = sum(val for val, _ in arousal_factors) / len(arousal_factors)
@@ -674,7 +650,7 @@ Return the analysis as a JSON object with these fields:
 
         return valence, arousal
 
-    def _count_keyword_occurrences(self, text: str) -> Dict[EmotionCategory, int]:
+    def _count_keyword_occurrences(self, text: str) -> dict[EmotionCategory, int]:
         """Count emotion keyword occurrences in a text.
 
         Searches for emotion-specific keywords defined in the configuration,
@@ -696,7 +672,7 @@ Return the analysis as a JSON object with these fields:
             ```
         """
         text_lower = text.lower()
-        result: Dict[EmotionCategory, int] = {}
+        result: dict[EmotionCategory, int] = {}
 
         # Count occurrences for each emotion category
         for category in EmotionCategory:
@@ -707,7 +683,8 @@ Return the analysis as a JSON object with these fields:
 
         return result
 
-    def classify_emotion(self, text: str) -> Tuple[str, float]:
+    @eidosian()
+    def classify_emotion(self, text: str) -> tuple[str, float]:
         """Classify text into basic emotion categories.
 
         Uses a hybrid approach combining sentiment analysis, keyword detection,
@@ -842,9 +819,7 @@ Return the analysis as a JSON object with these fields:
             EmotionError: If the database operation fails
         """
         # Clamp confidence value
-        confidence = max(
-            self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence)
-        )
+        confidence = max(self.CONFIDENCE_RANGE[0], min(self.CONFIDENCE_RANGE[1], confidence))
 
         try:
             with self._db_connection() as conn:
@@ -864,11 +839,12 @@ Return the analysis as a JSON object with these fields:
                 },
             ) from e
 
+    @eidosian()
     def process_message(
         self,
         message_id: int,
         text: str,
-        ground_truth: Optional[EmotionCategoryType] = None,
+        ground_truth: EmotionCategoryType | None = None,
     ) -> EmotionAnalysisDict:
         """Process a message to identify and store its emotional content.
 
@@ -935,7 +911,8 @@ Return the analysis as a JSON object with these fields:
 
         return {"emotion_label": emotion_label, "confidence": confidence}
 
-    def get_metrics_report(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics_report(self) -> dict[str, Any]:
         """Get a report of emotion detection performance metrics.
 
         Summarizes the performance of emotion detection across categories,
@@ -949,9 +926,11 @@ Return the analysis as a JSON object with these fields:
             ```python
             report = emotion_manager.get_metrics_report()
             print(f"Overall accuracy: {report['overall_accuracy']:.2f}")
-            for category, metrics in report['categories'].items():
-                print(f"{category}: precision={metrics['precision']:.2f}, "
-                      f"recall={metrics['recall']:.2f}, f1={metrics['f1']:.2f}")
+            for category, metrics in report["categories"].items():
+                print(
+                    f"{category}: precision={metrics['precision']:.2f}, "
+                    f"recall={metrics['recall']:.2f}, f1={metrics['f1']:.2f}"
+                )
             ```
         """
         # Skip report if no detections recorded
@@ -988,8 +967,7 @@ Return the analysis as a JSON object with these fields:
         return {
             "total_detections": self.metrics.total_detections,
             "overall_accuracy": (
-                sum(self.metrics.true_positives.values())
-                / self.metrics.total_detections
+                sum(self.metrics.true_positives.values()) / self.metrics.total_detections
                 if self.metrics.total_detections > 0
                 else 0.0
             ),
@@ -1000,8 +978,9 @@ Return the analysis as a JSON object with these fields:
             "optimization_count": self._detection_count // self._optimization_frequency,
         }
 
+    @eidosian()
     def analyze_term_recursively(
-        self, term: str, context: Optional[Union[str, EmotionalContext]] = None
+        self, term: str, context: str | EmotionalContext | None = None
     ) -> FullEmotionAnalysisDict:
         """Perform deep emotional analysis on a term using recursive processing.
 
@@ -1040,9 +1019,7 @@ Return the analysis as a JSON object with these fields:
             actual_context = self.recursive_processor.get_context(context)
             if not actual_context and context:
                 # Try to create a domain-specific context
-                actual_context = self.recursive_processor.create_context_for_domain(
-                    context
-                )
+                actual_context = self.recursive_processor.create_context_for_domain(context)
         elif isinstance(context, EmotionalContext):
             actual_context = context
 
@@ -1053,7 +1030,7 @@ Return the analysis as a JSON object with these fields:
         emotion_label, confidence = self.classify_emotion(term)
 
         # Enhance with LLM-derived insights if available
-        additional_insights: Dict[str, Any] = {}
+        additional_insights: dict[str, Any] = {}
         if self.llm_interface and self.llm_weight > 0:
             try:
                 prompt = f"""Analyze the emotional associations of the term '{term}' in depth.
@@ -1094,8 +1071,9 @@ Format your response as a structured JSON with insights in each category."""
         if additional_insights:
             result["enhanced_insights"] = additional_insights
 
-        return cast(FullEmotionAnalysisDict, result)
+        return result
 
+    @eidosian()
     def analyze_emotional_relationship(
         self, term1: str, term2: str, relationship_type: str
     ) -> float:
@@ -1162,9 +1140,7 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
                         strength = max(0.0, min(1.0, strength))
 
                         # Weighted average
-                        return strength * self.llm_weight + base_strength * (
-                            1 - self.llm_weight
-                        )
+                        return strength * self.llm_weight + base_strength * (1 - self.llm_weight)
                     except (ValueError, TypeError):
                         # If conversion fails, fall back to base strength
                         return base_strength
@@ -1173,17 +1149,16 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
                 pass
 
         # Default recursive processor analysis
-        return self.recursive_processor.analyze_relationship(
-            term1, term2, relationship_type
-        )
+        return self.recursive_processor.analyze_relationship(term1, term2, relationship_type)
 
+    @eidosian()
     def create_emotional_context(
         self,
-        domain: Optional[str] = None,
-        cultural_factors: Optional[Dict[str, float]] = None,
-        situational_factors: Optional[Dict[str, float]] = None,
-        temporal_factors: Optional[Dict[str, float]] = None,
-        domain_specific: Optional[Dict[str, float]] = None,
+        domain: str | None = None,
+        cultural_factors: dict[str, float] | None = None,
+        situational_factors: dict[str, float] | None = None,
+        temporal_factors: dict[str, float] | None = None,
+        domain_specific: dict[str, float] | None = None,
     ) -> EmotionalContext:
         """Create a custom emotional context for analysis.
 
@@ -1205,14 +1180,11 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
             ```python
             # Create a context for analyzing medical terminology
             medical_context = emotion_manager.create_emotional_context(
-                domain="medical",
-                situational_factors={"clinical_setting": 0.8, "emergency": 0.2}
+                domain="medical", situational_factors={"clinical_setting": 0.8, "emergency": 0.2}
             )
 
             # Analyze term within this context
-            analysis = emotion_manager.analyze_term_recursively(
-                "diagnosis", medical_context
-            )
+            analysis = emotion_manager.analyze_term_recursively("diagnosis", medical_context)
             ```
         """
         # If domain is provided, start with domain-specific context
@@ -1233,6 +1205,7 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
 
         return context
 
+    @eidosian()
     def register_emotional_context(self, name: str, context: EmotionalContext) -> None:
         """Register a named emotional context for reuse.
 
@@ -1248,20 +1221,21 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
             ```python
             # Create and register a "clinical" context
             clinical = emotion_manager.create_emotional_context(
-                domain="medical",
-                situational_factors={"professional": 0.9, "emergency": 0.1}
+                domain="medical", situational_factors={"professional": 0.9, "emergency": 0.1}
             )
             emotion_manager.register_emotional_context("clinical", clinical)
 
             # Later retrieve by name
             analysis = emotion_manager.analyze_term_recursively(
-                "prognosis", "clinical"  # Using string name to reference context
+                "prognosis",
+                "clinical",  # Using string name to reference context
             )
             ```
         """
         self.recursive_processor.register_context(name, context)
 
-    def get_emotional_context(self, name: str) -> Optional[EmotionalContext]:
+    @eidosian()
+    def get_emotional_context(self, name: str) -> EmotionalContext | None:
         """Retrieve a registered emotional context by name.
 
         Args:
@@ -1281,6 +1255,7 @@ Return only a numeric value between 0.0 and 1.0 representing the strength."""
         """
         return self.recursive_processor.get_context(name)
 
+    @eidosian()
     def enrich_word_emotions(self, term: str, word_id: int) -> bool:
         """Enrich emotional data for a word using all available analysis methods.
 
@@ -1328,9 +1303,7 @@ Focus on emotional qualities rather than definitions."""
                         )
 
                         # Blend basic and LLM-enhanced values
-                        if isinstance(llm_valence, float) and isinstance(
-                            llm_arousal, float
-                        ):
+                        if isinstance(llm_valence, float) and isinstance(llm_arousal, float):
                             valence = (valence + llm_valence) / 2
                             arousal = (arousal + llm_arousal) / 2
 
@@ -1379,9 +1352,7 @@ Focus on emotional qualities rather than definitions."""
                 },
             ) from e
 
-    def _derive_emotional_relationship(
-        self, valence: float, arousal: float
-    ) -> Tuple[str, str]:
+    def _derive_emotional_relationship(self, valence: float, arousal: float) -> tuple[str, str]:
         """Map valence/arousal readings to a relationship type and anchor term."""
 
         if valence >= 0.35:

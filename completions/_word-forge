@@ -1,0 +1,46 @@
+#compdef word-forge word_forge
+
+_word_forge() {
+  local -a commands
+  commands=(
+    'init:Create the lexicon database schema'
+    'add:Add or update a language-aware entry'
+    'show:Show one exact entry'
+    'lookup:Alias for show'
+    'find:Search terms and definitions'
+    'search:Alias for find'
+    'relate:Create a typed relationship'
+    'translate:Create a translation'
+    'sense:Add or revise an independently versioned meaning'
+    'delete-sense:Tombstone one meaning while retaining history'
+    'stats:Show record counts'
+    'integrity:Check database health'
+    'backup:Create a consistent database snapshot'
+    'restore:Restore an integrity-checked snapshot'
+    'doctor:Check required and optional features'
+    'gui:Open the secure local visual workspace'
+    'serve:Alias for gui'
+    'start:Run optional enrichment workers'
+    'graph:Build, inspect, or visualize graphs'
+    'vector:Manage optional neural indexes'
+    'emotion:Run emotion analysis'
+    'demo:Run a prepared demonstration'
+    'setup-nltk:Download optional NLTK lexical datasets'
+  )
+
+  _arguments \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '(-V --version)'{-V,--version}'[show version]' \
+    '(-q --quiet)'{-q,--quiet}'[suppress non-error output]' \
+    '(-v --verbose)'{-v,--verbose}'[enable diagnostic output]' \
+    '(-c --config)'{-c,--config}'[load JSON or TOML configuration]:configuration file:_files' \
+    '1:command:->command' \
+    '*::argument:->arguments'
+
+  case $state in
+    command) _describe 'command' commands ;;
+    arguments) _normal ;;
+  esac
+}
+
+_word_forge "$@"

@@ -4,7 +4,7 @@ import threading
 import time
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, TypedDict, final
+from typing import Any, Protocol, TypedDict, final
 
 from word_forge.config import config
 from word_forge.exceptions import (  # Import specific exceptions
@@ -16,6 +16,7 @@ from word_forge.exceptions import (  # Import specific exceptions
 )
 from word_forge.graph.graph_builder import GraphUpdateMetrics
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.observability import eidosian
 
 
 class WorkerState(Enum):
@@ -37,10 +38,10 @@ class WorkerStatus(TypedDict):
     running: bool
     update_count: int
     error_count: int
-    last_update: Optional[float]
-    uptime: Optional[float]
+    last_update: float | None
+    uptime: float | None
     state: str
-    last_error: Optional[str]
+    last_error: str | None
     last_new_nodes: int
     last_new_edges: int
     last_processed_words: int
@@ -76,7 +77,7 @@ class GraphWorkerInterface(Protocol):
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def get_status(self) -> WorkerStatus: ...
-    def get_metrics(self) -> Dict[str, Any]: ...
+    def get_metrics(self) -> dict[str, Any]: ...
     def is_alive(self) -> bool: ...
     def pause(self) -> None: ...
     def resume(self) -> None: ...
@@ -104,10 +105,11 @@ class GraphWorker(threading.Thread):
     def __init__(
         self,
         graph_manager: GraphManager,
-        poll_interval: Optional[float] = None,
-        output_path: Optional[str] = None,
-        visualization_path: Optional[str] = None,
+        poll_interval: float | None = None,
+        output_path: str | None = None,
+        visualization_path: str | None = None,
         daemon: bool = True,
+        generate_visualization: bool = True,
     ) -> None:
         """
         Initialize the graph worker with configuration parameters.
@@ -118,10 +120,9 @@ class GraphWorker(threading.Thread):
             output_path: Path where the graph will be saved (defaults to config).
             visualization_path: Path where visualization will be saved (defaults to config).
             daemon: Whether thread should be daemonic (auto-terminate when main exits).
+            generate_visualization: Whether update cycles should emit HTML visualizations.
         """
-        super().__init__(
-            daemon=daemon, name="GraphWorkerThread"
-        )  # Give the thread a name
+        super().__init__(daemon=daemon, name="GraphWorker")
         self.graph_manager = graph_manager
         self.logger = logging.getLogger(__name__)
 
@@ -130,11 +131,7 @@ class GraphWorker(threading.Thread):
         self.poll_interval = (
             poll_interval
             if poll_interval is not None
-            else (
-                cfg.animation_duration_ms / 1000.0
-                if cfg.animation_duration_ms > 0
-                else 30.0
-            )
+            else (cfg.animation_duration_ms / 1000.0 if cfg.animation_duration_ms > 0 else 30.0)
         )
 
         # Ensure proper paths for output and visualization
@@ -152,15 +149,16 @@ class GraphWorker(threading.Thread):
                 else vis_path.with_suffix(".html")
             )
         self.visualization_path = str(vis_path)
+        self.generate_visualization = generate_visualization
 
         # Internal state and control flags
         self._stop_event = threading.Event()  # Use Event for clearer stop signal
         self._pause_event = threading.Event()  # Use Event for pause/resume
-        self._last_update: Optional[float] = None
-        self._start_time: Optional[float] = None
+        self._last_update: float | None = None
+        self._start_time: float | None = None
         self._update_count = 0
         self._error_count = 0
-        self._last_error: Optional[str] = None
+        self._last_error: str | None = None
         self._current_state = WorkerState.STOPPED
         self._status_lock = threading.RLock()  # Reentrant lock for status access
         self._error_backoff = self.poll_interval  # Initial backoff delay
@@ -170,6 +168,7 @@ class GraphWorker(threading.Thread):
             f"GraphWorker initialized: Poll={self.poll_interval}s, Output='{self.output_path}', Viz='{self.visualization_path}'"
         )
 
+    @eidosian()
     def pause(self) -> None:
         """Pause worker execution without stopping the thread."""
         with self._status_lock:
@@ -180,10 +179,9 @@ class GraphWorker(threading.Thread):
             elif self._current_state == WorkerState.PAUSED:
                 self.logger.info("GraphWorker already paused")
             else:
-                self.logger.warning(
-                    f"Cannot pause worker in state: {self._current_state}"
-                )
+                self.logger.warning(f"Cannot pause worker in state: {self._current_state}")
 
+    @eidosian()
     def resume(self) -> None:
         """Resume worker execution after being paused."""
         with self._status_lock:
@@ -194,16 +192,16 @@ class GraphWorker(threading.Thread):
             elif self._current_state == WorkerState.RUNNING:
                 self.logger.info("GraphWorker already running")
             else:
-                self.logger.warning(
-                    f"Cannot resume worker in state: {self._current_state}"
-                )
+                self.logger.warning(f"Cannot resume worker in state: {self._current_state}")
 
+    @eidosian()
     def restart(self) -> "GraphWorker":
         """Restart the worker and return the new running instance."""
         from .worker_factory import restart_worker
 
         return restart_worker(self)
 
+    @eidosian()
     def run(self) -> None:
         """
         Main execution loop that periodically updates and saves the graph.
@@ -225,9 +223,7 @@ class GraphWorker(threading.Thread):
         while not self._stop_event.is_set():
             if self._pause_event.is_set():
                 # Wait efficiently while paused
-                self._stop_event.wait(
-                    1.0
-                )  # Check stop event periodically even when paused
+                self._stop_event.wait(1.0)  # Check stop event periodically even when paused
                 continue
 
             cycle_start_time = time.time()
@@ -251,9 +247,7 @@ class GraphWorker(threading.Thread):
             # Calculate remaining time and wait, checking stop event
             elapsed = time.time() - cycle_start_time
             wait_duration = max(0, self.poll_interval - elapsed)
-            self._stop_event.wait(
-                wait_duration
-            )  # Wait for the remaining interval or until stopped
+            self._stop_event.wait(wait_duration)  # Wait for the remaining interval or until stopped
 
         # --- Thread Termination ---
         with self._status_lock:
@@ -275,9 +269,7 @@ class GraphWorker(threading.Thread):
             self._ensure_output_directories()
         except Exception as e:
             # Wrap directory errors
-            raise GraphDirectoryError(
-                f"Failed to ensure output directories exist: {e}", e
-            ) from e
+            raise GraphDirectoryError(f"Failed to ensure output directories exist: {e}", e) from e
 
         # 2. Verify DB tables (optional, can be intensive)
         # Consider doing this less frequently if performance is an issue
@@ -291,9 +283,7 @@ class GraphWorker(threading.Thread):
         except (GraphDataError, GraphError) as e:
             raise GraphUpdateError(f"Graph update failed: {e}", e) from e
         except Exception as e:  # Catch unexpected errors during update
-            raise GraphUpdateError(
-                f"Unexpected error during graph update: {e}", e
-            ) from e
+            raise GraphUpdateError(f"Unexpected error during graph update: {e}", e) from e
 
         # 4. Save Graph
         try:
@@ -304,16 +294,17 @@ class GraphWorker(threading.Thread):
             raise GraphSaveError(f"Unexpected error during graph save: {e}", e) from e
 
         # 5. Generate Visualization (non-critical, log warnings)
-        try:
-            self._generate_visualization()
-        except (GraphVisualizationError, GraphLayoutError, ImportError) as e:
-            self.logger.warning(f"Visualization generation failed: {e}")
-            # Optionally store this as a non-fatal error in status
-        except Exception as e:  # Catch unexpected errors during visualization
-            self.logger.warning(
-                f"Unexpected error during visualization: {e}",
-                exc_info=self.logger.isEnabledFor(logging.DEBUG),
-            )
+        if self.generate_visualization:
+            try:
+                self._generate_visualization()
+            except (GraphVisualizationError, GraphLayoutError, ImportError) as e:
+                self.logger.warning(f"Visualization generation failed: {e}")
+                # Optionally store this as a non-fatal error in status
+            except Exception as e:  # Catch unexpected errors during visualization
+                self.logger.warning(
+                    f"Unexpected error during visualization: {e}",
+                    exc_info=self.logger.isEnabledFor(logging.DEBUG),
+                )
 
         # Track successful update
         with self._status_lock:
@@ -349,9 +340,7 @@ class GraphWorker(threading.Thread):
         """Increase the error backoff delay exponentially."""
         # Increase delay, add jitter, cap at a max value (e.g., 5 minutes)
         max_backoff = 300.0
-        self._error_backoff = min(
-            max_backoff, self._error_backoff * 1.5 + random.uniform(0, 2)
-        )
+        self._error_backoff = min(max_backoff, self._error_backoff * 1.5 + random.uniform(0, 2))
         self.logger.warning(f"Increasing error backoff to {self._error_backoff:.1f}s")
 
     def _handle_execution_error(self, error: Exception) -> None:
@@ -414,17 +403,14 @@ class GraphWorker(threading.Thread):
     def _generate_visualization(self) -> None:
         """Generate graph visualization HTML file."""
         if self.graph_manager.get_node_count() > 0:
-            self.logger.debug(
-                f"Generating visualization to {self.visualization_path}..."
-            )
+            self.logger.debug(f"Generating visualization to {self.visualization_path}...")
             # Use the manager's default visualize method (which chooses 2D/3D)
-            self.graph_manager.visualize(
-                output_path=self.visualization_path, open_in_browser=False
-            )
+            self.graph_manager.visualize(output_path=self.visualization_path, open_in_browser=False)
             self.logger.debug("Visualization generation complete.")
         else:
             self.logger.debug("Skipping visualization for empty graph.")
 
+    @eidosian()
     def stop(self) -> None:
         """Signal the worker thread to stop gracefully."""
         if not self._stop_event.is_set():
@@ -436,6 +422,7 @@ class GraphWorker(threading.Thread):
         else:
             self.logger.debug(f"GraphWorker thread '{self.name}' already stopping.")
 
+    @eidosian()
     def get_status(self) -> WorkerStatus:
         """Return the current operational status of the worker."""
         with self._status_lock:
@@ -470,7 +457,8 @@ class GraphWorker(threading.Thread):
             }
             return status
 
-    def get_metrics(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics(self) -> dict[str, Any]:
         """Get performance and state metrics for the graph worker."""
         with self._status_lock:
             # Return a copy to prevent external modification
@@ -480,9 +468,7 @@ class GraphWorker(threading.Thread):
                 "last_update_timestamp": self._last_update,
                 "last_error_message": self._last_error,
                 "current_backoff_s": (
-                    self._error_backoff
-                    if self._current_state == WorkerState.ERROR
-                    else 0
+                    self._error_backoff if self._current_state == WorkerState.ERROR else 0
                 ),
                 "last_new_nodes": self._last_cycle_metrics.new_nodes,
                 "last_new_edges": self._last_cycle_metrics.new_edges,

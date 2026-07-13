@@ -12,7 +12,10 @@ Usage:
     python -m word_forge.demos.tools_demo
 """
 
+from word_forge.observability import eidosian
 
+
+@eidosian()
 def main() -> None:
     """Run utility tools demonstration.
 

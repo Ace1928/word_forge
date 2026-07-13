@@ -16,13 +16,17 @@ import contextlib
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, TypedDict, Union
+from typing import Any, TypedDict
 
-from word_forge.database.database_manager import DBManager
+from word_forge.database.database_manager import DBManager, TermNotFoundError
+from word_forge.observability import eidosian
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueProcessor, Result
+from word_forge.utils.result import Err
+from word_forge.utils.result import Result as EidosResult
 
 
 class ProcessingError(Exception):
@@ -31,8 +35,8 @@ class ProcessingError(Exception):
     def __init__(
         self,
         message: str,
-        cause: Optional[Exception] = None,
-        processing_context: Optional[Dict[str, Any]] = None,
+        cause: Exception | None = None,
+        processing_context: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -43,15 +47,14 @@ class ProcessingError(Exception):
     def __str__(self) -> str:
         error_msg = self.message
         if self.cause:
-            error_msg += f" | Cause: {str(self.cause)}"
+            error_msg += f" | Cause: {self.cause!s}"
         if self.processing_context:
-            context_str = ", ".join(
-                f"{k}={v}" for k, v in self.processing_context.items()
-            )
+            context_str = ", ".join(f"{k}={v}" for k, v in self.processing_context.items())
             error_msg += f" | Context: {{{context_str}}}"
         return error_msg
 
-    def to_dict(self) -> Dict[str, Any]:
+    @eidosian()
+    def to_dict(self) -> dict[str, Any]:
         """Convert error to dictionary for serialization."""
         return {
             "message": self.message,
@@ -96,8 +99,8 @@ class ProcessingResult:
     duration_ms: float = 0
     relationships_count: int = 0
     new_terms_count: int = 0
-    error_message: Optional[str] = None
-    relationship_types: Dict[str, int] = field(default_factory=dict)
+    error_message: str | None = None
+    relationship_types: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_success(self) -> bool:
@@ -109,6 +112,7 @@ class ProcessingResult:
         """Check if term was a duplicate."""
         return self.status == ProcessingStatus.DUPLICATE
 
+    @eidosian()
     def map(self, f: Callable[[str], str]) -> "ProcessingResult":
         """Apply transformation to term if processing was successful."""
         if not self.is_success:
@@ -131,7 +135,7 @@ class ProcessingResult:
         duration_ms: float,
         relationships_count: int,
         new_terms_count: int,
-        relationship_types: Dict[str, int],
+        relationship_types: dict[str, int],
     ) -> "ProcessingResult":
         """Create a successful processing result."""
         return cls(
@@ -153,9 +157,7 @@ class ProcessingResult:
         )
 
     @classmethod
-    def error(
-        cls, term: str, status: ProcessingStatus, message: str
-    ) -> "ProcessingResult":
+    def error(cls, term: str, status: ProcessingStatus, message: str) -> "ProcessingResult":
         """Create a result for processing errors."""
         return cls(status=status, term=term, error_message=message)
 
@@ -185,8 +187,8 @@ class ProcessingStats:
     error_count: int = 0
     total_duration_ms: float = 0
     start_time: float = field(default_factory=time.time)
-    last_processed: Optional[str] = None
-    relationship_counts: Dict[str, int] = field(default_factory=dict)
+    last_processed: str | None = None
+    relationship_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def avg_processing_time_ms(self) -> float:
@@ -203,6 +205,7 @@ class ProcessingStats:
             return 0.0
         return (self.processed_count / elapsed) * 60
 
+    @eidosian()
     def update(self, result: ProcessingResult) -> None:
         """Update statistics with a new processing result."""
         self.processed_count += 1
@@ -223,6 +226,7 @@ class ProcessingStats:
         else:
             self.error_count += 1
 
+    @eidosian()
     def reset(self) -> None:
         """Reset all statistics."""
         self.processed_count = 0
@@ -253,7 +257,7 @@ class WordProcessor(QueueProcessor[str]):
         self,
         db_manager: DBManager,
         parser_refiner: ParserRefiner,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         """
         Initialize the word processor.
@@ -269,6 +273,7 @@ class WordProcessor(QueueProcessor[str]):
         self.stats = ProcessingStats()
         self._lock = threading.RLock()
 
+    @eidosian()
     def process(self, item: str) -> Result[bool]:
         """
         Process a term from the queue.
@@ -318,7 +323,7 @@ class WordProcessor(QueueProcessor[str]):
             return Result[bool].success(processing_result.is_success)
 
         except Exception as e:
-            error_message = f"Unexpected error processing term '{item}': {str(e)}"
+            error_message = f"Unexpected error processing term '{item}': {e!s}"
             self.logger.error(error_message, exc_info=True)
 
             # Update error statistics
@@ -347,19 +352,24 @@ class WordProcessor(QueueProcessor[str]):
         # Record processing start time
         start_time = time.time()
         relationships_count = 0
-        relationship_types: Dict[str, int] = {}
+        relationship_types: dict[str, int] = {}
 
         try:
             # Get queue size before processing
             initial_queue_size = self.parser_refiner.queue_manager.size
 
             # Process the term
-            self.parser_refiner.process_word(term)
+            eidos_result: EidosResult[bool, str] = self.parser_refiner.process_word(term)
+
+            if isinstance(eidos_result, Err):
+                return ProcessingResult.error(
+                    term,
+                    ProcessingStatus.PARSER_ERROR,
+                    eidos_result.error,
+                )
 
             # Calculate new terms found (use property, not method call)
-            new_terms_count = (
-                self.parser_refiner.queue_manager.size - initial_queue_size
-            )
+            new_terms_count = self.parser_refiner.queue_manager.size - initial_queue_size
 
             # Get information about any relationships
             with contextlib.suppress(Exception):
@@ -384,12 +394,25 @@ class WordProcessor(QueueProcessor[str]):
             )
 
         except Exception as e:
-            self.logger.warning(f"Failed to process '{term}': {str(e)}")
+            if isinstance(e, TermNotFoundError):
+                self.logger.warning(
+                    "Term not found during processing. Re-queuing term '%s'.",
+                    term,
+                )
+                with contextlib.suppress(Exception):
+                    self.parser_refiner.queue_manager.enqueue(term)
+                return ProcessingResult.error(
+                    term,
+                    ProcessingStatus.GENERAL_ERROR,
+                    f"Term '{term}' not found; re-queued for processing.",
+                )
+
+            self.logger.warning(f"Failed to process '{term}': {e!s}")
             return ProcessingResult.error(
-                term, ProcessingStatus.GENERAL_ERROR, f"Error processing term: {str(e)}"
+                term, ProcessingStatus.GENERAL_ERROR, f"Error processing term: {e!s}"
             )
 
-    def _categorize_relationships(self, relationships: List[Any]) -> Dict[str, int]:
+    def _categorize_relationships(self, relationships: list[Any]) -> dict[str, int]:
         """
         Categorize and count relationship types.
 
@@ -399,7 +422,7 @@ class WordProcessor(QueueProcessor[str]):
         Returns:
             Dictionary mapping relationship types to counts
         """
-        type_counts: Dict[str, int] = {}
+        type_counts: dict[str, int] = {}
 
         for rel in relationships:
             rel_type = rel.get("relationship_type", "unknown")
@@ -410,7 +433,8 @@ class WordProcessor(QueueProcessor[str]):
 
         return type_counts
 
-    def get_statistics(self) -> Dict[str, Union[int, float, str, None, Dict[str, int]]]:
+    @eidosian()
+    def get_statistics(self) -> dict[str, int | float | str | None | dict[str, int]]:
         """
         Get comprehensive processing statistics.
 
@@ -438,6 +462,7 @@ class WordProcessor(QueueProcessor[str]):
                 "relationship_counts": self.stats.relationship_counts,
             }
 
+    @eidosian()
     def reset_statistics(self) -> None:
         """Reset all processing statistics."""
         with self._lock:
@@ -474,7 +499,7 @@ class ParallelProcessorStatus(TypedDict):
     worker_count: int
     available_workers: int
     queue_size: int
-    stats: Dict[str, Any]
+    stats: dict[str, Any]
 
 
 class ParallelWordProcessor:
@@ -493,8 +518,8 @@ class ParallelWordProcessor:
     def __init__(
         self,
         processor: WordProcessor,
-        config: Optional[WorkerPoolConfig] = None,
-        logger: Optional[logging.Logger] = None,
+        config: WorkerPoolConfig | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         """
         Initialize the parallel word processor.
@@ -507,12 +532,13 @@ class ParallelWordProcessor:
         self.processor = processor
         self.config = config or WorkerPoolConfig()
         self.logger = logger or logging.getLogger(__name__)
-        self._workers: List[threading.Thread] = []
+        self._workers: list[threading.Thread] = []
         self._stop_event = threading.Event()
         self._active_count = threading.Semaphore(self.config.worker_count)
         self._lock = threading.RLock()
         self._active = False
 
+    @eidosian()
     def start(self) -> None:
         """
         Start the parallel processing pool.
@@ -541,6 +567,7 @@ class ParallelWordProcessor:
                 f"Started parallel word processor with {self.config.worker_count} workers"
             )
 
+    @eidosian()
     def stop(self, wait: bool = True, timeout: float = 5.0) -> None:
         """
         Stop all worker threads.
@@ -561,6 +588,20 @@ class ParallelWordProcessor:
 
         self._workers = []
         self.logger.info("Stopped parallel word processor")
+
+    def is_alive(self) -> bool:
+        """Check if any worker threads are still running."""
+        return any(w.is_alive() for w in self._workers)
+
+    def join(self, timeout: float | None = None) -> None:
+        """Join all worker threads."""
+        for w in self._workers:
+            w.join(timeout)
+
+    @property
+    def name(self) -> str:
+        """Return the name of the worker pool."""
+        return "WordProcessorPool"
 
     def _worker_loop(self) -> None:
         """
@@ -591,11 +632,12 @@ class ParallelWordProcessor:
                 self.processor.process(term)
 
             except Exception as e:
-                self.logger.error(f"Worker error: {str(e)}", exc_info=True)
+                self.logger.error(f"Worker error: {e!s}", exc_info=True)
             finally:
                 # Release worker slot
                 self._active_count.release()
 
+    @eidosian()
     def get_status(self) -> ParallelProcessorStatus:
         """
         Get the current status of the parallel processor.
@@ -617,11 +659,11 @@ class ParallelWordProcessor:
 
 # Export public elements
 __all__ = [
-    "WordProcessor",
-    "ProcessingResult",
-    "ProcessingStatus",
-    "ProcessingStats",
-    "ProcessingError",
     "ParallelWordProcessor",
+    "ProcessingError",
+    "ProcessingResult",
+    "ProcessingStats",
+    "ProcessingStatus",
+    "WordProcessor",
     "WorkerPoolConfig",
 ]

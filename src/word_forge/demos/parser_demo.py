@@ -5,11 +5,12 @@ Demonstration of ParserRefiner functionality.
 import os
 import time
 from pathlib import Path
-from typing import Dict, List
 
+from word_forge.observability import eidosian
 from word_forge.parser.parser_refiner import ParserRefiner
 
 
+@eidosian()
 def run_demonstration() -> None:
     """
     Run a comprehensive demonstration of the ParserRefiner capabilities.
@@ -44,7 +45,8 @@ def run_demonstration() -> None:
     for term in demo_terms:
         print(f"\n[PROCESSING] {term}")
         start_time = time.time()
-        success = parser.process_word(term)
+        process_result = parser.process_word(term)
+        success = process_result.is_success and bool(process_result.unwrap())
         processing_time = time.time() - start_time
 
         results[term] = {"success": success, "time": processing_time}
@@ -67,15 +69,11 @@ def run_demonstration() -> None:
                 print(f"  Part of speech: {entry['part_of_speech']}")
                 print(
                     f"  Usage examples ({len(entry['usage_examples'])}): "
-                    + (
-                        entry["usage_examples"][0]
-                        if entry["usage_examples"]
-                        else "None"
-                    )
+                    + (entry["usage_examples"][0] if entry["usage_examples"] else "None")
                 )
 
                 # Display relationships
-                rel_by_type: Dict[str, List[str]] = {}
+                rel_by_type: dict[str, list[str]] = {}
                 for rel in entry["relationships"]:
                     rel_type = rel["relationship_type"]
                     if rel_type not in rel_by_type:
@@ -87,34 +85,30 @@ def run_demonstration() -> None:
                     sample_terms = terms[:5]
                     print(
                         f"  {rel_type.capitalize()} ({len(terms)}): {', '.join(sample_terms)}"
-                        + (f" and {len(terms)-5} more..." if len(terms) > 5 else "")
+                        + (f" and {len(terms) - 5} more..." if len(terms) > 5 else "")
                     )
 
                 # Show queue growth from term
                 current_queue_size = parser.queue_manager.size
-                print(
-                    f"\n  [QUEUE] Discovered {current_queue_size} new candidate terms"
-                )
+                print(f"\n  [QUEUE] Discovered {current_queue_size} new candidate terms")
 
                 # Show sample of discovered terms
                 if current_queue_size > 0:
                     sample_result = parser.queue_manager.get_sample(5)
-                    sample = (
-                        sample_result.value if hasattr(sample_result, "value") else []
-                    )
+                    sample = sample_result.value if hasattr(sample_result, "value") else []
                     # Ensure sample is not None before joining
                     sample_list = sample if sample is not None else []
                     print(
                         f"  Sample terms: {', '.join(sample_list)}"
                         + (
-                            f" and {current_queue_size-5} more..."
+                            f" and {current_queue_size - 5} more..."
                             if current_queue_size > 5
                             else ""
                         )
                     )
 
             except Exception as e:
-                print(f"  Error retrieving processed data: {str(e)}")
+                print(f"  Error retrieving processed data: {e!s}")
 
         # Show current statistics after each term
         stats = parser.get_stats()
@@ -132,17 +126,16 @@ def run_demonstration() -> None:
         queued_term = result.value if hasattr(result, "value") else str(result)
         if queued_term is not None:
             print(f"Processing term from queue: '{queued_term}'")
-            success = parser.process_word(queued_term)
+            queued_result = parser.process_word(queued_term)
+            queued_success = queued_result.is_success and bool(queued_result.unwrap())
         else:
             print("No valid term retrieved from queue")
-            success = False
-        print(f"  Status: {'✓ Success' if success else '✗ Failed'}")
+            queued_success = False
+        print(f"  Status: {'✓ Success' if queued_success else '✗ Failed'}")
 
-        if success:
+        if queued_success:
             print("\n  [SEMANTIC NETWORK GROWTH]")
-            print(
-                "  This demonstrates how the lexical graph expands through relationship chaining"
-            )
+            print("  This demonstrates how the lexical graph expands through relationship chaining")
             try:
                 # Get all words to show how the database has grown
                 all_words = parser.db_manager.get_all_words()
@@ -150,12 +143,12 @@ def run_demonstration() -> None:
                 print("  Sample entries:")
                 for i, word in enumerate(all_words[:5]):
                     print(
-                        f"   {i+1}. {word['term']}: {word['definition'][:50]}..."
+                        f"   {i + 1}. {word['term']}: {word['definition'][:50]}..."
                         if len(word["definition"]) > 50
-                        else f"   {i+1}. {word['term']}: {word['definition']}"
+                        else f"   {i + 1}. {word['term']}: {word['definition']}"
                     )
             except Exception as e:
-                print(f"  Error retrieving database data: {str(e)}")
+                print(f"  Error retrieving database data: {e!s}")
     else:
         print("Queue is empty, no additional terms to process")
 

@@ -66,7 +66,7 @@ class TestResourcePaths:
         all_paths = config.get_all_resource_paths()
         assert isinstance(all_paths, dict)
         assert len(all_paths) == len(config.resource_paths)
-        for name, path in all_paths.items():
+        for _name, path in all_paths.items():
             assert isinstance(path, Path)
             assert path.parent == tmp_path
 
@@ -104,9 +104,7 @@ class TestCustomModel:
     def test_with_custom_model_preserves_paths(self, tmp_path: Path):
         """Test that with_custom_model preserves resource paths."""
         custom_paths = {"custom": "custom.json"}
-        base_config = ParserConfig(
-            data_dir=str(tmp_path), resource_paths=custom_paths.copy()
-        )
+        base_config = ParserConfig(data_dir=str(tmp_path), resource_paths=custom_paths.copy())
         custom_config = base_config.with_custom_model("test-model")
 
         assert custom_config.data_dir == str(tmp_path)

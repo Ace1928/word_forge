@@ -21,10 +21,11 @@ Architecture:
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import cached_property
-from typing import ClassVar, Dict, Literal, Optional, TypeAlias, Union, cast
+from typing import ClassVar, Literal, TypeAlias, cast
 
 # Import necessary types from config_essentials
 from word_forge.configs.config_essentials import EnvMapping
+from word_forge.observability import eidosian
 
 # Define missing types locally or import if they exist elsewhere
 LockType: TypeAlias = Literal["reentrant", "standard"]
@@ -81,7 +82,7 @@ class QueueConfig:
 
     # Cache and queue limits
     lru_cache_size: int = 128
-    max_queue_size: Optional[int] = None  # None = unlimited
+    max_queue_size: int | None = None  # None = unlimited
 
     # Processing options
     apply_default_normalization: bool = True
@@ -96,7 +97,7 @@ class QueueConfig:
     max_sample_size: int = 100
 
     # Performance profiles
-    performance_profile: Optional[QueuePerformanceProfile] = None
+    performance_profile: QueuePerformanceProfile | None = None
 
     # Environment variable mapping for configuration overrides
     ENV_VARS: ClassVar[EnvMapping] = {
@@ -138,6 +139,7 @@ class QueueConfig:
             return float(self.batch_size)  # Avoid division by zero
         return self.batch_size / self.throttle_seconds
 
+    @eidosian()
     def with_batch_size(self, batch_size: int) -> "QueueConfig":
         """
         Create a new config instance with modified batch size.
@@ -162,9 +164,8 @@ class QueueConfig:
             performance_profile=self.performance_profile,
         )
 
-    def with_performance_profile(
-        self, profile: Optional[QueuePerformanceProfile]
-    ) -> "QueueConfig":
+    @eidosian()
+    def with_performance_profile(self, profile: QueuePerformanceProfile | None) -> "QueueConfig":
         """
         Apply a predefined performance profile to the configuration.
 
@@ -206,6 +207,7 @@ class QueueConfig:
 
         return config
 
+    @eidosian()
     def optimize_for_threading(self, enable: bool) -> "QueueConfig":
         """
         Optimize configuration for threaded or non-threaded operation.
@@ -235,13 +237,12 @@ class QueueConfig:
             config.lock_type = "reentrant"
         else:
             # No locking needed without threading
-            config.batch_size = min(
-                config.batch_size * 2, 500
-            )  # Can process more at once
+            config.batch_size = min(config.batch_size * 2, 500)  # Can process more at once
 
         return config
 
-    def get_metrics_config(self) -> Dict[str, Union[bool, str, int]]:
+    @eidosian()
+    def get_metrics_config(self) -> dict[str, bool | str | int]:
         """
         Get configuration subset for metrics collection.
 
@@ -260,8 +261,8 @@ class QueueConfig:
 # ==========================================
 
 __all__ = [
-    "QueueConfig",
     "LockType",
-    "QueuePerformanceProfile",
+    "QueueConfig",
     "QueueMetricsFormat",
+    "QueuePerformanceProfile",
 ]

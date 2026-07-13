@@ -7,7 +7,7 @@ type consistency across different components like the manager, models,
 and workers.
 """
 
-from typing import Any, Dict, List, Optional, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict
 
 # Import Result from config_essentials
 from word_forge.configs.config_essentials import Result
@@ -15,6 +15,7 @@ from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.emotion.emotion_types import EmotionAnalysisDict
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.observability import eidosian
 from word_forge.vectorizer.vector_store import VectorStore
 
 
@@ -34,7 +35,7 @@ class MessageDict(TypedDict):
     speaker: str
     text: str
     timestamp: float
-    emotion: Optional[EmotionAnalysisDict]
+    emotion: EmotionAnalysisDict | None
 
 
 class ConversationDict(TypedDict):
@@ -53,7 +54,17 @@ class ConversationDict(TypedDict):
     status: str
     created_at: float
     updated_at: float
-    messages: List[MessageDict]
+    messages: list[MessageDict]
+
+
+class ConversationSummaryDict(TypedDict):
+    """Compact conversation row returned by history listings."""
+
+    id: int
+    status: str
+    created_at: float
+    updated_at: float
+    message_count: int
 
 
 class ModelContext(TypedDict, total=False):
@@ -80,24 +91,25 @@ class ModelContext(TypedDict, total=False):
     """
 
     conversation_id: int
-    history: List[MessageDict]
+    history: list[MessageDict]
     current_input: str
     speaker: str
     db_manager: DBManager
     emotion_manager: EmotionManager
     graph_manager: GraphManager
     vector_store: VectorStore
-    reflexive_output: Optional[Any]  # Output from ReflexiveModel
-    intermediate_response: Optional[str]  # Output from AffectiveLexicalModel
-    affective_state: Optional[Dict[str, Any]]  # State from AffectiveLexicalModel
-    identity_state: Optional[Dict[str, Any]]  # State related to IdentityModel
-    additional_data: Dict[str, Any]
+    reflexive_output: Any | None  # Output from ReflexiveModel
+    intermediate_response: str | None  # Output from AffectiveLexicalModel
+    affective_state: dict[str, Any] | None  # State from AffectiveLexicalModel
+    identity_state: dict[str, Any] | None  # State related to IdentityModel
+    additional_data: dict[str, Any]
 
 
 # Define Protocols for the models based on their expected methods
 class ReflexiveModel(Protocol):
     """Protocol for the initial, fast reflexive response model."""
 
+    @eidosian()
     def generate_reflex(self, context: ModelContext) -> Result[ModelContext]:
         """
         Generates a quick initial response or context update.
@@ -114,6 +126,7 @@ class ReflexiveModel(Protocol):
 class LightweightModel(Protocol):
     """Protocol for the routing and basic processing model."""
 
+    @eidosian()
     def process(self, context: ModelContext) -> Result[ModelContext]:
         """
         Processes the context, potentially routing or performing basic tasks.
@@ -130,6 +143,7 @@ class LightweightModel(Protocol):
 class AffectiveLexicalModel(Protocol):
     """Protocol for the core understanding and response generation model."""
 
+    @eidosian()
     def generate_core_response(self, context: ModelContext) -> Result[ModelContext]:
         """
         Generates the main response based on deep understanding.
@@ -146,6 +160,7 @@ class AffectiveLexicalModel(Protocol):
 class IdentityModel(Protocol):
     """Protocol for the personality, consistency, and refinement model."""
 
+    @eidosian()
     def refine_response(self, context: ModelContext) -> Result[str]:
         """
         Refines the intermediate response based on identity and consistency.
@@ -160,11 +175,11 @@ class IdentityModel(Protocol):
 
 
 __all__ = [
-    "MessageDict",
+    "AffectiveLexicalModel",
     "ConversationDict",
+    "IdentityModel",
+    "LightweightModel",
+    "MessageDict",
     "ModelContext",
     "ReflexiveModel",
-    "LightweightModel",
-    "AffectiveLexicalModel",
-    "IdentityModel",
 ]

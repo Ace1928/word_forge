@@ -3,8 +3,10 @@ Demonstration of DBManager functionality.
 """
 
 from word_forge.database.database_manager import DatabaseError, DBManager
+from word_forge.observability import eidosian
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrate DBManager functionality with basic CRUD operations.

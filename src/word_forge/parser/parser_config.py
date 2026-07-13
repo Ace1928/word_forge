@@ -23,9 +23,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar
 
 from word_forge.configs.config_essentials import DATA_ROOT, ConfigError, EnvMapping
+from word_forge.observability import eidosian
 
 
 # Custom exception for resource handling
@@ -69,11 +70,11 @@ class ParserConfig:
     # Control language model usage for examples
     enable_model: bool = True
 
-    # Custom language model name (None = use vectorizer's model)
-    model_name: Optional[str] = None
+    # Custom language model name (None = defer to explicit runtime selection)
+    model_name: str | None = None
 
     # Resource paths relative to data_dir
-    resource_paths: Dict[str, str] = field(
+    resource_paths: dict[str, str] = field(
         default_factory=lambda: {
             "openthesaurus": "openthesaurus.jsonl",
             "odict": "odict.json",
@@ -100,6 +101,7 @@ class ParserConfig:
         """
         return Path(self.data_dir)
 
+    @eidosian()
     def get_full_resource_path(self, resource_name: str) -> Path:
         """
         Get absolute path for a resource.
@@ -126,6 +128,7 @@ class ParserConfig:
             )
         return self.data_dir_path / self.resource_paths[resource_name]
 
+    @eidosian()
     def resource_exists(self, resource_name: str) -> bool:
         """
         Check if a resource exists on the filesystem.
@@ -141,18 +144,17 @@ class ParserConfig:
         """
         return self.get_full_resource_path(resource_name).exists()
 
-    def get_all_resource_paths(self) -> Dict[str, Path]:
+    @eidosian()
+    def get_all_resource_paths(self) -> dict[str, Path]:
         """
         Get absolute paths for all configured resources.
 
         Returns:
             Dict[str, Path]: Mapping of resource names to absolute paths
         """
-        return {
-            name: self.data_dir_path / path
-            for name, path in self.resource_paths.items()
-        }
+        return {name: self.data_dir_path / path for name, path in self.resource_paths.items()}
 
+    @eidosian()
     def with_custom_model(self, model_name: str) -> ParserConfig:
         """
         Create a new configuration with a custom language model.

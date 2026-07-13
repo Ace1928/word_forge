@@ -9,8 +9,10 @@ from pathlib import Path
 
 from word_forge.database.database_manager import DBManager
 from word_forge.database.database_worker import DatabaseWorker
+from word_forge.observability import eidosian
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrate DatabaseWorker initialization and operation.
@@ -69,6 +71,7 @@ def main() -> None:
     )
 
     # Define function to display worker status
+    @eidosian()
     def display_status():
         status = worker.get_status()
 
@@ -151,21 +154,15 @@ def main() -> None:
         logger.info(f"Average duration: {metrics['avg_duration_ms']:.2f}ms")
 
         if metrics["maintenance"]["last_run"]:
-            logger.info(
-                f"Last maintenance: {time.ctime(metrics['maintenance']['last_run'])}"
-            )
+            logger.info(f"Last maintenance: {time.ctime(metrics['maintenance']['last_run'])}")
 
         if metrics["backup"]["last_run"]:
             logger.info(f"Last backup: {time.ctime(metrics['backup']['last_run'])}")
             logger.info(f"Backup location: {metrics['backup']['backup_path']}")
 
         if metrics["optimization"]["last_run"]:
-            logger.info(
-                f"Last optimization: {time.ctime(metrics['optimization']['last_run'])}"
-            )
-            logger.info(
-                f"Optimization level: {metrics['optimization']['current_level']}"
-            )
+            logger.info(f"Last optimization: {time.ctime(metrics['optimization']['last_run'])}")
+            logger.info(f"Optimization level: {metrics['optimization']['current_level']}")
 
         logger.info("-" * 60)
 

@@ -23,13 +23,14 @@ from __future__ import annotations
 import logging
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import networkx as nx
 
 # Import necessary components
 from word_forge.exceptions import GraphIOError, NodeNotFoundError
 from word_forge.graph.graph_config import Term
+from word_forge.observability import eidosian
 
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
@@ -61,7 +62,8 @@ class GraphIO:
         # Use config from manager for consistency
         self._config = self.manager.config
 
-    def save_to_gexf(self, path: Optional[str] = None) -> None:
+    @eidosian()
+    def save_to_gexf(self, path: str | None = None) -> None:
         """
         Save the current graph state to a GEXF file.
 
@@ -99,9 +101,7 @@ class GraphIO:
         # Ensure the path includes the .gexf extension
         if save_path.suffix.lower() != ".gexf":
             save_path = save_path.with_suffix(".gexf")
-            self.logger.debug(
-                f"Adjusted save path to include .gexf extension: {save_path}"
-            )
+            self.logger.debug(f"Adjusted save path to include .gexf extension: {save_path}")
 
         self.logger.info(
             f"Saving graph ({self.manager.g.number_of_nodes()} nodes, {self.manager.g.number_of_edges()} edges) to GEXF: {save_path}"
@@ -123,16 +123,15 @@ class GraphIO:
             self.logger.info(f"Graph successfully saved to {save_path}")
         except ImportError:
             # This should ideally not happen if lxml is installed, but good practice
-            self.logger.error(
-                "Saving to GEXF requires the 'lxml' library. Please install it."
-            )
+            self.logger.error("Saving to GEXF requires the 'lxml' library. Please install it.")
             raise GraphIOError("Missing 'lxml' library required for GEXF export.")
         except Exception as e:
             self.logger.error(f"Failed to save graph to GEXF file '{save_path}': {e}")
             self.logger.debug(f"Traceback: {traceback.format_exc()}", exc_info=True)
             raise GraphIOError(f"Error writing GEXF file: {e}", e) from e
 
-    def load_from_gexf(self, path: Optional[str] = None) -> None:
+    @eidosian()
+    def load_from_gexf(self, path: str | None = None) -> None:
         """
         Load graph data from a GEXF file, replacing the current graph.
 
@@ -185,9 +184,7 @@ class GraphIO:
                 term = data.get("term")
                 # GEXF loads node IDs as strings, ensure consistency if needed
                 # current_node_id = int(node_id) # Assuming IDs were saved as ints
-                current_node_id = (
-                    node_id  # Keep as loaded type unless conversion needed
-                )
+                current_node_id = node_id  # Keep as loaded type unless conversion needed
 
                 if term:
                     self.manager._term_to_id[str(term).lower()] = current_node_id
@@ -220,7 +217,7 @@ class GraphIO:
                     has_positions = True
 
             # Recalculate relationship counts
-            for u, v, data in loaded_graph.edges(data=True):
+            for _u, _v, data in loaded_graph.edges(data=True):
                 rel_type = data.get("relationship")
                 if rel_type:
                     self.manager._relationship_counts[rel_type] = (
@@ -229,19 +226,13 @@ class GraphIO:
 
             # If positions weren't loaded from GEXF, compute layout
             if not has_positions and loaded_graph.number_of_nodes() > 0:
-                self.logger.info(
-                    "No position data found in GEXF, computing default layout."
-                )
+                self.logger.info("No position data found in GEXF, computing default layout.")
                 self.manager.layout.compute_layout()
             elif has_positions:
-                self.logger.info(
-                    f"Loaded {len(self.manager._positions)} node positions from GEXF."
-                )
+                self.logger.info(f"Loaded {len(self.manager._positions)} node positions from GEXF.")
 
         except ImportError:
-            self.logger.error(
-                "Loading from GEXF requires the 'lxml' library. Please install it."
-            )
+            self.logger.error("Loading from GEXF requires the 'lxml' library. Please install it.")
             raise GraphIOError("Missing 'lxml' library required for GEXF import.")
         except Exception as e:
             self.logger.error(f"Failed to load graph from GEXF file '{load_path}': {e}")
@@ -253,9 +244,8 @@ class GraphIO:
             self.manager._relationship_counts.clear()
             raise GraphIOError(f"Error reading GEXF file: {e}", e) from e
 
-    def export_subgraph(
-        self, term: Term, depth: int = 1, output_path: Optional[str] = None
-    ) -> str:
+    @eidosian()
+    def export_subgraph(self, term: Term, depth: int = 1, output_path: str | None = None) -> str:
         """
         Extract and save a subgraph centered around a specific term.
 
@@ -290,9 +280,7 @@ class GraphIO:
 
         # Extract the subgraph using NetworkX's ego_graph
         # ego_graph includes the center node and all nodes within the radius (depth)
-        subgraph_nodes = nx.ego_graph(
-            self.manager.g, start_node_id, radius=depth
-        ).nodes()
+        subgraph_nodes = nx.ego_graph(self.manager.g, start_node_id, radius=depth).nodes()
         subgraph = self.manager.g.subgraph(
             subgraph_nodes
         ).copy()  # Create a copy to avoid modifying the original
@@ -343,8 +331,6 @@ class GraphIO:
             self.logger.error("Saving to GEXF requires the 'lxml' library.")
             raise GraphIOError("Missing 'lxml' library required for GEXF export.")
         except Exception as e:
-            self.logger.error(
-                f"Failed to save subgraph to GEXF file '{save_path}': {e}"
-            )
+            self.logger.error(f"Failed to save subgraph to GEXF file '{save_path}': {e}")
             self.logger.debug(f"Traceback: {traceback.format_exc()}", exc_info=True)
             raise GraphIOError(f"Error writing subgraph GEXF file: {e}", e) from e

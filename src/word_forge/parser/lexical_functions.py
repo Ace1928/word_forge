@@ -1,4 +1,3 @@
-# filepath: /home/lloyd/eidosian_forge/word_forge/src/word_forge/parser/lexical_functions.py
 # ============================================================================
 #                              IMPORTS
 # ============================================================================
@@ -7,27 +6,13 @@ import json
 import os
 import re
 import typing
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import IO, Any
 
-from nltk.corpus import wordnet as wn  # type: ignore
-from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
-
-# Optional dependency for DBnary RDF processing
-try:
-    from rdflib import Graph
-    from rdflib import Literal as RdfLiteral
-    from rdflib.query import ResultRow
-
-    _rdflib_available = True
-except ImportError:
-    _rdflib_available = False
-    Graph = None  # type: ignore[assignment]
-    RdfLiteral = None  # type: ignore[assignment]
-    ResultRow = None  # type: ignore[assignment]
-
-from word_forge.utils.nltk_utils import ensure_nltk_data
+from nltk.corpus import wordnet as wn
+from nltk.corpus.reader.wordnet import Lemma, Synset
 
 from word_forge.configs.config_essentials import (
     DbnaryEntry,
@@ -39,13 +24,36 @@ from word_forge.configs.config_essentials import (
     T,
     WordnetEntry,
 )
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
+from word_forge.parser.structured_validator import EnrichmentSchema, validated_query
+from word_forge.utils.nltk_utils import ensure_nltk_data
+
+# Optional dependency for DBnary RDF processing
+Graph: Any
+RdfLiteral: Any
+ResultRow: Any
+try:
+    from rdflib import Graph as _Graph
+    from rdflib import Literal as _RdfLiteral
+    from rdflib.query import ResultRow as _ResultRow
+
+    Graph = _Graph
+    RdfLiteral = _RdfLiteral
+    ResultRow = _ResultRow
+    _rdflib_available = True
+except ImportError:
+    _rdflib_available = False
+    Graph = None
+    RdfLiteral = None
+    ResultRow = None
 
 
 # ============================================================================
 #                           FILE OPERATIONS
 # ============================================================================
-def file_exists(file_path: Union[str, Path]) -> bool:
+@eidosian()
+def file_exists(file_path: str | Path) -> bool:
     """
     Check if a file exists at the specified path.
 
@@ -58,10 +66,11 @@ def file_exists(file_path: Union[str, Path]) -> bool:
     return os.path.isfile(file_path)
 
 
+@eidosian()
 @contextmanager
 def safe_open(
-    file_path: Union[str, Path], mode: str = "r", encoding: str = "utf-8"
-) -> Iterator[Optional[IO[Any]]]:
+    file_path: str | Path, mode: str = "r", encoding: str = "utf-8"
+) -> Iterator[IO[Any] | None]:
     """
     Safely open a file, handling non-existent files and IO errors.
 
@@ -84,13 +93,12 @@ def safe_open(
         with open(file_path, mode, encoding=encoding) as f:
             fh: IO[Any] = f
             yield fh
-    except (IOError, OSError) as e:
-        raise LexicalResourceError(f"Error opening file {file_path}: {str(e)}")
+    except OSError as e:
+        raise LexicalResourceError(f"Error opening file {file_path}: {e!s}")
 
 
-def read_json_file(
-    file_path: Union[str, Path], default_value: T = None
-) -> Union[JsonData, T]:
+@eidosian()
+def read_json_file(file_path: str | Path, default_value: T | None = None) -> JsonData | T | None:
     """
     Read and parse a JSON file, returning a default value if the file doesn't exist or is invalid.
 
@@ -113,9 +121,10 @@ def read_json_file(
             return default_value
 
 
+@eidosian()
 def read_jsonl_file(
-    file_path: Union[str, Path], process_func: Callable[[Dict[str, Any]], Optional[T]]
-) -> List[T]:
+    file_path: str | Path, process_func: Callable[[dict[str, Any]], T | None]
+) -> list[T]:
     """
     Read and process a JSON Lines file line by line.
 
@@ -129,7 +138,7 @@ def read_jsonl_file(
     Raises:
         LexicalResourceError: If file cannot be accessed or processing fails
     """
-    results: List[T] = []
+    results: list[T] = []
     with safe_open(file_path) as fh:
         if fh is None:
             return results
@@ -146,9 +155,7 @@ def read_jsonl_file(
                 if processed is not None:
                     results.append(processed)
         except Exception as e:
-            raise ResourceParsingError(
-                f"Error processing line {line_num} in {file_path}: {str(e)}"
-            )
+            raise ResourceParsingError(f"Error processing line {line_num} in {file_path}: {e!s}")
 
     return results
 
@@ -156,14 +163,16 @@ def read_jsonl_file(
 # ============================================================================
 #                            WORDNET FUNCTIONS
 # ============================================================================
+@eidosian()
 @functools.lru_cache(maxsize=1024)
-def get_synsets(word: str) -> List[Synset]:
+def get_synsets(word: str) -> list[Synset]:
     """Retrieve synsets from WordNet for a given word with efficient caching."""
     ensure_nltk_data()
-    return wn.synsets(word)  # type: ignore
+    return wn.synsets(word)
 
 
-def get_wordnet_data(word: str) -> List[WordnetEntry]:
+@eidosian()
+def get_wordnet_data(word: str) -> list[WordnetEntry]:
     """
     Extract comprehensive linguistic data from WordNet for a given word.
 
@@ -174,21 +183,21 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
         List of structured entries containing definitions, examples, synonyms, antonyms,
         and part-of-speech information
     """
-    results: List[WordnetEntry] = []
-    synsets: List[Synset] = get_synsets(word)
+    results: list[WordnetEntry] = []
+    synsets: list[Synset] = get_synsets(word)
 
     for synset in synsets:
-        lemmas: List[Lemma] = synset.lemmas() or []
-        synonyms: List[str] = []
+        lemmas: list[Lemma] = synset.lemmas() or []
+        synonyms: list[str] = []
         for lemma in lemmas:
             name = lemma.name()
             if isinstance(name, str):
                 synonyms.append(name.replace("_", " "))
 
         # Extract antonyms from lemmas
-        antonyms: List[str] = []
+        antonyms: list[str] = []
         for lemma in lemmas:
-            lemma_antonyms: List[Lemma] = lemma.antonyms()
+            lemma_antonyms: list[Lemma] = lemma.antonyms()
             for antonym in lemma_antonyms:
                 antonym_name = antonym.name()
                 if isinstance(antonym_name, str):
@@ -197,19 +206,15 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
 
         # Explicitly type with expected return types but handle variations
         # Cast the result to Optional[str] as nltk types might be incomplete
-        definition_result: Optional[str] = typing.cast(
-            Optional[str], synset.definition()
-        )
+        definition_result: str | None = typing.cast(str | None, synset.definition())
         definition: str = definition_result if definition_result is not None else ""
 
         # Cast the result to Optional[List[str]]
-        examples_result: Optional[List[str]] = typing.cast(
-            Optional[List[str]], synset.examples()
-        )
-        examples: List[str] = examples_result if examples_result is not None else []
+        examples_result: list[str] | None = typing.cast(list[str] | None, synset.examples())
+        examples: list[str] = examples_result if examples_result is not None else []
 
         # Cast the result to Optional[str]
-        pos_result: Optional[str] = typing.cast(Optional[str], synset.pos())
+        pos_result: str | None = typing.cast(str | None, synset.pos())
         pos: str = pos_result if pos_result is not None else ""
 
         results.append(
@@ -229,7 +234,8 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
 # ============================================================================
 #                          LEXICAL DATA SOURCES
 # ============================================================================
-def get_openthesaurus_data(word: str, openthesaurus_path: str) -> List[str]:
+@eidosian()
+def get_openthesaurus_data(word: str, openthesaurus_path: str) -> list[str]:
     """
     Extract synonyms from OpenThesaurus for a given word.
 
@@ -241,13 +247,14 @@ def get_openthesaurus_data(word: str, openthesaurus_path: str) -> List[str]:
         List of unique synonyms with duplicates removed while preserving order
     """
 
-    def process_line(data: Dict[str, Any]) -> Optional[List[str]]:
+    @eidosian()
+    def process_line(data: dict[str, Any]) -> list[str] | None:
         words = data.get("words", [])
         if word in words:
             return [w for w in words if w != word]
         return None
 
-    synonyms: List[str] = []
+    synonyms: list[str] = []
     for syns in read_jsonl_file(openthesaurus_path, process_line):
         synonyms.extend(syns)
 
@@ -255,6 +262,7 @@ def get_openthesaurus_data(word: str, openthesaurus_path: str) -> List[str]:
     return list(dict.fromkeys(synonyms))
 
 
+@eidosian()
 def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
     """
     Retrieve dictionary data from ODict for a given word.
@@ -271,11 +279,7 @@ def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
         "examples": [],
     }
     odict_data = read_json_file(odict_path, {})
-    entry = (
-        odict_data.get(word, default_entry)
-        if isinstance(odict_data, dict)
-        else default_entry
-    )
+    entry = odict_data.get(word, default_entry) if isinstance(odict_data, dict) else default_entry
     if isinstance(entry, dict) and "definition" in entry and "examples" in entry:
         examples_raw = entry.get("examples", [])
         if isinstance(examples_raw, list):
@@ -286,7 +290,8 @@ def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
     return default_entry
 
 
-def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
+@eidosian()
+def get_dbnary_data(word: str, dbnary_path: str) -> list[DbnaryEntry]:
     """
     Extract linguistic data from DBnary RDF for a given word.
 
@@ -323,7 +328,7 @@ def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
         """
 
         results = graph.query(sparql_query)
-        output: List[DbnaryEntry] = []
+        output: list[DbnaryEntry] = []
 
         for row in results:
             # Ensure row is a ResultRow before accessing elements by index/key
@@ -336,27 +341,22 @@ def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
 
             # Convert rdflib Nodes (Literal, URIRef) to string safely
             definition = (
-                str(definition_node.value)
-                if isinstance(definition_node, RdfLiteral)
-                else ""
+                str(definition_node.value) if isinstance(definition_node, RdfLiteral) else ""
             )
             translation = (
-                str(translation_node.value)
-                if isinstance(translation_node, RdfLiteral)
-                else ""
+                str(translation_node.value) if isinstance(translation_node, RdfLiteral) else ""
             )
 
             if definition or translation:
-                output.append(
-                    DbnaryEntry(definition=definition, translation=translation)
-                )
+                output.append(DbnaryEntry(definition=definition, translation=translation))
 
         return output
 
     except Exception as e:
-        raise LexicalResourceError(f"Error processing Dbnary data: {str(e)}")
+        raise LexicalResourceError(f"Error processing Dbnary data: {e!s}")
 
 
+@eidosian()
 def get_opendictdata(word: str, opendict_path: str) -> DictionaryEntry:
     """
     Retrieve dictionary data from OpenDict for a given word.
@@ -377,16 +377,15 @@ def get_opendictdata(word: str, opendict_path: str) -> DictionaryEntry:
     if isinstance(entry, dict) and "definition" in entry and "examples" in entry:
         # Ensure examples are processed correctly into List[str]
         examples_raw = entry.get("examples", [])
-        examples: List[str] = []
+        examples: list[str] = []
         if isinstance(examples_raw, list):
-            examples = [
-                str(ex) for ex in examples_raw if isinstance(ex, (str, int, float))
-            ]
+            examples = [str(ex) for ex in examples_raw if isinstance(ex, (str, int, float))]
         return DictionaryEntry(definition=str(entry["definition"]), examples=examples)
     return default_entry
 
 
-def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
+@eidosian()
+def get_thesaurus_data(word: str, thesaurus_path: str) -> list[str]:
     """
     Extract synonyms from Thesaurus for a given word.
 
@@ -398,12 +397,13 @@ def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
         List of synonyms from the thesaurus source
     """
 
-    def process_line(data: Dict[str, Any]) -> Optional[List[str]]:
+    @eidosian()
+    def process_line(data: dict[str, Any]) -> list[str] | None:
         if word == data.get("word"):
             return data.get("synonyms", [])
         return None
 
-    results: List[str] = []
+    results: list[str] = []
     for syns in read_jsonl_file(thesaurus_path, process_line):
         results.extend(syns)
 
@@ -413,11 +413,12 @@ def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
 # ============================================================================
 #                       EXAMPLE GENERATION FUNCTIONS
 # ============================================================================
+@eidosian()
 def generate_example_usage(
     word: str,
     definition: str,
-    synonyms: List[str],
-    antonyms: List[str],
+    synonyms: list[str],
+    antonyms: list[str],
     pos: str,
     model_state: ModelState,
 ) -> str:
@@ -474,9 +475,67 @@ def generate_example_usage(
     return f"Could not extract valid example for '{word}'."
 
 
+@eidosian()
+def generate_comprehensive_enrichment(
+    word: str,
+    definition: str,
+    pos: str,
+    model_state: ModelState,
+) -> dict[str, Any]:
+    """
+    Generate comprehensive lexical and semantic enrichment using the LLM.
+
+    Extracts holonyms, meronyms, hypernyms, hyponyms, and emotional dimensions.
+    Utilizes validated_query for schema enforcement and retries.
+
+    Args:
+        word: Target word
+        definition: Known definition
+        pos: Part of speech
+        model_state: Language model state
+
+    Returns:
+        Dictionary containing enriched data fields.
+    """
+    prompt = (
+        f"Analyze the word '{word}' ({pos}: {definition}).\n"
+        "Provide a JSON object with the following schema:\n"
+        "{\n"
+        '  "word": "string",\n'
+        '  "definition": "string",\n'
+        '  "synonyms": ["list of strings"],\n'
+        '  "antonyms": ["list of strings"],\n'
+        '  "hypernyms": ["list of strings"],\n'
+        '  "hyponyms": ["list of strings"],\n'
+        '  "holonyms": ["list of strings"],\n'
+        '  "meronyms": ["list of strings"],\n'
+        '  "emotional_valence": float (-1.0 to 1.0),\n'
+        '  "emotional_arousal": float (0.0 to 1.0),\n'
+        '  "connotation": "positive|negative|neutral",\n'
+        '  "usage_examples": ["list of strings"]\n'
+        "}\n"
+        "Return ONLY valid JSON."
+    )
+
+    result = validated_query(
+        model_state=model_state,
+        prompt=prompt,
+        context_word=word,
+        max_retries=2,
+        schema=EnrichmentSchema,
+    )
+
+    if result.is_success:
+        return result.unwrap()
+    else:
+        # Fallback to empty if even validated_query fails
+        return {}
+
+
 # ============================================================================
 #                          DATASET CREATION
 # ============================================================================
+@eidosian()
 def create_lexical_dataset(
     word: str,
     openthesaurus_path: str = "data/openthesaurus.jsonl",
@@ -484,7 +543,7 @@ def create_lexical_dataset(
     dbnary_path: str = "data/dbnary.ttl",
     opendict_path: str = "data/opendict.json",
     thesaurus_path: str = "data/thesaurus.jsonl",
-    model_state: ModelState = None,
+    model_state: ModelState | None = None,
 ) -> LexicalDataset:
     """
     Create a comprehensive dataset of lexical information for a word.
@@ -501,9 +560,6 @@ def create_lexical_dataset(
     Returns:
         Dictionary containing comprehensive lexical data from all sources
     """
-    if model_state is None:
-        model_state = ModelState()
-
     wordnet_data = get_wordnet_data(word)
 
     dataset: LexicalDataset = {
@@ -518,7 +574,7 @@ def create_lexical_dataset(
     }
 
     # Generate an example sentence if WordNet data exists
-    if wordnet_data:
+    if wordnet_data and model_state is not None:
         first_entry = wordnet_data[0]
         example = generate_example_usage(
             word,
@@ -530,9 +586,7 @@ def create_lexical_dataset(
         )
         dataset["example_sentence"] = example
     else:
-        dataset["example_sentence"] = (
-            "No example available due to missing WordNet data."
-        )
+        dataset["example_sentence"] = ""
 
     return dataset
 

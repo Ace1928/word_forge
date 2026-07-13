@@ -26,7 +26,7 @@ Architecture:
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from functools import cached_property
-from typing import Any, ClassVar, Dict, List, Set  # Added Dict, Any
+from typing import Any, ClassVar  # Added Dict, Any
 
 # Import core types and enums for configuration structure
 from word_forge.configs.config_essentials import (
@@ -38,6 +38,7 @@ from word_forge.configs.config_essentials import (
     EnvMapping,  # Type alias for environment variable mapping dictionary
     EnvVarType,  # Union of allowed types for environment variables
 )
+from word_forge.observability import eidosian
 
 
 @dataclass(frozen=True)  # Immutable configuration for safety
@@ -89,7 +90,9 @@ class ConversationConfig:
         {'created_at', 'user_id', 'title', 'tags', 'source', 'language', 'summary', 'conversation_id'}
         >>> print(config.auto_archive_threshold)
         30 days, 0:00:00
-        >>> new_config = config.with_retention_policy(ConversationRetentionPolicy.DELETE_AFTER_90_DAYS)
+        >>> new_config = config.with_retention_policy(
+        ...     ConversationRetentionPolicy.DELETE_AFTER_90_DAYS
+        ... )
         >>> print(new_config.default_retention_policy)
         ConversationRetentionPolicy.DELETE_AFTER_90_DAYS
 
@@ -111,10 +114,10 @@ class ConversationConfig:
     default_status: ConversationStatusValue = "active"
 
     # --- Metadata Schema ---
-    required_metadata: Set[str] = field(
+    required_metadata: set[str] = field(
         default_factory=lambda: {"conversation_id", "created_at", "user_id"}
     )
-    optional_metadata: Set[str] = field(
+    optional_metadata: set[str] = field(
         default_factory=lambda: {"title", "tags", "source", "language", "summary"}
     )
 
@@ -123,12 +126,10 @@ class ConversationConfig:
     default_title_length: int = 50
 
     # --- Retention Settings ---
-    default_retention_policy: ConversationRetentionPolicy = (
-        ConversationRetentionPolicy.KEEP_FOREVER
-    )
+    default_retention_policy: ConversationRetentionPolicy = ConversationRetentionPolicy.KEEP_FOREVER
 
     # --- Export Settings ---
-    export_formats: List[ConversationExportFormat] = field(
+    export_formats: list[ConversationExportFormat] = field(
         default_factory=lambda: [
             ConversationExportFormat.JSON,
             ConversationExportFormat.MARKDOWN,
@@ -148,28 +149,28 @@ class ConversationConfig:
     ENV_VARS: ClassVar[EnvMapping] = {
         "WORD_FORGE_CONVERSATION_MAX_HISTORY": (
             "max_history_length",
-            "int",
+            int,
         ),
         "WORD_FORGE_CONVERSATION_DEFAULT_STATUS": (
             "default_status",
-            "str",
+            str,
         ),
         "WORD_FORGE_CONVERSATION_AUTO_ARCHIVE": (
             "enable_auto_archiving",
-            "bool",
+            bool,
         ),
         "WORD_FORGE_CONVERSATION_RETENTION_POLICY": (
             "default_retention_policy",
-            ConversationRetentionPolicy.__name__,
+            ConversationRetentionPolicy,
         ),
         "WORD_FORGE_CONVERSATION_AUTO_ARCHIVE_DAYS": (
             "auto_archive_days",
-            "int",
+            int,
         ),
     }
 
     @cached_property
-    def metadata_schema(self) -> Set[str]:
+    def metadata_schema(self) -> set[str]:
         """
         Provides the complete set of allowed metadata field names.
 
@@ -197,6 +198,7 @@ class ConversationConfig:
         """
         return timedelta(days=self.auto_archive_days)
 
+    @eidosian()
     def validate_metadata(self, metadata: ConversationMetadataSchema) -> bool:
         """
         Checks if the provided metadata contains all required fields.
@@ -211,7 +213,8 @@ class ConversationConfig:
         """
         return self.required_metadata.issubset(metadata.keys())
 
-    def get_missing_fields(self, metadata: ConversationMetadataSchema) -> Set[str]:
+    @eidosian()
+    def get_missing_fields(self, metadata: ConversationMetadataSchema) -> set[str]:
         """
         Identifies which required metadata fields are missing from a given dictionary.
 
@@ -227,7 +230,8 @@ class ConversationConfig:
         """
         return self.required_metadata.difference(metadata.keys())
 
-    def create_default_metadata(self) -> Dict[str, Any]:  # Changed return type hint
+    @eidosian()
+    def create_default_metadata(self) -> dict[str, Any]:  # Changed return type hint
         """
         Generates a template metadata dictionary with required fields set to None.
 
@@ -239,12 +243,11 @@ class ConversationConfig:
             Dict[str, Any]: A dictionary where keys are the required
                             metadata fields and all values are `None`.
         """
-        default_meta: Dict[str, Any] = {field: None for field in self.required_metadata}
+        default_meta: dict[str, Any] = {field: None for field in self.required_metadata}
         return default_meta
 
-    def with_retention_policy(
-        self, policy: ConversationRetentionPolicy
-    ) -> "ConversationConfig":
+    @eidosian()
+    def with_retention_policy(self, policy: ConversationRetentionPolicy) -> "ConversationConfig":
         """
         Creates a new `ConversationConfig` instance with an updated retention policy.
 
@@ -261,6 +264,7 @@ class ConversationConfig:
         """
         return replace(self, default_retention_policy=policy)
 
+    @eidosian()
     def is_valid_status(self, status_key: str) -> bool:
         """
         Checks if a given string is a valid internal status key.
@@ -278,6 +282,7 @@ class ConversationConfig:
         """
         return status_key in self.status_values
 
+    @eidosian()
     def is_active_status(self, status_key: ConversationStatusValue) -> bool:
         """
         Determines if a given internal status key represents an active/ongoing state.
@@ -303,11 +308,11 @@ class ConversationConfig:
 # Explicitly define the public interface of this module
 __all__ = [
     "ConversationConfig",
-    "ConversationStatusValue",
-    "ConversationStatusMap",
+    "ConversationExportFormat",
     "ConversationMetadataSchema",
     "ConversationRetentionPolicy",
-    "ConversationExportFormat",
+    "ConversationStatusMap",
+    "ConversationStatusValue",
     "EnvMapping",
     "EnvVarType",
 ]

@@ -9,7 +9,6 @@ and Eidosian Identity models.
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.conversation.conversation_models import (
@@ -23,11 +22,13 @@ from word_forge.database.database_manager import DBManager
 from word_forge.demos.vector_worker_demo import temporary_database
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
 from word_forge.vectorizer.vector_store import StorageType, VectorStore
 
 
-def display_conversation(conversation: Optional[ConversationDict]) -> None:
+@eidosian()
+def display_conversation(conversation: ConversationDict | None) -> None:
     """
     Helper function to display conversation messages neatly.
 
@@ -58,9 +59,7 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
                     f"Warning: Invalid timestamp type for message {msg.get('id')}: {type(timestamp_val)}"
                 )
 
-            timestamp_str = time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(timestamp)
-            )
+            timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
             emotion_str = ""
             emotion_data = msg.get("emotion")
             if isinstance(emotion_data, dict):
@@ -70,9 +69,7 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
                     confidence_float = float(confidence)
                     emotion_str = f" (Emotion: {label} [{confidence_float:.2f}])"
                 except (ValueError, TypeError):
-                    emotion_str = (
-                        f" (Emotion: {label} [Invalid Confidence: {confidence}])"
-                    )
+                    emotion_str = f" (Emotion: {label} [Invalid Confidence: {confidence}])"
             # Safely get speaker and text
             speaker = msg.get("speaker", "Unknown")
             text = msg.get("text", "")
@@ -80,6 +77,7 @@ def display_conversation(conversation: Optional[ConversationDict]) -> None:
     print("--- End Transcript ---")
 
 
+@eidosian()
 def main() -> None:
     """
     Runs an interactive command-line demo for the ConversationManager.
@@ -173,14 +171,10 @@ def main() -> None:
                             conversation_id, "User", user_input, generate_response=True
                         )
                         message_id = message_id_result.value
-                        logger.info(
-                            f"User message {message_id} added and response triggered."
-                        )
+                        logger.info(f"User message {message_id} added and response triggered.")
 
-                        conversation_result = (
-                            conversation_manager.get_conversation_if_exists(
-                                conversation_id
-                            )
+                        conversation_result = conversation_manager.get_conversation_if_exists(
+                            conversation_id
                         )
                         conversation = conversation_result.value
                         display_conversation(conversation)
@@ -193,10 +187,8 @@ def main() -> None:
                         print(
                             f"Assistant: Sorry, I encountered an error processing that: {add_msg_e}"
                         )
-                        conversation_result = (
-                            conversation_manager.get_conversation_if_exists(
-                                conversation_id
-                            )
+                        conversation_result = conversation_manager.get_conversation_if_exists(
+                            conversation_id
                         )
                         conversation = conversation_result.value
                         display_conversation(conversation)
@@ -208,9 +200,7 @@ def main() -> None:
                     print("\nAssistant: Exiting conversation. Goodbye!")
                     break
                 except Exception as loop_e:
-                    logger.error(
-                        f"Error during interaction loop: {loop_e}", exc_info=True
-                    )
+                    logger.error(f"Error during interaction loop: {loop_e}", exc_info=True)
                     print(f"Assistant: An unexpected error occurred: {loop_e}")
 
             try:

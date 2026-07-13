@@ -1,4 +1,5 @@
 import logging
+import math
 import random
 import sqlite3
 import threading
@@ -10,13 +11,7 @@ from enum import Enum, auto
 from types import TracebackType
 from typing import (
     Any,
-    DefaultDict,
-    Deque,
-    Dict,
-    List,
-    Optional,
     Protocol,
-    Type,
     TypedDict,
     final,
 )
@@ -26,6 +21,7 @@ from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.emotion.emotion_processor import RecursiveEmotionProcessor
 from word_forge.emotion.emotion_types import EmotionDimension
+from word_forge.observability import eidosian
 
 # Conditionally import recursive processor
 
@@ -79,13 +75,13 @@ class EmotionWorkerStatus(TypedDict):
     running: bool
     processed_count: int
     error_count: int
-    last_update: Optional[float]
-    uptime: Optional[float]
+    last_update: float | None
+    uptime: float | None
     state: str
-    recent_errors: List[str]  # Added field for recent error types
+    recent_errors: list[str]  # Added field for recent error types
     backlog_estimate: int  # Added field for estimated backlog
     strategy: str  # Added field for current strategy
-    next_poll: Optional[float]  # Added field for next poll time
+    next_poll: float | None  # Added field for next poll time
 
 
 class EmotionWorkerInterface(Protocol):
@@ -97,7 +93,7 @@ class EmotionWorkerInterface(Protocol):
     def pause(self) -> None: ...  # Added pause method
     def resume(self) -> None: ...  # Added resume method
     def get_status(self) -> EmotionWorkerStatus: ...
-    def get_metrics(self) -> Dict[str, Any]: ...  # Added get_metrics
+    def get_metrics(self) -> dict[str, Any]: ...  # Added get_metrics
     def is_alive(self) -> bool: ...
 
 
@@ -124,15 +120,16 @@ class StateTracker:
         """Initialize the state tracker with default values."""
         self._lock = threading.RLock()
         self._state = EmotionState.STOPPED
-        self._start_time: Optional[float] = None
-        self._last_update: Optional[float] = None
-        self._next_poll: Optional[float] = None
+        self._start_time: float | None = None
+        self._last_update: float | None = None
+        self._next_poll: float | None = None
         self.processed_count = 0
         self._error_count = 0
-        self._recent_errors: Deque[str] = deque(maxlen=5)
+        self._recent_errors: deque[str] = deque(maxlen=5)
         self._backlog_estimate = 0
         self._strategy = EmotionAssignmentStrategy.RANDOM
 
+    @eidosian()
     def to_dict(self, is_alive: bool, stop_flag: bool) -> EmotionWorkerStatus:
         """Convert current state to a status dictionary."""
         with self._lock:
@@ -153,38 +150,45 @@ class StateTracker:
                 "strategy": self._strategy.value,
             }
 
+    @eidosian()
     def set_strategy(self, strategy: EmotionAssignmentStrategy) -> None:
         """Update the current processing strategy."""
         with self._lock:
             self._strategy = strategy
 
+    @eidosian()
     def start(self) -> None:
         """Mark the worker as started."""
         with self._lock:
             self._start_time = time.time()
             self._state = EmotionState.RUNNING
 
+    @eidosian()
     def stop(self) -> None:
         """Mark the worker as stopped."""
         with self._lock:
             self._state = EmotionState.STOPPED
 
+    @eidosian()
     def pause(self) -> None:
         """Mark the worker as paused."""
         with self._lock:
             self._state = EmotionState.PAUSED
 
+    @eidosian()
     def resume(self) -> None:
         """Resume the worker from paused state."""
         with self._lock:
             self._state = EmotionState.RUNNING
 
+    @eidosian()
     def increment_processed(self) -> None:
         """Record a successful word processing."""
         with self._lock:
             self.processed_count += 1
             self._last_update = time.time()
 
+    @eidosian()
     def record_error(self, error_type: str) -> None:
         """Record an error occurrence."""
         with self._lock:
@@ -192,16 +196,19 @@ class StateTracker:
             self._recent_errors.append(error_type)
             self._state = EmotionState.ERROR
 
+    @eidosian()
     def record_recovery(self) -> None:
         """Record recovery from error state."""
         with self._lock:
             self._state = EmotionState.RUNNING
 
+    @eidosian()
     def update_backlog(self, count: int) -> None:
         """Update the estimated backlog of words to process."""
         with self._lock:
             self._backlog_estimate = count
 
+    @eidosian()
     def set_next_poll(self, timestamp: float) -> None:
         """Set the timestamp for the next polling operation."""
         with self._lock:
@@ -220,7 +227,7 @@ class StateTracker:
             return self._state
 
     @property
-    def last_update(self) -> Optional[float]:
+    def last_update(self) -> float | None:
         """Timestamp of the last successful processing operation."""
         with self._lock:
             return self._last_update
@@ -232,12 +239,13 @@ class ErrorTracker:
     def __init__(self, max_errors: int = 10, base_backoff: float = 1.0) -> None:
         """Initialize error tracker with backoff parameters."""
         self._lock = threading.RLock()
-        self._error_counts: DefaultDict[str, int] = defaultdict(int)
+        self._error_counts: defaultdict[str, int] = defaultdict(int)
         self._consecutive_errors = 0
         self._max_errors = max_errors
         self._base_backoff = base_backoff
         self._last_error_time = 0.0
 
+    @eidosian()
     def record_error(self, error: Exception) -> float:
         """
         Record an error and calculate backoff time.
@@ -256,27 +264,26 @@ class ErrorTracker:
             self._last_error_time = time.time()
 
             # Calculate exponential backoff with a cap
-            backoff = min(
-                60.0, self._base_backoff * (2 ** min(10, self._consecutive_errors - 1))
-            )
+            backoff = min(60.0, self._base_backoff * (2 ** min(10, self._consecutive_errors - 1)))
             return backoff
 
+    @eidosian()
     def record_success(self) -> None:
         """Record a successful operation, resetting consecutive error count."""
         with self._lock:
             self._consecutive_errors = 0
 
-    def get_error_summary(self) -> Dict[str, int]:
+    @eidosian()
+    def get_error_summary(self) -> dict[str, int]:
         """Get a summary of error counts by type."""
         with self._lock:
             return dict(self._error_counts)
 
-    def get_recent_error_types(self, limit: int = 3) -> List[str]:
+    @eidosian()
+    def get_recent_error_types(self, limit: int = 3) -> list[str]:
         """Get the most frequent recent error types."""
         with self._lock:
-            sorted_errors = sorted(
-                self._error_counts.items(), key=lambda x: x[1], reverse=True
-            )
+            sorted_errors = sorted(self._error_counts.items(), key=lambda x: x[1], reverse=True)
             return [error_type for error_type, _ in sorted_errors[:limit]]
 
     @property
@@ -308,11 +315,11 @@ class EmotionWorker(threading.Thread):
         self,
         db: DBManager,
         emotion_manager: EmotionManager,
-        processor: Optional[Any] = None,  # Any to avoid hard dependency
-        poll_interval: Optional[float] = None,
-        batch_size: Optional[int] = None,
-        strategy: Optional[str] = None,
-        confidence_threshold: Optional[float] = None,
+        processor: Any | None = None,  # Any to avoid hard dependency
+        poll_interval: float | None = None,
+        batch_size: int | None = None,
+        strategy: str | None = None,
+        confidence_threshold: float | None = None,
         daemon: bool = True,
         enable_logging: bool = True,
     ):
@@ -330,29 +337,59 @@ class EmotionWorker(threading.Thread):
             daemon: Whether thread should run as daemon
             enable_logging: Whether to use structured logging
         """
-        super().__init__(daemon=daemon)
+        super().__init__(daemon=daemon, name="EmotionWorker")
 
         # Core dependencies
         self.db = db
         self.emotion_manager = emotion_manager
 
         # Configuration
-        self.poll_interval = poll_interval or getattr(
-            config.emotion, "poll_interval", 5.0
+        configured_poll = getattr(config.emotion, "poll_interval", None)
+        resolved_poll = poll_interval if poll_interval is not None else configured_poll
+        if resolved_poll is None:
+            resolved_poll = 5.0
+        if (
+            isinstance(resolved_poll, bool)
+            or not isinstance(resolved_poll, (int, float))
+            or not math.isfinite(resolved_poll)
+            or resolved_poll <= 0
+        ):
+            raise ValueError("poll_interval must be a finite number greater than zero")
+        self.poll_interval = float(resolved_poll)
+
+        configured_batch = getattr(config.queue, "batch_size", None)
+        resolved_batch = batch_size if batch_size is not None else configured_batch
+        if resolved_batch is None:
+            resolved_batch = 20
+        if (
+            isinstance(resolved_batch, bool)
+            or not isinstance(resolved_batch, int)
+            or resolved_batch <= 0
+        ):
+            raise ValueError("batch_size must be a positive integer")
+        self.batch_size = resolved_batch
+
+        configured_confidence = getattr(config.emotion, "min_confidence", None)
+        resolved_confidence = (
+            confidence_threshold if confidence_threshold is not None else configured_confidence
         )
-        self.batch_size = batch_size or getattr(config.queue, "batch_size", 20)
-        self.confidence_threshold = confidence_threshold or getattr(
-            config.emotion, "min_confidence", 0.0
-        )
+        if resolved_confidence is None:
+            resolved_confidence = 0.0
+        if (
+            isinstance(resolved_confidence, bool)
+            or not isinstance(resolved_confidence, (int, float))
+            or not math.isfinite(resolved_confidence)
+            or not 0.0 <= resolved_confidence <= 1.0
+        ):
+            raise ValueError("confidence_threshold must be between zero and one")
+        self.confidence_threshold = float(resolved_confidence)
 
         # Set up logging
         self.enable_logging = enable_logging
         self.logger = logging.getLogger("EmotionWorker")
         if not self.logger.handlers and enable_logging:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(getattr(config.emotion, "log_level", logging.INFO))
@@ -366,7 +403,10 @@ class EmotionWorker(threading.Thread):
         self._errors = ErrorTracker()
 
         # Process strategy configuration
-        strategy_str = strategy or getattr(config.emotion, "strategy", "random")
+        strategy_value = (
+            strategy if strategy is not None else getattr(config.emotion, "strategy", None)
+        )
+        strategy_str = strategy_value if isinstance(strategy_value, str) else "random"
         self._strategy = EmotionAssignmentStrategy.from_string(strategy_str)
         self._state.set_strategy(self._strategy)
 
@@ -386,9 +426,7 @@ class EmotionWorker(threading.Thread):
         ):
             try:
                 self._processor = RecursiveEmotionProcessor(db, emotion_manager)
-                self.log_info(
-                    f"Created recursive processor with strategy: {self._strategy.value}"
-                )
+                self.log_info(f"Created recursive processor with strategy: {self._strategy.value}")
             except Exception as e:
                 self.log_error(f"Failed to initialize recursive processor: {e}")
                 # Fall back to random if processor initialization fails
@@ -398,14 +436,13 @@ class EmotionWorker(threading.Thread):
                     self.log_warning("Falling back to random strategy")
 
         # Metrics tracking
-        self._process_times: List[float] = []
-        self._observed_backlog: List[int] = []
+        self._process_times: list[float] = []
+        self._observed_backlog: list[int] = []
 
         # Debug meta-emotion logging
-        self._debug_meta_emotions = getattr(
-            config.emotion, "debug_meta_emotions", False
-        )
+        self._debug_meta_emotions = getattr(config.emotion, "debug_meta_emotions", False)
 
+    @eidosian()
     def run(self) -> None:
         """
         Main worker loop that processes words without emotional attributes.
@@ -470,9 +507,7 @@ class EmotionWorker(threading.Thread):
                         and consecutive_success >= recovery_threshold
                     ):
                         with self._update_state("recovery"):
-                            self.log_info(
-                                "Exiting recovery mode after consistent success"
-                            )
+                            self.log_info("Exiting recovery mode after consistent success")
                 else:
                     self.log_info("No words to process, waiting...")
 
@@ -488,10 +523,7 @@ class EmotionWorker(threading.Thread):
                 self._handle_processing_error(e)
 
                 # If we hit error threshold, enter recovery mode
-                if (
-                    self._errors.needs_recovery
-                    and self._state.state != EmotionState.RECOVERY
-                ):
+                if self._errors.needs_recovery and self._state.state != EmotionState.RECOVERY:
                     with self._update_state("recovery"):
                         self.log_warning(
                             f"Entering recovery mode due to repeated errors: {self._errors.get_recent_error_types()}"
@@ -504,11 +536,13 @@ class EmotionWorker(threading.Thread):
         with self._update_state("stop"):
             self.log_info("Worker stopped")
 
+    @eidosian()
     def stop(self) -> None:
         """Signal the worker thread to stop gracefully."""
         self._stop_flag = True
         self.log_info("Stop signal received")
 
+    @eidosian()
     def pause(self) -> None:
         """
         Pause the worker without stopping the thread.
@@ -520,12 +554,14 @@ class EmotionWorker(threading.Thread):
             self._pause_flag = True
             self.log_info("Pause signal received")
 
+    @eidosian()
     def resume(self) -> None:
         """Resume a paused worker."""
         if self._pause_flag:
             self._pause_flag = False
             self.log_info("Resume signal received")
 
+    @eidosian()
     def restart(self) -> None:
         """
         Restart the worker thread gracefully.
@@ -546,9 +582,7 @@ class EmotionWorker(threading.Thread):
 
             # If thread is still alive after timeout, warn but continue
             if self.is_alive():
-                self.log_warning(
-                    "Worker thread did not terminate cleanly, forcing restart"
-                )
+                self.log_warning("Worker thread did not terminate cleanly, forcing restart")
 
         # Reset internal state
         self._stop_flag = False
@@ -562,6 +596,7 @@ class EmotionWorker(threading.Thread):
             self.start()
             self.log_info("Worker restarted")
 
+    @eidosian()
     def get_status(self) -> EmotionWorkerStatus:
         """
         Return the current status of the emotion worker.
@@ -581,7 +616,8 @@ class EmotionWorker(threading.Thread):
         """
         return self._state.to_dict(self.is_alive(), self._stop_flag)
 
-    def get_metrics(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics(self) -> dict[str, Any]:
         """
         Get detailed worker performance metrics.
 
@@ -591,7 +627,8 @@ class EmotionWorker(threading.Thread):
         # Reuse existing performance stats method
         return self.get_performance_stats()
 
-    def get_performance_stats(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_performance_stats(self) -> dict[str, Any]:
         """
         Get detailed performance statistics for monitoring.
 
@@ -602,7 +639,7 @@ class EmotionWorker(threading.Thread):
             - estimated_completion: Estimated time to process backlog
             - error_summary: Counts of errors by type
         """
-        stats: Dict[str, Any] = {
+        stats: dict[str, Any] = {
             "error_summary": self._errors.get_error_summary(),
         }
 
@@ -627,7 +664,7 @@ class EmotionWorker(threading.Thread):
 
         return stats
 
-    def _get_unemotioned_words(self) -> List[WordEmotion]:
+    def _get_unemotioned_words(self) -> list[WordEmotion]:
         """
         Retrieve words from the database that lack emotional attributes.
 
@@ -652,12 +689,12 @@ class EmotionWorker(threading.Thread):
             rows = cursor.fetchall()
             return [WordEmotion(word_id=row[0], term=row[1]) for row in rows]
         except sqlite3.Error as e:
-            raise EmotionDBError(f"Failed to retrieve words: {str(e)}") from e
+            raise EmotionDBError(f"Failed to retrieve words: {e!s}") from e
         finally:
             if connection is not None:
                 connection.close()
 
-    def _process_word_emotions(self, words: List[WordEmotion]) -> None:
+    def _process_word_emotions(self, words: list[WordEmotion]) -> None:
         """
         Assign emotional values to each word and store in the database.
 
@@ -675,16 +712,10 @@ class EmotionWorker(threading.Thread):
         for word in words:
             try:
                 # Select strategy for emotion assignment
-                if (
-                    self._strategy == EmotionAssignmentStrategy.RECURSIVE
-                    and self._processor
-                ):
+                if self._strategy == EmotionAssignmentStrategy.RECURSIVE and self._processor:
                     # Use recursive processor for advanced analysis
                     self._assign_recursive_emotion(word)
-                elif (
-                    self._strategy == EmotionAssignmentStrategy.HYBRID
-                    and self._processor
-                ):
+                elif self._strategy == EmotionAssignmentStrategy.HYBRID and self._processor:
                     # Use processor with fallback to random
                     self._assign_hybrid_emotion(word)
                 else:
@@ -696,14 +727,12 @@ class EmotionWorker(threading.Thread):
 
                 # Log at appropriate level (debug for most, periodically at info)
                 if self._state.processed_count % 10 == 0:
-                    self.log_info(
-                        f"Processed {self._state.processed_count} words so far"
-                    )
+                    self.log_info(f"Processed {self._state.processed_count} words so far")
                 else:
                     self.log_debug(f"Tagged {word.term}")
 
             except Exception as e:
-                error_msg = f"Failed to process word {word.term}: {str(e)}"
+                error_msg = f"Failed to process word {word.term}: {e!s}"
                 self.log_error(error_msg)
                 raise EmotionProcessingError(error_msg) from e
 
@@ -747,12 +776,8 @@ class EmotionWorker(threading.Thread):
             concept = self._processor.process_term(word.term)
 
             # Extract primary emotion dimensions
-            valence = concept.primary_emotion.dimensions.get(
-                EmotionDimension.VALENCE, 0.0
-            )
-            arousal = concept.primary_emotion.dimensions.get(
-                EmotionDimension.AROUSAL, 0.0
-            )
+            valence = concept.primary_emotion.dimensions.get(EmotionDimension.VALENCE, 0.0)
+            arousal = concept.primary_emotion.dimensions.get(EmotionDimension.AROUSAL, 0.0)
 
             # Validate confidence
             if concept.primary_emotion.confidence < self.confidence_threshold:
@@ -767,8 +792,7 @@ class EmotionWorker(threading.Thread):
             # Log meta-emotions if debug is enabled
             if self._debug_meta_emotions and concept.meta_emotions:
                 self.log_debug(
-                    f"Meta-emotions for {word.term}: "
-                    f"{', '.join(label for label, _ in concept.meta_emotions)}"
+                    f"Meta-emotions for {word.term}: {', '.join(label for label, _ in concept.meta_emotions)}"
                 )
 
             self.log_debug(
@@ -810,24 +834,28 @@ class EmotionWorker(threading.Thread):
         self._state.record_error(error_type)
 
         # Log the full error with traceback
-        self.log_error(f"{error_type}: {str(error)}")
+        self.log_error(f"{error_type}: {error!s}")
         self.log_debug(traceback.format_exc())
 
+    @eidosian()
     def log_debug(self, message: str) -> None:
         """Log debug message if logging is enabled."""
         if self.enable_logging:
             self.logger.debug(message)
 
+    @eidosian()
     def log_info(self, message: str) -> None:
         """Log info message if logging is enabled."""
         if self.enable_logging:
             self.logger.info(message)
 
+    @eidosian()
     def log_warning(self, message: str) -> None:
         """Log warning message if logging is enabled."""
         if self.enable_logging:
             self.logger.warning(message)
 
+    @eidosian()
     def log_error(self, message: str) -> None:
         """Log error message if logging is enabled."""
         if self.enable_logging:
@@ -856,9 +884,9 @@ class EmotionWorker(threading.Thread):
 
             def __exit__(
                 self,
-                exc_type: Optional[Type[BaseException]],
-                exc_val: Optional[BaseException],
-                exc_tb: Optional[TracebackType],
+                exc_type: type[BaseException] | None,
+                exc_val: BaseException | None,
+                exc_tb: TracebackType | None,
             ) -> None:
                 # Context manager cleanup (no action needed)
                 pass

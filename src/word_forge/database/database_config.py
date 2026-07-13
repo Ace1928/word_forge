@@ -69,7 +69,7 @@ Architecture:
 from dataclasses import dataclass, field, fields, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Dict, Literal, Set, TypedDict, Union, cast
+from typing import Any, Literal, TypedDict, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -85,6 +85,7 @@ from word_forge.configs.config_essentials import (
     TransactionIsolationLevel,
     measure_execution,
 )
+from word_forge.observability import eidosian
 
 
 # More precise type definitions
@@ -98,7 +99,7 @@ class PoolSettingsDict(TypedDict):
 
 
 # Type aliases for clearer return signatures
-PragmaDict = Dict[str, str]
+PragmaDict = dict[str, str]
 
 
 # Define type-safe attributes for database configuration
@@ -164,13 +165,16 @@ class DatabaseConfig:
 
     # SQLite pragmas for performance optimization
     pragmas: SQLitePragmas = field(
-        default_factory=lambda: {
-            "foreign_keys": "ON",
-            "journal_mode": "WAL",
-            "synchronous": "NORMAL",
-            "cache_size": "-2000",  # 2MB cache
-            "temp_store": "MEMORY",
-        }
+        default_factory=lambda: cast(
+            SQLitePragmas,
+            {
+                "foreign_keys": "ON",
+                "journal_mode": "WAL",
+                "synchronous": "NORMAL",
+                "cache_size": "-2000",  # 2MB cache
+                "temp_store": "MEMORY",
+            },
+        )
     )
 
     # SQL query templates for database operations
@@ -269,9 +273,7 @@ class DatabaseConfig:
         if self.dialect == DatabaseDialect.SQLITE:
             parent_dir = path.parent
             if not parent_dir.exists():
-                raise DatabaseConfigError(
-                    f"Database parent directory does not exist: {parent_dir}"
-                )
+                raise DatabaseConfigError(f"Database parent directory does not exist: {parent_dir}")
 
         return path
 
@@ -293,7 +295,7 @@ class DatabaseConfig:
             ```
         """
         # Start with user-defined pragmas
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
 
         # Copy with proper type conversion
         for k, v in self.pragmas.items():
@@ -320,6 +322,7 @@ class DatabaseConfig:
     # Public Methods
     # ==========================================
 
+    @eidosian()
     def get_connection_uri(self) -> str:
         """
         Build SQLite connection URI with pragmas.
@@ -339,13 +342,12 @@ class DatabaseConfig:
             ```
         """
         if self.dialect != DatabaseDialect.SQLITE:
-            raise DatabaseConfigError(
-                f"Connection URI for {self.dialect.name} is not implemented"
-            )
+            raise DatabaseConfigError(f"Connection URI for {self.dialect.name} is not implemented")
 
         params = "&".join(f"{k}={v}" for k, v in self.effective_pragmas.items())
         return f"file:{self.db_path}?{params}"
 
+    @eidosian()
     def get_pool_settings(self) -> PoolSettingsDict:
         """
         Get connection pool settings as a dictionary.
@@ -366,6 +368,7 @@ class DatabaseConfig:
             "recycle": self.pool_recycle,
         }
 
+    @eidosian()
     def with_path(self, path: PathLike) -> "DatabaseConfig":
         """
         Create a new instance with a modified path.
@@ -383,6 +386,7 @@ class DatabaseConfig:
         """
         return self._create_modified_instance(db_path=str(path))
 
+    @eidosian()
     def with_dialect(self, dialect: DatabaseDialect) -> "DatabaseConfig":
         """
         Create a new instance with a different database dialect.
@@ -400,6 +404,7 @@ class DatabaseConfig:
         """
         return self._create_modified_instance(dialect=dialect)
 
+    @eidosian()
     def optimize_for_reads(self) -> "DatabaseConfig":
         """
         Create a new instance optimized for read operations.
@@ -421,7 +426,7 @@ class DatabaseConfig:
             ```
         """
         with measure_execution("database.optimize_for_reads"):
-            read_pragmas: Dict[str, str] = {}
+            read_pragmas: dict[str, str] = {}
 
             # Copy existing pragmas
             for k, v in self.pragmas.items():
@@ -438,15 +443,14 @@ class DatabaseConfig:
             )
 
             return self._create_modified_instance(
-                pragmas=cast(Dict[str, Any], read_pragmas),
-                pool_size=max(
-                    self.pool_size, 8
-                ),  # Larger pool for more concurrent reads
+                pragmas=cast(dict[str, Any], read_pragmas),
+                pool_size=max(self.pool_size, 8),  # Larger pool for more concurrent reads
                 isolation_level="READ_COMMITTED",  # Lower isolation level for better concurrency
                 enable_wal_mode=True,  # WAL is critical for read performance
                 cache_size=8000,  # Larger cache size
             )
 
+    @eidosian()
     def optimize_for_writes(self) -> "DatabaseConfig":
         """
         Create a new instance optimized for write operations.
@@ -468,7 +472,7 @@ class DatabaseConfig:
             ```
         """
         with measure_execution("database.optimize_for_writes"):
-            write_pragmas: Dict[str, str] = {}
+            write_pragmas: dict[str, str] = {}
 
             # Copy existing pragmas
             for k, v in self.pragmas.items():
@@ -486,7 +490,7 @@ class DatabaseConfig:
             )
 
             return self._create_modified_instance(
-                pragmas=cast(Dict[str, Any], write_pragmas),
+                pragmas=cast(dict[str, Any], write_pragmas),
                 pool_size=max(self.pool_size, 4),  # Moderate pool size for writes
                 pool_recycle=1800,  # More frequent recycling for write connections
                 enable_wal_mode=True,  # WAL is also good for writes
@@ -494,6 +498,7 @@ class DatabaseConfig:
                 cache_size=4000,  # Moderate cache size
             )
 
+    @eidosian()
     def validate(self) -> Result[None]:
         """
         Validate the entire configuration for consistency and correctness.
@@ -530,9 +535,7 @@ class DatabaseConfig:
 
                 # Validate timeout
                 if self.pool_timeout <= 0:
-                    errors.append(
-                        f"Pool timeout must be positive, got {self.pool_timeout}"
-                    )
+                    errors.append(f"Pool timeout must be positive, got {self.pool_timeout}")
 
             if errors:
                 # Convert list to string representation for context
@@ -550,6 +553,7 @@ class DatabaseConfig:
 
             return Result[None].success(None)
 
+    @eidosian()
     def create_directory_if_needed(self) -> Result[None]:
         """
         Ensure the database directory exists.
@@ -581,7 +585,7 @@ class DatabaseConfig:
             except Exception as e:
                 return Result[None].failure(
                     code="DIRECTORY_CREATE_ERROR",
-                    message=f"Failed to create database directory: {str(e)}",
+                    message=f"Failed to create database directory: {e!s}",
                     context={
                         "path": str(self.db_path_object),
                         "error": str(e),
@@ -596,16 +600,14 @@ class DatabaseConfig:
 
     def _create_modified_instance(
         self,
-        **kwargs: Union[
-            str,
-            int,
-            float,
-            bool,
-            Dict[str, Any],
-            DatabaseDialect,
-            ConnectionPoolMode,
-            TransactionIsolationLevel,
-        ],
+        **kwargs: str
+        | int
+        | float
+        | bool
+        | dict[str, Any]
+        | DatabaseDialect
+        | ConnectionPoolMode
+        | TransactionIsolationLevel,
     ) -> "DatabaseConfig":
         """
         Create a new configuration instance with modified attributes.
@@ -628,14 +630,11 @@ class DatabaseConfig:
 
         Example:
             ```python
-            new_config = config._create_modified_instance(
-                pool_size=10,
-                enable_wal_mode=False
-            )
+            new_config = config._create_modified_instance(pool_size=10, enable_wal_mode=False)
             ```
         """
         # Validate kwargs against allowed attributes
-        valid_attrs: Set[str] = set(f.name for f in fields(self))
+        valid_attrs: set[str] = set(f.name for f in fields(self))
         for attr in kwargs:
             if attr not in valid_attrs:
                 raise ValueError(
@@ -643,7 +642,7 @@ class DatabaseConfig:
                 )
 
         # Type checking is handled by the replace() function and dataclass structure
-        return replace(self, **kwargs)
+        return replace(self, **kwargs)  # type: ignore[arg-type]
 
 
 # ==========================================

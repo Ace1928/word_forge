@@ -50,33 +50,28 @@ and error handling.
 import logging
 import threading
 import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
     Final,
     Generic,
-    Iterator,
-    List,
     Literal,
     NamedTuple,
-    Optional,
     Protocol,
-    Sequence,
-    Set,
-    Tuple,
-    Type,
     TypeAlias,
     TypedDict,
     TypeVar,
     Union,
     cast,
 )
+
+from word_forge.observability import eidosian
+from word_forge.paths import DATA_ROOT, LOGS_ROOT, PROJECT_ROOT
 
 # ==========================================
 # Generic Type Variables
@@ -102,10 +97,7 @@ E = TypeVar("E")  # Error type for Result pattern
 # Project Paths
 # ==========================================
 
-# Define project paths relative to this file for portability
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
-DATA_ROOT: Final[Path] = PROJECT_ROOT / "data"
-LOGS_ROOT: Final[Path] = PROJECT_ROOT / "logs"
+# Runtime paths are imported above with the other module dependencies.
 
 # ==========================================
 # Basic Type Definitions
@@ -113,42 +105,42 @@ LOGS_ROOT: Final[Path] = PROJECT_ROOT / "logs"
 
 # JSON-related type definitions for configuration serialization
 JsonPrimitive = Union[str, int, float, bool, None]
-JsonDict = Dict[str, "JsonValue"]  # Forward reference for recursion
-JsonList = List["JsonValue"]  # Forward reference for recursion
-JsonValue: TypeAlias = Union[JsonDict, JsonList, JsonPrimitive]  # Explicit TypeAlias
+JsonDict = dict[str, "JsonValue"]  # Forward reference for recursion
+JsonList = list["JsonValue"]  # Forward reference for recursion
+JsonValue: TypeAlias = JsonDict | JsonList | JsonPrimitive  # Explicit TypeAlias
 
 # Configuration-specific type aliases
 ConfigValue: TypeAlias = JsonValue  # Use defined JsonValue
 
 # Logging
-LoggingConfigDict: TypeAlias = Dict[str, Any]  # Define LoggingConfig as Dict
+LoggingConfigDict: TypeAlias = dict[str, Any]  # Define LoggingConfig as Dict
 ValidationError: TypeAlias = str
 FormatStr: TypeAlias = str
-LogFilePathStr: TypeAlias = Optional[str]
+LogFilePathStr: TypeAlias = str | None
 
 # Function type for validation handlers
 ValidationFunction: TypeAlias = Callable[
-    [LoggingConfigDict, List[ValidationError]], None
+    [LoggingConfigDict, list[ValidationError]], None
 ]  # Use LoggingConfigDict
-EnvVarType: TypeAlias = Union[str, int, float, bool, None]  # Define EnvVarType
+EnvVarType: TypeAlias = type[Any]
 
 # Type alias for serialized configuration data
 SerializedConfig: TypeAlias = JsonDict
 
 # Type alias for path-like objects
-PathLike: TypeAlias = Union[str, Path]
+PathLike: TypeAlias = str | Path
 
 # Type alias for environment variable mapping in ConfigComponent
-EnvMapping: TypeAlias = Dict[str, Tuple[str, EnvVarType]]
+EnvMapping: TypeAlias = dict[str, tuple[str, EnvVarType]]
 
 # Type alias for the name of a configuration component
 ComponentName: TypeAlias = str
 
 # Type alias for a registry mapping component names to instances
-ComponentRegistry: TypeAlias = Dict[ComponentName, "ConfigComponent"]
+ComponentRegistry: TypeAlias = dict[ComponentName, "ConfigComponentInfo"]
 
 # Type alias for a dictionary representing a configuration section
-ConfigDict: TypeAlias = Dict[str, ConfigValue]
+ConfigDict: TypeAlias = dict[str, ConfigValue]
 # ==========================================
 # Result and Error Handling Types
 # ==========================================
@@ -196,8 +188,8 @@ class Error:
     code: str
     category: ErrorCategory
     severity: ErrorSeverity
-    context: Dict[str, str] = field(default_factory=dict)
-    trace: Optional[str] = None
+    context: dict[str, str] = field(default_factory=dict)
+    trace: str | None = None
 
     @classmethod
     def create(
@@ -206,7 +198,7 @@ class Error:
         code: str,
         category: ErrorCategory,
         severity: ErrorSeverity,
-        context: Optional[Dict[str, str]] = None,
+        context: dict[str, str] | None = None,
     ) -> "Error":
         """
         Factory method for creating errors with standardized formatting.
@@ -246,8 +238,8 @@ class Result(Generic[T]):
         error: The error details (None if success)
     """
 
-    value: Optional[T] = None
-    error: Optional[Error] = None
+    value: T | None = None
+    error: Error | None = None
 
     @property
     def is_success(self) -> bool:
@@ -259,6 +251,7 @@ class Result(Generic[T]):
         """Determine if this is a failed result."""
         return not self.is_success
 
+    @eidosian()
     def unwrap(self) -> T:
         """
         Extract the success value, raising an exception if this is an error result.
@@ -274,6 +267,7 @@ class Result(Generic[T]):
             raise ValueError(error_msg)
         return cast(T, self.value)
 
+    @eidosian()
     def unwrap_or(self, default: T) -> T:
         """
         Extract the success value or return a default if this is an error result.
@@ -288,6 +282,7 @@ class Result(Generic[T]):
             return default
         return cast(T, self.value)
 
+    @eidosian()
     def map(self, f: Callable[[T], R]) -> "Result[R]":
         """
         Apply a function to the value if present, otherwise pass through error.
@@ -303,6 +298,7 @@ class Result(Generic[T]):
             return cast(Result[R], Result(error=self.error))
         return Result(value=f(cast(T, self.value)))
 
+    @eidosian()
     def flat_map(self, f: Callable[[T], "Result[R]"]) -> "Result[R]":
         """
         Apply a function that returns a Result, flattening the result.
@@ -336,7 +332,7 @@ class Result(Generic[T]):
         cls,
         code: str,
         message: str,
-        context: Optional[Dict[str, str]] = None,
+        context: dict[str, str] | None = None,
         category: ErrorCategory = ErrorCategory.UNEXPECTED,
         severity: ErrorSeverity = ErrorSeverity.ERROR,
     ) -> "Result[T]":
@@ -422,7 +418,7 @@ class ExecutionMetrics:
     memory_delta_kb: float = 0.0
     thread_id: int = 0
     started_at: float = 0.0
-    context: Dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -457,12 +453,12 @@ class TracingContext:
     _thread_local = threading.local()
 
     @classmethod
-    def get_current_trace_id(cls) -> Optional[str]:
+    def get_current_trace_id(cls) -> str | None:
         """Get the current trace ID from thread-local storage."""
         return getattr(cls._thread_local, "trace_id", None)
 
     @classmethod
-    def get_current_span_id(cls) -> Optional[str]:
+    def get_current_span_id(cls) -> str | None:
         """Get the current span ID from thread-local storage."""
         return getattr(cls._thread_local, "span_id", None)
 
@@ -485,9 +481,10 @@ class TracingContext:
         cls._thread_local.span_id = None
 
 
+@eidosian()
 @contextmanager
 def measure_execution(
-    operation_name: str, context: Optional[Dict[str, Any]] = None
+    operation_name: str, context: dict[str, Any] | None = None
 ) -> Iterator[ExecutionMetrics]:
     """
     Context manager to measure execution time and resource usage.
@@ -532,11 +529,11 @@ QueryType = Literal["search", "definition", "similarity"]
 SQLQueryType = Literal["get_term_by_id", "get_message_text"]
 
 # Emotion configuration types
-EmotionRange = Tuple[float, float]  # (valence, arousal) pairs in range [-1.0, 1.0]
+EmotionRange = tuple[float, float]  # (valence, arousal) pairs in range [-1.0, 1.0]
 
 # Sample data types for testing and initialization
-SampleWord = Tuple[str, str, str]  # term, definition, part_of_speech
-SampleRelationship = Tuple[str, str, str]  # word1, word2, relationship_type
+SampleWord = tuple[str, str, str]  # term, definition, part_of_speech
+SampleRelationship = tuple[str, str, str]  # word1, word2, relationship_type
 
 # Queue and concurrency types
 LockType = Literal["reentrant", "standard"]
@@ -556,15 +553,13 @@ BatchingStrategy = Literal["fixed", "dynamic", "adaptive", "none"]
 # ==========================================
 
 # Valid status values for conversations
-ConversationStatusValue = Literal[
-    "active", "pending", "completed", "archived", "deleted"
-]
+ConversationStatusValue = Literal["active", "pending", "completed", "archived", "deleted"]
 
 # Mapping of internal status codes to human-readable descriptions
-ConversationStatusMap = Dict[ConversationStatusValue, str]
+ConversationStatusMap = dict[ConversationStatusValue, str]
 
 # Metadata structure for conversation storage
-ConversationMetadataSchema = Dict[str, Union[str, int, float, bool, None]]
+ConversationMetadataSchema = dict[str, str | int | float | bool | None]
 
 # ==========================================
 # Vector Operations Type Definitions
@@ -609,7 +604,7 @@ LOG_LEVEL_CRITICAL: Final[LogLevel] = logging.CRITICAL
 LOG_LEVEL_NOTSET: Final[LogLevel] = logging.NOTSET
 
 # Bidirectional mapping between string names and integer values
-LOG_LEVEL_MAP: Final[Dict[LogLevelLiteral, LogLevel]] = {
+LOG_LEVEL_MAP: Final[dict[LogLevelLiteral, LogLevel]] = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "WARNING": logging.WARNING,
@@ -619,7 +614,8 @@ LOG_LEVEL_MAP: Final[Dict[LogLevelLiteral, LogLevel]] = {
 }
 
 
-def get_log_level(level: Union[LogLevel, LogLevelLiteral, str]) -> LogLevel:
+@eidosian()
+def get_log_level(level: LogLevel | LogLevelLiteral | str) -> LogLevel:
     """Convert various log level representations to standard logging module integer values.
 
     Args:
@@ -650,7 +646,7 @@ TransactionIsolationLevel = Literal[
 ConnectionPoolMode = Literal["fixed", "dynamic", "none"]
 
 # Generic JSON data structure (used for external API responses)
-JsonData = Union[Dict[str, JsonValue], List[JsonValue], JsonPrimitive]
+JsonData = Union[dict[str, JsonValue], list[JsonValue], JsonPrimitive]
 
 # ==========================================
 # Configuration Protocols
@@ -684,7 +680,7 @@ class ConfigComponent(Protocol):
     """
 
     # Each component must have ENV_VARS class variable for env overrides
-    ENV_VARS: ClassVar[Dict[str, Tuple[str, EnvVarType]]]
+    ENV_VARS: ClassVar[dict[str, tuple[str, EnvVarType]]]
 
 
 class JSONSerializable(Protocol):
@@ -743,9 +739,8 @@ class WorkDistributor(Protocol):
     and retrieving results, with support for priorities and backpressure.
     """
 
-    def submit(
-        self, task: Any, priority: TaskPriority = TaskPriority.NORMAL
-    ) -> Result[Any]:
+    @eidosian()
+    def submit(self, task: Any, priority: TaskPriority = TaskPriority.NORMAL) -> Result[Any]:
         """
         Submit a task for processing with the specified priority.
 
@@ -758,6 +753,7 @@ class WorkDistributor(Protocol):
         """
         ...
 
+    @eidosian()
     def shutdown(self, wait: bool = True, cancel_pending: bool = False) -> None:
         """
         Shut down the work distributor.
@@ -791,14 +787,14 @@ class InstructionTemplate(NamedTuple):
         template = InstructionTemplate(
             task="Find documents that answer this question",
             query_prefix="Question: ",
-            document_prefix="Document: "
+            document_prefix="Document: ",
         )
         ```
     """
 
     task: str
     query_prefix: str
-    document_prefix: Optional[str] = None
+    document_prefix: str | None = None
 
 
 class SQLitePragmas(TypedDict, total=False):
@@ -862,9 +858,9 @@ class TemplateDict(TypedDict):
         document_prefix: Optional template for prefixing documents
     """
 
-    task: Optional[str]
-    query_prefix: Optional[str]
-    document_prefix: Optional[str]
+    task: str | None
+    query_prefix: str | None
+    document_prefix: str | None
 
 
 class WordnetEntry(TypedDict):
@@ -884,9 +880,9 @@ class WordnetEntry(TypedDict):
 
     word: str
     definition: str
-    examples: List[str]
-    synonyms: List[str]
-    antonyms: List[str]
+    examples: list[str]
+    synonyms: list[str]
+    antonyms: list[str]
     part_of_speech: str
 
 
@@ -902,7 +898,7 @@ class DictionaryEntry(TypedDict):
     """
 
     definition: str
-    examples: List[str]
+    examples: list[str]
 
 
 class DbnaryEntry(TypedDict):
@@ -939,12 +935,12 @@ class LexicalDataset(TypedDict):
     """
 
     word: str
-    wordnet_data: List[WordnetEntry]
-    openthesaurus_synonyms: List[str]
+    wordnet_data: list[WordnetEntry]
+    openthesaurus_synonyms: list[str]
     odict_data: DictionaryEntry
-    dbnary_data: List[DbnaryEntry]
+    dbnary_data: list[DbnaryEntry]
     opendict_data: DictionaryEntry
-    thesaurus_synonyms: List[str]
+    thesaurus_synonyms: list[str]
     example_sentence: str
 
 
@@ -960,8 +956,8 @@ class WordTupleDict(TypedDict):
 
     id: int
     term: str
-    pos: Optional[str]
-    frequency: Optional[float]
+    pos: str | None
+    frequency: float | None
 
 
 class RelationshipTupleDict(TypedDict):
@@ -1000,8 +996,8 @@ class GraphInfoDict(TypedDict):
     node_count: int
     edge_count: int
     density: float
-    dimensions: Set[str]
-    rel_types: Dict[str, int]
+    dimensions: set[str]
+    rel_types: dict[str, int]
     connected_components: int
     largest_component_size: int
 
@@ -1071,16 +1067,14 @@ class ConfigComponentInfo:
     Example:
         ```python
         info = ConfigComponentInfo(
-            name="database",
-            class_type=DatabaseConfig,
-            dependencies={"logging"}
+            name="database", class_type=DatabaseConfig, dependencies={"logging"}
         )
         ```
     """
 
     name: str
-    class_type: Type[ConfigComponent]
-    dependencies: Set[str] = field(default_factory=set)
+    class_type: type[Any]
+    dependencies: set[str] = field(default_factory=set)
 
 
 # ==========================================
@@ -1277,9 +1271,7 @@ class LogFormatTemplate(EnumWithRepr):
 
     SIMPLE = "%(message)s"
     STANDARD = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    DETAILED = (
-        "%(asctime)s - %(name)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s"
-    )
+    DETAILED = "%(asctime)s - %(name)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s"
     JSON = '{"time": "%(asctime)s", "name": "%(name)s", "level": "%(levelname)s", "message": "%(message)s"}'
 
 
@@ -1456,7 +1448,8 @@ class EmptyQueueError(QueueOperationError):
 # ==========================================
 
 
-def serialize_dataclass(obj: Any) -> Dict[str, Any]:
+@eidosian()
+def serialize_dataclass(obj: Any) -> dict[str, Any]:
     """
     Serialize a dataclass to a dictionary, handling special types like Enums.
 
@@ -1478,17 +1471,15 @@ def serialize_dataclass(obj: Any) -> Dict[str, Any]:
         >>> class Color(Enum):
         ...     RED = "red"
         ...     BLUE = "blue"
-        ...
         >>> @dataclass
         ... class Settings:
         ...     name: str
         ...     color: Color
-        ...
         >>> settings = Settings(name="test", color=Color.RED)
         >>> serialize_dataclass(settings)
         {'name': 'test', 'color': 'red'}
     """
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     for key, value in asdict(obj).items():
         if isinstance(value, Enum):
             # Serialize enum as its value
@@ -1511,6 +1502,7 @@ def serialize_dataclass(obj: Any) -> Dict[str, Any]:
     return result
 
 
+@eidosian()
 def serialize_config(obj: Any) -> ConfigValue:
     """
     Convert configuration objects to dictionaries for display or serialization.
@@ -1530,7 +1522,6 @@ def serialize_config(obj: Any) -> ConfigValue:
         ...         self.name = "test"
         ...         self.values = [1, 2, 3]
         ...         self._private = "hidden"
-        ...
         >>> serialize_config(Config())
         {'name': 'test', 'values': [1, 2, 3]}
     """
@@ -1543,15 +1534,10 @@ def serialize_config(obj: Any) -> ConfigValue:
         return d
     elif isinstance(obj, (list, tuple)):
         # Return JsonList type
-        return cast(
-            JsonList, [serialize_config(item) for item in cast(Sequence[Any], obj)]
-        )
+        return cast(JsonList, [serialize_config(item) for item in cast(Sequence[Any], obj)])
     elif isinstance(obj, dict):
         # Return JsonDict type
-        return {
-            str(key): serialize_config(value)
-            for key, value in cast(Dict[Any, Any], obj).items()
-        }
+        return {str(key): serialize_config(value) for key, value in obj.items()}
     elif isinstance(obj, Enum):
         # Return the enum's value, which should be a JsonPrimitive
         return cast(JsonPrimitive, obj.value)
@@ -1560,7 +1546,7 @@ def serialize_config(obj: Any) -> ConfigValue:
         return str(obj)
     elif isinstance(obj, (int, float, str, bool)) or obj is None:
         # Return JsonPrimitive directly
-        return cast(JsonPrimitive, obj)
+        return obj
     # Fallback: convert other types to string
     return str(obj)
 

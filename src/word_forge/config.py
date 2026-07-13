@@ -32,25 +32,21 @@ Design Principles:
     9. Performance optimization with caching strategies
 """
 
+import importlib
 import json
 import os
+import sys
 import threading
 import time
-from dataclasses import asdict
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, fields, replace
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
     Final,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Type,
     TypeVar,
 )
 
@@ -109,16 +105,17 @@ from word_forge.conversation.conversation_config import ConversationConfig
 from word_forge.database.database_config import DatabaseConfig
 from word_forge.emotion.emotion_config import EmotionConfig
 from word_forge.graph.graph_config import GraphConfig
+from word_forge.observability import eidosian
 from word_forge.parser.parser_config import ParserConfig
 from word_forge.queue.queue_config import QueueConfig
 from word_forge.vectorizer.vectorizer_config import VectorizerConfig
 
 # New type definitions for enhanced features
 ConfigObserver = Callable[["Config", ComponentName, str], None]
-ValidationStrategy = Callable[[ConfigComponent], List[str]]
+ValidationStrategy = Callable[[ConfigComponent], list[str]]
 T = TypeVar("T")
-CacheKey = Tuple[ComponentName, str, type]
-ConfigVersion = Tuple[int, int, int]  # major, minor, patch
+CacheKey = tuple[ComponentName, str, type]
+ConfigVersion = tuple[int, int, int]  # major, minor, patch
 
 
 class ConfigChangeEvent:
@@ -185,7 +182,7 @@ class ConfigSource:
         self,
         source_type: ConfigSourceType,
         location: str = "",
-        timestamp: Optional[float] = None,
+        timestamp: float | None = None,
     ) -> None:
         """Initialize with source details."""
         self.type = source_type
@@ -257,16 +254,12 @@ class Config:
     # This enables reflection, dependency tracking, and runtime validation
     _component_registry: Final[ComponentRegistry] = {
         "database": ConfigComponentInfo(name="database", class_type=DatabaseConfig),
-        "vectorizer": ConfigComponentInfo(
-            name="vectorizer", class_type=VectorizerConfig
-        ),
+        "vectorizer": ConfigComponentInfo(name="vectorizer", class_type=VectorizerConfig),
         "parser": ConfigComponentInfo(name="parser", class_type=ParserConfig),
         "emotion": ConfigComponentInfo(name="emotion", class_type=EmotionConfig),
         "graph": ConfigComponentInfo(name="graph", class_type=GraphConfig),
         "queue": ConfigComponentInfo(name="queue", class_type=QueueConfig),
-        "conversation": ConfigComponentInfo(
-            name="conversation", class_type=ConversationConfig
-        ),
+        "conversation": ConfigComponentInfo(name="conversation", class_type=ConversationConfig),
         "logging": ConfigComponentInfo(name="logging", class_type=LoggingConfig),
     }
 
@@ -274,7 +267,7 @@ class Config:
     version: ClassVar[ConfigVersion] = (1, 1, 0)  # major.minor.patch
 
     # Component interdependency graph (for validation)
-    _component_dependencies: ClassVar[Dict[ComponentName, Set[ComponentName]]] = {
+    _component_dependencies: ClassVar[dict[ComponentName, set[ComponentName]]] = {
         "database": set(),  # No dependencies
         "vectorizer": {"database"},  # May need DB for persistent storage
         "parser": {"database"},  # Needs DB for lexical data
@@ -304,20 +297,21 @@ class Config:
         self.logging: LoggingConfig = LoggingConfig()
 
         # Enhanced features
-        self._observers: List[ConfigObserver] = []
-        self._value_sources: Dict[Tuple[ComponentName, str], ConfigSource] = {}
+        self._observers: list[ConfigObserver] = []
+        self._value_sources: dict[tuple[ComponentName, str], ConfigSource] = {}
         self._config_lock = threading.RLock()
-        self._value_cache: Dict[CacheKey, Any] = {}
+        self._value_cache: dict[CacheKey, Any] = {}
         self._last_refresh_time = time.time()
         self._hot_reload_enabled = False
         self._hot_reload_interval = 30.0  # seconds
+        self._hot_reload_thread: threading.Thread | None = None
         self._runtime_adaptive_mode = RuntimeAdaptiveMode.PASSIVE
-        self._error_counts: Dict[ComponentName, int] = {
+        self._error_counts: dict[ComponentName, int] = {
             name: 0 for name in self._component_registry
         }
 
         # Track which components have been accessed
-        self._accessed_components: Set[ComponentName] = set()
+        self._accessed_components: set[ComponentName] = set()
 
         # Apply environment variable overrides
         self._load_from_env()
@@ -361,18 +355,16 @@ class Config:
 
             for env_var, (attr_name, value_type) in env_vars.items():
                 if env_var in os.environ:
-                    self._set_from_env(
-                        env_var, component_name, config_obj, attr_name, value_type
-                    )
+                    self._set_from_env(env_var, component_name, config_obj, attr_name, value_type)
 
-    def _get_config_objects(self) -> List[Tuple[ComponentName, ConfigComponent]]:
+    def _get_config_objects(self) -> list[tuple[ComponentName, ConfigComponent]]:
         """
         Get all configuration objects with their names.
 
         Returns:
             List of (name, object) tuples for all registered configuration components
         """
-        component_items: List[Tuple[ComponentName, ConfigComponent]] = []
+        component_items: list[tuple[ComponentName, ConfigComponent]] = []
         for name in self._component_registry.keys():
             component = getattr(self, name)
             if component:
@@ -440,11 +432,9 @@ class Config:
             self._notify_observers(component_name, attr_name, old_value, typed_value)
 
         except (ValueError, TypeError) as e:
-            raise EnvVarError(f"Invalid value '{value}' for {env_var}: {str(e)}") from e
+            raise EnvVarError(f"Invalid value '{value}' for {env_var}: {e!s}") from e
         except AttributeError as e:
-            raise EnvVarError(
-                f"Failed to set '{attr_name}' from {env_var}: {str(e)}"
-            ) from e
+            raise EnvVarError(f"Failed to set '{attr_name}' from {env_var}: {e!s}") from e
 
     def _ensure_directories(self) -> None:
         """
@@ -472,7 +462,7 @@ class Config:
             if self.logging.file_path:
                 self._ensure_directory_for(self.logging.file_path)
         except (OSError, PermissionError) as e:
-            raise PathError(f"Failed to create directory: {str(e)}") from e
+            raise PathError(f"Failed to create directory: {e!s}") from e
 
     @staticmethod
     def _ensure_directory_for(file_path: PathLike) -> None:
@@ -490,6 +480,7 @@ class Config:
         if parent_dir:  # Only create if there's a directory to create
             os.makedirs(parent_dir, exist_ok=True)
 
+    @eidosian()
     def get_full_path(self, path: str) -> Path:
         """
         Convert relative path to absolute using project data directory.
@@ -504,7 +495,8 @@ class Config:
         self._accessed_components.add("parser")
         return Path(self.parser.data_dir) / path
 
-    def get_component(self, name: str) -> Optional[ConfigComponent]:
+    @eidosian()
+    def get_component(self, name: str) -> ConfigComponent | None:
         """
         Get a configuration component by name.
 
@@ -520,7 +512,8 @@ class Config:
             return getattr(self, name, None)
         return None
 
-    def get_typed_component(self, name: str, component_type: Type[C]) -> Optional[C]:
+    @eidosian()
+    def get_typed_component(self, name: str, component_type: type[C]) -> C | None:
         """
         Get a configuration component with type checking.
 
@@ -543,7 +536,8 @@ class Config:
             return component
         return None
 
-    def get_available_components(self) -> Set[ComponentName]:
+    @eidosian()
+    def get_available_components(self) -> set[ComponentName]:
         """
         Get list of all available configuration component names.
 
@@ -552,7 +546,8 @@ class Config:
         """
         return set(self._component_registry.keys())
 
-    def get_accessed_components(self) -> Set[ComponentName]:
+    @eidosian()
+    def get_accessed_components(self) -> set[ComponentName]:
         """
         Get set of components that have been accessed during runtime.
 
@@ -564,7 +559,8 @@ class Config:
         """
         return self._accessed_components.copy()
 
-    def validate_all(self) -> Dict[ComponentName, List[str]]:
+    @eidosian()
+    def validate_all(self) -> dict[ComponentName, list[str]]:
         """
         Validate all configuration components that support validation.
 
@@ -582,7 +578,7 @@ class Config:
                     if errors:
                         print(f"  {component}: {', '.join(errors)}")
         """
-        results: Dict[ComponentName, List[str]] = {}
+        results: dict[ComponentName, list[str]] = {}
 
         # Sort components by dependency order
         sorted_components = self._sort_components_by_dependencies()
@@ -593,7 +589,7 @@ class Config:
             # Skip if component's dependencies have validation errors
             should_skip = False
             for dep_name in self._component_dependencies.get(component_name, set()):
-                if dep_name in results and results[dep_name]:
+                if results.get(dep_name):
                     results[component_name] = [
                         f"Validation skipped due to errors in dependency '{dep_name}'"
                     ]
@@ -614,16 +610,14 @@ class Config:
                     # Increment error count for potential self-healing
                     self._error_counts[component_name] += 1
                 except Exception as e:
-                    results[component_name] = [
-                        f"Unexpected error during validation: {str(e)}"
-                    ]
+                    results[component_name] = [f"Unexpected error during validation: {e!s}"]
                     self._error_counts[component_name] += 1
             else:
                 results[component_name] = []
 
         return results
 
-    def _sort_components_by_dependencies(self) -> List[ComponentName]:
+    def _sort_components_by_dependencies(self) -> list[ComponentName]:
         """
         Sort components in dependency order.
 
@@ -634,10 +628,11 @@ class Config:
             List of component names in dependency order
         """
         # Implementation uses topological sort
-        result: List[ComponentName] = []
-        visited: Set[ComponentName] = set()
-        temp_visit: Set[ComponentName] = set()
+        result: list[ComponentName] = []
+        visited: set[ComponentName] = set()
+        temp_visit: set[ComponentName] = set()
 
+        @eidosian()
         def visit(name: ComponentName) -> None:
             if name in temp_visit:
                 # Circular dependency detected
@@ -662,6 +657,7 @@ class Config:
 
         return result
 
+    @eidosian()
     def to_dict(self) -> ConfigDict:
         """
         Convert the entire configuration to a dictionary.
@@ -686,6 +682,7 @@ class Config:
             },
         }
 
+    @eidosian()
     def export_json(self, pretty: bool = True) -> str:
         """
         Export configuration as JSON string.
@@ -700,6 +697,7 @@ class Config:
         indent = 2 if pretty else None
         return json.dumps(config_dict, indent=indent)
 
+    @eidosian()
     def export_to_file(self, path: PathLike) -> None:
         """
         Export configuration to a JSON file.
@@ -710,9 +708,158 @@ class Config:
         Raises:
             IOError: If file writing fails due to permissions or disk space
         """
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(self.export_json(pretty=True))
 
+    @staticmethod
+    def _coerce_file_value(
+        component_name: str, attribute_name: str, current: Any, value: Any
+    ) -> Any:
+        """Convert a parsed file value to the existing field's runtime type."""
+
+        label = f"{component_name}.{attribute_name}"
+        if current is None:
+            return value
+        if isinstance(current, Enum):
+            enum_type = type(current)
+            try:
+                return (
+                    enum_type[value]
+                    if isinstance(value, str) and value in enum_type.__members__
+                    else enum_type(value)
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                choices = ", ".join(member.name for member in enum_type)
+                raise ValueError(
+                    f"Invalid value for {label}; expected one of: {choices}"
+                ) from error
+        if isinstance(current, bool):
+            if not isinstance(value, bool):
+                raise TypeError(f"{label} must be true or false")
+            return value
+        if isinstance(current, int):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{label} must be an integer")
+            return value
+        if isinstance(current, float):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{label} must be a number")
+            return float(value)
+        if isinstance(current, str):
+            if not isinstance(value, str):
+                raise TypeError(f"{label} must be a string")
+            return value
+        if isinstance(current, tuple):
+            if not isinstance(value, (list, tuple)):
+                raise TypeError(f"{label} must be an array")
+            return tuple(value)
+        if isinstance(current, frozenset):
+            if not isinstance(value, (list, tuple, set, frozenset)):
+                raise TypeError(f"{label} must be an array")
+            return frozenset(value)
+        if isinstance(current, set):
+            if not isinstance(value, (list, tuple, set, frozenset)):
+                raise TypeError(f"{label} must be an array")
+            return set(value)
+        if isinstance(current, list):
+            if not isinstance(value, list):
+                raise TypeError(f"{label} must be an array")
+            return value
+        if isinstance(current, dict):
+            if not isinstance(value, dict):
+                raise TypeError(f"{label} must be an object/table")
+            return value
+        if not isinstance(value, type(current)):
+            raise TypeError(f"{label} must be {type(current).__name__}")
+        return value
+
+    @staticmethod
+    def _read_config_file(path: Path) -> Mapping[str, Any]:
+        """Parse a UTF-8 JSON or TOML configuration document."""
+
+        suffix = path.suffix.casefold()
+        try:
+            if suffix == ".json":
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            elif suffix == ".toml":
+                tomllib = importlib.import_module(
+                    "tomllib" if sys.version_info >= (3, 11) else "tomli"
+                )
+                with path.open("rb") as stream:
+                    payload = tomllib.load(stream)
+            else:
+                raise ValueError("Configuration files must use a .json or .toml extension")
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"Could not read configuration file {path}: {error}") from error
+        if not isinstance(payload, Mapping):
+            raise ValueError("Configuration root must be an object/table")
+        return payload
+
+    @eidosian()
+    def load_from_file(self, path: PathLike) -> None:
+        """Atomically apply component settings from a JSON or TOML file.
+
+        Unknown components and fields are rejected instead of being ignored,
+        which makes misspellings visible and prevents partial configuration.
+        Values are validated against the current field types before any live
+        component is replaced.
+        """
+
+        config_path = Path(path).expanduser().resolve()
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+        payload = self._read_config_file(config_path)
+        unknown_components = set(payload) - set(self._component_registry) - {"meta"}
+        if unknown_components:
+            names = ", ".join(sorted(unknown_components))
+            raise ValueError(f"Unknown configuration component(s): {names}")
+
+        replacements: dict[ComponentName, ConfigComponent] = {}
+        changes: list[tuple[ComponentName, str, Any, Any]] = []
+        for component_name in self._component_registry:
+            raw_values = payload.get(component_name)
+            if raw_values is None:
+                continue
+            if not isinstance(raw_values, Mapping):
+                raise TypeError(
+                    f"Configuration component {component_name!r} must be an object/table"
+                )
+            current_component = getattr(self, component_name)
+            allowed_fields = {item.name for item in fields(current_component) if item.init}
+            unknown_fields = set(raw_values) - allowed_fields
+            if unknown_fields:
+                names = ", ".join(sorted(unknown_fields))
+                raise ValueError(f"Unknown field(s) for {component_name}: {names}")
+            converted: dict[str, Any] = {}
+            for attribute_name, raw_value in raw_values.items():
+                current_value = getattr(current_component, attribute_name)
+                converted[attribute_name] = self._coerce_file_value(
+                    component_name,
+                    attribute_name,
+                    current_value,
+                    raw_value,
+                )
+                changes.append(
+                    (component_name, attribute_name, current_value, converted[attribute_name])
+                )
+            replacements[component_name] = replace(current_component, **converted)
+
+        with self._config_lock:
+            for component_name, replacement in replacements.items():
+                setattr(self, component_name, replacement)
+            for component_name, attribute_name, _, _ in changes:
+                self._value_sources[(component_name, attribute_name)] = ConfigSource(
+                    ConfigSourceType.FILE,
+                    str(config_path),
+                )
+            self._value_cache.clear()
+            self.get_cached_value.cache_clear()
+            self._ensure_directories()
+
+        for component_name, attribute_name, old_value, new_value in changes:
+            self._notify_observers(component_name, attribute_name, old_value, new_value)
+
+    @eidosian()
     def register_observer(self, observer: ConfigObserver) -> None:
         """
         Register a function to be called when configuration changes.
@@ -730,6 +877,7 @@ class Config:
             # Use weak references to avoid memory leaks
             self._observers.append(observer)
 
+    @eidosian()
     def unregister_observer(self, observer: ConfigObserver) -> None:
         """
         Remove a previously registered observer.
@@ -765,9 +913,7 @@ class Config:
                 # Log but don't propagate observer errors
                 import logging
 
-                logging.getLogger(__name__).error(
-                    f"Error in configuration observer: {e}"
-                )
+                logging.getLogger(__name__).error(f"Error in configuration observer: {e}")
 
     def _invalidate_cache(self, component_name: ComponentName, attr_name: str) -> None:
         """
@@ -779,7 +925,7 @@ class Config:
         """
         with self._config_lock:
             # Find all cache keys that match the component and attribute
-            keys_to_remove: List[CacheKey] = []
+            keys_to_remove: list[CacheKey] = []
             for key in self._value_cache:
                 key_component, key_attr, _ = key
                 if key_component == component_name and key_attr == attr_name:
@@ -789,9 +935,10 @@ class Config:
             for key in keys_to_remove:
                 self._value_cache.pop(key, None)
 
+    @eidosian()
     def get_value_with_source(
         self, component_name: ComponentName, attr_name: str
-    ) -> Tuple[Any, ConfigSource]:
+    ) -> tuple[Any, ConfigSource]:
         """
         Get a configuration value with information about its source.
 
@@ -826,8 +973,9 @@ class Config:
         return value, source
 
     @lru_cache(maxsize=128)
+    @eidosian()
     def get_cached_value(
-        self, component_name: ComponentName, attr_name: str, value_type: Type[T]
+        self, component_name: ComponentName, attr_name: str, value_type: type[T]
     ) -> T:
         """
         Get a configuration value with caching for performance.
@@ -863,15 +1011,13 @@ class Config:
         # Type check the value
         if not isinstance(value, value_type):
             raise TypeError(
-                f"Value for {component_name}.{attr_name} is {type(value)}, "
-                f"expected {value_type}"
+                f"Value for {component_name}.{attr_name} is {type(value)}, expected {value_type}"
             )
 
         return value  # Value is already known to be of type T
 
-    def set_runtime_value(
-        self, component_name: ComponentName, attr_name: str, value: Any
-    ) -> None:
+    @eidosian()
+    def set_runtime_value(self, component_name: ComponentName, attr_name: str, value: Any) -> None:
         """
         Set a configuration value at runtime.
 
@@ -906,7 +1052,7 @@ class Config:
                 setattr(component, attr_name, value)
             except (TypeError, ValueError) as e:
                 raise TypeError(
-                    f"Cannot set {component_name}.{attr_name} to {value!r}: {str(e)}"
+                    f"Cannot set {component_name}.{attr_name} to {value!r}: {e!s}"
                 ) from e
 
             # Record the source
@@ -921,6 +1067,7 @@ class Config:
         # Notify observers
         self._notify_observers(component_name, attr_name, old_value, value)
 
+    @eidosian()
     def enable_hot_reload(self, interval: float = 30.0) -> None:
         """
         Enable configuration hot reloading.
@@ -935,10 +1082,7 @@ class Config:
         self._hot_reload_interval = interval
 
         # Start the monitoring thread if not already running
-        if (
-            not hasattr(self, "_hot_reload_thread")
-            or not self._hot_reload_thread.is_alive()
-        ):
+        if self._hot_reload_thread is None or not self._hot_reload_thread.is_alive():
             self._hot_reload_thread = threading.Thread(
                 target=self._hot_reload_monitor,
                 daemon=True,
@@ -946,6 +1090,7 @@ class Config:
             )
             self._hot_reload_thread.start()
 
+    @eidosian()
     def disable_hot_reload(self) -> None:
         """Disable configuration hot reloading."""
         self._hot_reload_enabled = False
@@ -969,9 +1114,7 @@ class Config:
                 # Log but continue monitoring
                 import logging
 
-                logging.getLogger(__name__).error(
-                    f"Error during configuration hot reload: {e}"
-                )
+                logging.getLogger(__name__).error(f"Error during configuration hot reload: {e}")
 
     def _refresh_from_environment(self) -> None:
         """Check for changes in environment variables and apply them."""
@@ -980,6 +1123,7 @@ class Config:
         self._load_from_env()
         self._last_refresh_time = time.time()
 
+    @eidosian()
     def set_adaptive_mode(self, mode: RuntimeAdaptiveMode) -> None:
         """
         Set the adaptive configuration mode.
@@ -1000,6 +1144,7 @@ class Config:
             f"Configuration adaptive mode changed from {old_mode} to {mode}"
         )
 
+    @eidosian()
     def report_performance_metric(
         self, component_name: ComponentName, metric_name: str, value: float
     ) -> None:
@@ -1028,6 +1173,7 @@ class Config:
                 f"Performance metric: {component_name}.{metric_name} = {value}"
             )
 
+    @eidosian()
     def apply_profile(self, profile_name: str) -> None:
         """
         Apply a predefined configuration profile.
@@ -1043,9 +1189,9 @@ class Config:
         """
         # Define profiles - in a real implementation, these would be
         # loaded from files or a database
-        from typing import Any, Dict
+        from typing import Any
 
-        profiles: Dict[str, Dict[str, Dict[str, Any]]] = {
+        profiles: dict[str, dict[str, dict[str, Any]]] = {
             "development": {
                 "database": {"db_path": ":memory:"},
                 "logging": {"level": "DEBUG", "show_sql": True},
@@ -1075,8 +1221,7 @@ class Config:
 
         if profile_name not in profiles:
             raise ValueError(
-                f"Unknown profile '{profile_name}'. "
-                f"Available profiles: {', '.join(profiles.keys())}"
+                f"Unknown profile '{profile_name}'. Available profiles: {', '.join(profiles.keys())}"
             )
 
         # Apply the profile settings
@@ -1096,11 +1241,10 @@ class Config:
 
         import logging
 
-        logging.getLogger(__name__).info(
-            f"Applied configuration profile: {profile_name}"
-        )
+        logging.getLogger(__name__).info(f"Applied configuration profile: {profile_name}")
 
-    def get_component_status(self, component_name: ComponentName) -> Dict[str, Any]:
+    @eidosian()
+    def get_component_status(self, component_name: ComponentName) -> dict[str, Any]:
         """
         Get the status of a configuration component.
 
@@ -1122,14 +1266,12 @@ class Config:
         component = self.get_component(component_name)
 
         # Get basic component info
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "name": component_name,
             "type": component.__class__.__name__,
             "error_count": self._error_counts.get(component_name, 0),
             "accessed": component_name in self._accessed_components,
-            "dependencies": list(
-                self._component_dependencies.get(component_name, set())
-            ),
+            "dependencies": list(self._component_dependencies.get(component_name, set())),
         }
 
         # Get validation status if available
@@ -1139,12 +1281,13 @@ class Config:
                 validate_method()
                 info["validation"] = "valid"
             except Exception as e:
-                info["validation"] = f"invalid: {str(e)}"
+                info["validation"] = f"invalid: {e!s}"
         else:
             info["validation"] = "not implemented"
 
         return info
 
+    @eidosian()
     def clear_caches(self) -> None:
         """
         Clear all internal caches.
@@ -1200,9 +1343,9 @@ __all__ += [
 # ==========================================
 
 __all__ += [
-    "PROJECT_ROOT",
     "DATA_ROOT",
     "LOGS_ROOT",
+    "PROJECT_ROOT",
 ]
 
 # ==========================================
@@ -1211,14 +1354,14 @@ __all__ += [
 
 __all__ += [
     "ConfigError",
+    "DatabaseConfigError",
+    "DatabaseConnectionError",
     "EnvVarError",
+    "GraphConfigError",
+    "LoggingConfigError",
     "PathError",
     "VectorConfigError",
     "VectorIndexError",
-    "GraphConfigError",
-    "LoggingConfigError",
-    "DatabaseConfigError",
-    "DatabaseConnectionError",
 ]
 
 # ==========================================

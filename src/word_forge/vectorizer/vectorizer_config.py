@@ -21,7 +21,7 @@ Architecture:
 from dataclasses import dataclass, field, fields
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Set, Union, cast
+from typing import Any, ClassVar, cast
 
 from word_forge.configs.config_essentials import (
     DATA_ROOT,
@@ -40,6 +40,7 @@ from word_forge.configs.config_essentials import (
     VectorOptimizationLevel,
     VectorSearchStrategy,
 )
+from word_forge.observability import eidosian
 
 log_dir = LOGS_ROOT / "vectorizer"
 
@@ -89,16 +90,16 @@ class VectorizerConfig:
     """
 
     # Vector embedding model configuration
-    model_name: str = "intfloat/multilingual-e5-large-instruct"
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     model_type: VectorModelType = VectorModelType.TRANSFORMER
-    dimension: Optional[int] = None  # None = use model's default dimension
+    dimension: int | None = None  # None = use model's default dimension
     enable_compression: bool = False
     compression_ratio: float = 0.5  # Only used when compression is enabled
 
     # Index and storage configuration
     index_path: str = str(DATA_ROOT / "vector_indices")
     storage_type: StorageType = StorageType.DISK
-    collection_name: Optional[str] = None  # None = derive from model_name
+    collection_name: str | None = None  # None = derive from model_name
 
     # Search parameter configuration
     optimization_level: VectorOptimizationLevel = "balanced"
@@ -116,7 +117,7 @@ class VectorizerConfig:
     dim_separation: float = 50.0  # For multi-dimensional vector spaces
 
     # SQL query templates for content retrieval
-    sql_templates: Dict[SQLQueryType, str] = field(
+    sql_templates: dict[SQLQueryType, str] = field(
         default_factory=lambda: {
             "get_term_by_id": """
                 SELECT term, definition FROM words WHERE id = ?
@@ -129,7 +130,7 @@ class VectorizerConfig:
     )
 
     # Instruction templates for different query types
-    instruction_templates: Dict[QueryType, TemplateDict] = field(
+    instruction_templates: dict[QueryType, TemplateDict] = field(
         default_factory=lambda: {
             "search": {
                 "task": "Given a web search query, retrieve relevant passages that answer the query",
@@ -203,7 +204,7 @@ class VectorizerConfig:
         return f"collection_{derived_name}"
 
     @cached_property
-    def effective_dimension(self) -> Optional[int]:
+    def effective_dimension(self) -> int | None:
         """
         Get effective dimension, validating if specified.
 
@@ -214,13 +215,11 @@ class VectorizerConfig:
             VectorConfigError: If dimension is invalid (not positive)
         """
         if self.dimension is not None and self.dimension <= 0:
-            raise VectorConfigError(
-                f"Vector dimension must be positive: {self.dimension}"
-            )
+            raise VectorConfigError(f"Vector dimension must be positive: {self.dimension}")
         return self.dimension
 
     @cached_property
-    def supported_template_types(self) -> Set[str]:
+    def supported_template_types(self) -> set[str]:
         """
         Get set of supported template types.
 
@@ -233,7 +232,8 @@ class VectorizerConfig:
     # Public Methods
     # ==========================================
 
-    def get_template(self, template_type: Union[str, QueryType]) -> InstructionTemplate:
+    @eidosian()
+    def get_template(self, template_type: str | QueryType) -> InstructionTemplate:
         """
         Get strongly typed instruction template for a query type.
 
@@ -248,8 +248,7 @@ class VectorizerConfig:
         """
         if template_type not in self.instruction_templates:
             raise VectorConfigError(
-                f"Unknown template type: {template_type}. "
-                f"Available types: {', '.join(self.supported_template_types)}"
+                f"Unknown template type: {template_type}. Available types: {', '.join(self.supported_template_types)}"
             )
 
         template_dict = self.instruction_templates[template_type]
@@ -259,6 +258,7 @@ class VectorizerConfig:
             document_prefix=template_dict["document_prefix"],
         )
 
+    @eidosian()
     def get_sql_template(self, template_name: SQLQueryType) -> str:
         """
         Get SQL template by name with validation.
@@ -274,11 +274,11 @@ class VectorizerConfig:
         """
         if template_name not in self.sql_templates:
             raise VectorConfigError(
-                f"Unknown SQL template: {template_name}. "
-                f"Available templates: {', '.join(self.sql_templates.keys())}"
+                f"Unknown SQL template: {template_name}. Available templates: {', '.join(self.sql_templates.keys())}"
             )
         return self.sql_templates[template_name]
 
+    @eidosian()
     def clone(self: T, **kwargs: Any) -> T:
         """
         Create a new configuration with specified overrides.
@@ -300,7 +300,7 @@ class VectorizerConfig:
             )
         """
         # Get all current field values
-        current_values: Dict[str, Any] = {}
+        current_values: dict[str, Any] = {}
 
         # Access dataclass fields properly
         self_dataclass = cast("VectorizerConfig", self)
@@ -313,11 +313,10 @@ class VectorizerConfig:
         current_values.update(kwargs)
 
         # Create new instance with the same type as self
-        return self.__class__(**current_values)  # type: ignore
+        return self.__class__(**current_values)
 
-    def with_model(
-        self, model_name: str, dimension: Optional[int] = None
-    ) -> "VectorizerConfig":
+    @eidosian()
+    def with_model(self, model_name: str, dimension: int | None = None) -> "VectorizerConfig":
         """
         Create a new configuration with a different model.
 
@@ -334,6 +333,7 @@ class VectorizerConfig:
         """
         return self.clone(model_name=model_name, dimension=dimension)
 
+    @eidosian()
     def with_storage_type(self, storage_type: StorageType) -> "VectorizerConfig":
         """
         Create a new configuration with a different storage type.
@@ -350,6 +350,7 @@ class VectorizerConfig:
         """
         return self.clone(storage_type=storage_type)
 
+    @eidosian()
     def optimize_for_performance(self, is_speed_critical: bool) -> "VectorizerConfig":
         """
         Create a new configuration optimized for either speed or accuracy.
@@ -360,7 +361,7 @@ class VectorizerConfig:
         Returns:
             VectorizerConfig: New configuration instance with optimized settings
         """
-        settings: Dict[str, Any] = {
+        settings: dict[str, Any] = {
             "optimization_level": "speed" if is_speed_critical else "accuracy",
             "search_strategy": "approximate" if is_speed_critical else "hybrid",
         }
@@ -371,7 +372,8 @@ class VectorizerConfig:
 
         return self.clone(**settings)
 
-    def get_performance_settings(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_performance_settings(self) -> dict[str, Any]:
         """
         Get performance-related settings as a dictionary.
 
@@ -384,14 +386,13 @@ class VectorizerConfig:
             "search_strategy": self.search_strategy,
             "distance_metric": self.distance_metric,
             "enable_compression": self.enable_compression,
-            "compression_ratio": (
-                self.compression_ratio if self.enable_compression else None
-            ),
+            "compression_ratio": (self.compression_ratio if self.enable_compression else None),
             "reserved_memory_mb": self.reserved_memory_mb,
             "enable_multi_dim": self.enable_multi_dim,
             "dim_separation": self.dim_separation if self.enable_multi_dim else None,
         }
 
+    @eidosian()
     def validate(self) -> None:
         """
         Validate the entire configuration for consistency and correctness.
@@ -402,7 +403,7 @@ class VectorizerConfig:
         Raises:
             VectorConfigError: If any validation fails with detailed error message
         """
-        errors: List[str] = []
+        errors: list[str] = []
 
         # Validate model settings
         if not self.model_name:
@@ -413,12 +414,8 @@ class VectorizerConfig:
             errors.append(f"Vector dimension must be positive: {self.dimension}")
 
         # Validate compression ratio
-        if self.enable_compression and (
-            self.compression_ratio <= 0 or self.compression_ratio >= 1
-        ):
-            errors.append(
-                f"Compression ratio must be between 0 and 1: {self.compression_ratio}"
-            )
+        if self.enable_compression and (self.compression_ratio <= 0 or self.compression_ratio >= 1):
+            errors.append(f"Compression ratio must be between 0 and 1: {self.compression_ratio}")
 
         # Validate batch size
         if self.batch_size <= 0:
@@ -426,9 +423,7 @@ class VectorizerConfig:
 
         # Validate multi-dimensional settings
         if self.enable_multi_dim and self.dim_separation <= 0:
-            errors.append(
-                f"Dimension separation must be positive: {self.dim_separation}"
-            )
+            errors.append(f"Dimension separation must be positive: {self.dim_separation}")
 
         # Validate templates
         for template_type, template in self.instruction_templates.items():
@@ -438,9 +433,7 @@ class VectorizerConfig:
                 errors.append(f"Template '{template_type}' missing query prefix")
 
         if errors:
-            raise VectorConfigError(
-                f"Configuration validation failed: {'; '.join(errors)}"
-            )
+            raise VectorConfigError(f"Configuration validation failed: {'; '.join(errors)}")
 
 
 # ==========================================

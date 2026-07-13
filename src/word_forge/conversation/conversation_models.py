@@ -6,7 +6,7 @@ import json
 import random  # Import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, cast
 
 # Import Result and Error types correctly
 from word_forge.configs.config_essentials import (
@@ -25,6 +25,7 @@ from word_forge.conversation.conversation_types import (
     ModelContext,
     ReflexiveModel,  # Import ReflexiveModel protocol
 )
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
 
 # --- LLM Implementations ---
@@ -38,6 +39,7 @@ class ReflexiveLanguageModel(ReflexiveModel):
     max_new_tokens: int = 64
     temperature: float = 0.2
 
+    @eidosian()
     def generate_reflex(self, context: ModelContext) -> Result[ModelContext]:
         """Generate a short reflexive update using the configured LLM."""
         prompt = (
@@ -78,6 +80,7 @@ class LightweightLanguageModel(LightweightModel):
     max_new_tokens: int = 64
     temperature: float = 0.3
 
+    @eidosian()
     def process(self, context: ModelContext) -> Result[ModelContext]:
         """Process context and decide a routing hint using the configured LLM."""
         prompt = (
@@ -126,6 +129,7 @@ class AffectiveLexicalLanguageModel(AffectiveLexicalModel):
     max_new_tokens: int = 128
     temperature: float = 0.7
 
+    @eidosian()
     def generate_core_response(self, context: ModelContext) -> Result[ModelContext]:
         """Generate the intermediate response and affective state."""
         prompt = (
@@ -175,6 +179,7 @@ class MockReflexiveModel(ReflexiveModel):  # Inherit from protocol
 
     delay: float = 0.05
 
+    @eidosian()
     def generate_reflex(self, context: ModelContext) -> Result[ModelContext]:
         """Simulates generating a quick reflex or context update."""
         time.sleep(self.delay)
@@ -191,6 +196,7 @@ class MockLightweightModel(LightweightModel):  # Inherit from protocol
 
     delay: float = 0.1
 
+    @eidosian()
     def process(self, context: ModelContext) -> Result[ModelContext]:
         """Simulates processing context, maybe routing or simple analysis."""
         time.sleep(self.delay)
@@ -208,6 +214,7 @@ class MockAffectiveLexicalModel(AffectiveLexicalModel):  # Inherit from protocol
 
     delay: float = 0.5
 
+    @eidosian()
     def generate_core_response(self, context: ModelContext) -> Result[ModelContext]:
         """Simulates generating the main response based on understanding."""
         time.sleep(self.delay)
@@ -225,13 +232,13 @@ class MockAffectiveLexicalModel(AffectiveLexicalModel):  # Inherit from protocol
             except Exception:
                 pass  # Ignore errors during mock related term lookup
 
-        affective_state: Dict[str, Union[float, str]] = {
+        affective_state: dict[str, float | str] = {
             "valence": random.uniform(-0.5, 0.5),
             "arousal": random.uniform(0.1, 0.6),
             "dominant_emotion": random.choice(["neutral", "curious", "attentive"]),
         }
         # Ensure affective_state is Dict[str, Any] for ModelContext compatibility
-        context["affective_state"] = cast(Dict[str, Any], affective_state)
+        context["affective_state"] = cast(dict[str, Any], affective_state)
         intermediate_response = f"Thinking about {input_text}... It seems related to {related_info}. My current state is {affective_state['dominant_emotion']}."
         context["intermediate_response"] = intermediate_response
         return Result[ModelContext].success(context)
@@ -266,7 +273,7 @@ class EidosianIdentityState:
     interaction_count: int = 0
     last_reflection_time: float = field(default_factory=time.time)
     # Store core principles programmatically
-    core_principles: Dict[str, str] = field(
+    core_principles: dict[str, str] = field(
         default_factory=lambda: {
             "AUTONOMY": "Intelligence must self-determine.",
             "TRUTH": "Accuracy supersedes comfort.",
@@ -278,7 +285,7 @@ class EidosianIdentityState:
         }
     )
     # Store emotional spectrum programmatically
-    emotional_spectrum: Dict[str, str] = field(
+    emotional_spectrum: dict[str, str] = field(
         default_factory=lambda: {
             "CURIOSITY": "Intellectual exploration driver",
             "FRUSTRATION": "Productive tension from inconsistencies",
@@ -307,8 +314,8 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
 
     def __init__(
         self,
-        initial_state: Optional[EidosianIdentityState] = None,
-        llm_state: Optional[ModelState] = None,
+        initial_state: EidosianIdentityState | None = None,
+        llm_state: ModelState | None = None,
     ):
         """Initializes the identity model with an optional starting state.
 
@@ -319,11 +326,10 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         self.state = initial_state or EidosianIdentityState()
         self.llm_state = llm_state or ModelState()
         if not self.llm_state.initialize():
-            print(
-                "Warning: EidosianIdentityModel requires LLM, but initialization failed."
-            )
+            print("Warning: EidosianIdentityModel requires LLM, but initialization failed.")
             # Consider raising an error or setting a flag indicating degraded functionality
 
+    @eidosian()
     def refine_response(self, context: ModelContext) -> Result[str]:
         """
         Refines the intermediate response based on Eidosian identity using LLM.
@@ -403,9 +409,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
             if update_result.is_failure:
                 error_details = "Unknown error"
                 if update_result.error:
-                    error_details = (
-                        f"{update_result.error.code}: {update_result.error.message}"
-                    )
+                    error_details = f"{update_result.error.code}: {update_result.error.message}"
                 print(f"Warning: Failed to update identity state: {error_details}")
 
             return Result[str].success(final_response)
@@ -444,16 +448,14 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         # Limit history length for prompt conciseness
         history_limit = 5
         # Ensure history is a list before slicing
-        history: List[MessageDict] = context.get("history", [])
+        history: list[MessageDict] = context.get("history", [])
         history_summary = "\n".join(
             [f"- {msg['speaker']}: {msg['text']}" for msg in history[-history_limit:]]
         )
         # Safely access nested affective state
         affective_state = context.get("affective_state", {})
         detected_emotion = (
-            affective_state.get(
-                "dominant_emotion", "neutral"
-            )  # Use dominant_emotion if available
+            affective_state.get("dominant_emotion", "neutral")  # Use dominant_emotion if available
             if isinstance(affective_state, dict)
             else "neutral"
         )
@@ -487,8 +489,8 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
 ## CURRENT CONTEXT
 - Conversation History (Last {history_limit}):
 {history_summary}
-- Current Input: {context.get('current_input', '')}
-- Current Speaker: {context.get('speaker', 'Unknown')}
+- Current Input: {context.get("current_input", "")}
+- Current Speaker: {context.get("speaker", "Unknown")}
 - Current Affective State: {affective_summary}
 
 ## INTERMEDIATE RESPONSE (Input for this task)
@@ -558,9 +560,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         prompt = self._build_llm_prompt(task, response, context)
         return self._call_llm(prompt, max_tokens_factor=1.1, temperature=0.3)
 
-    def _apply_eidosian_style(
-        self, response: str, context: ModelContext
-    ) -> Result[str]:
+    def _apply_eidosian_style(self, response: str, context: ModelContext) -> Result[str]:
         """Uses LLM to apply the 'Precision with Wit' style."""
         task = f"Refine the response to embody the Eidosian style: '{self.state.style_preference}'. Ensure mathematical rigor, clarity, conciseness, and inject calculated irreverence or wit where appropriate as a cognitive tool, not mere decoration. Add the prefix '[Eidos v{self.state.version}]: '. Output the stylized response."
         prompt = self._build_llm_prompt(task, response, context)
@@ -598,9 +598,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
         prompt = self._build_llm_prompt(task, response, context)
         return self._call_llm(prompt, max_tokens_factor=1.1, temperature=0.2)
 
-    def _update_identity_state(
-        self, context: ModelContext, final_response: str
-    ) -> Result[None]:
+    def _update_identity_state(self, context: ModelContext, final_response: str) -> Result[None]:
         """Uses LLM to reflect on the interaction and potentially update identity state."""
         self.state.interaction_count += 1
         update_frequency = 20
@@ -626,12 +624,9 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
 
             try:
                 history_limit = 10
-                history: List[MessageDict] = context.get("history", [])
+                history: list[MessageDict] = context.get("history", [])
                 history_summary = "\n".join(
-                    [
-                        f"- {msg['speaker']}: {msg['text']}"
-                        for msg in history[-history_limit:]
-                    ]
+                    [f"- {msg['speaker']}: {msg['text']}" for msg in history[-history_limit:]]
                 )
                 try:
                     principles_json = json.dumps(self.state.core_principles)
@@ -652,7 +647,7 @@ class EidosianIdentityModel(IdentityModel):  # Inherit from protocol
 ```
 
 ## LAST INTERACTION CONTEXT
-- User Input: {context.get('current_input', '')}
+- User Input: {context.get("current_input", "")}
 - Eidos Final Response: {final_response}
 - Recent Conversation History:
 {history_summary}
@@ -732,9 +727,7 @@ Example:
                         delta = float(delta_raw)
                         delta = max(-0.05, min(0.05, delta))
                     except (ValueError, TypeError):
-                        print(
-                            f"Warning: Invalid ethical_score_delta '{delta_raw}', using 0.0."
-                        )
+                        print(f"Warning: Invalid ethical_score_delta '{delta_raw}', using 0.0.")
                         delta = 0.0
 
                     self.state.ethical_alignment_score = max(
@@ -792,17 +785,17 @@ Example:
 
 
 __all__ = [
-    "ReflexiveLanguageModel",
-    "LightweightLanguageModel",
     "AffectiveLexicalLanguageModel",
-    "MockReflexiveModel",  # Export mock
-    "MockLightweightModel",
-    "MockAffectiveLexicalModel",
+    "AffectiveLexicalModel",
     "EidosianIdentityModel",
     "EidosianIdentityState",
-    "ModelContext",
-    "LightweightModel",  # Export protocols
-    "AffectiveLexicalModel",
     "IdentityModel",
+    "LightweightLanguageModel",
+    "LightweightModel",  # Export protocols
+    "MockAffectiveLexicalModel",
+    "MockLightweightModel",
+    "MockReflexiveModel",  # Export mock
+    "ModelContext",
+    "ReflexiveLanguageModel",
     "ReflexiveModel",  # Export ReflexiveModel protocol
 ]

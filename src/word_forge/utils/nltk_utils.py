@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import List, NamedTuple, Optional
+from typing import NamedTuple
 
 import nltk
+
+from word_forge.observability import eidosian
 
 
 class _NLTKResource(NamedTuple):
@@ -33,15 +35,14 @@ _NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
         "Named entity chunker",
     ),
     _NLTKResource("words", "corpora/words", "Word frequency lists"),
-    _NLTKResource(
-        "vader_lexicon", "sentiment/vader_lexicon", "VADER sentiment lexicon"
-    ),
+    _NLTKResource("vader_lexicon", "sentiment/vader_lexicon", "VADER sentiment lexicon"),
 )
 
 _initialized = False
 
 
-def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
+@eidosian()
+def ensure_nltk_data(logger: logging.Logger | None = None) -> list[str]:
     """Ensure that required NLTK data packages are available."""
 
     global _initialized
@@ -50,12 +51,12 @@ def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
             logger.info("NLTK resources already initialized; nothing to download.")
         return []
 
-    downloaded: List[str] = []
+    downloaded: list[str] = []
     for resource in _NLTK_RESOURCES:
         try:
-            nltk.data.find(resource.path)  # type: ignore[arg-type]
+            nltk.data.find(resource.path)
         except LookupError:
-            nltk.download(resource.package, quiet=True)  # type: ignore
+            nltk.download(resource.package, quiet=True)
             downloaded.append(resource.package)
             if logger:
                 logger.info(

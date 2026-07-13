@@ -1,94 +1,223 @@
 [build-system]
-requires      = [ "setuptools>=42", "wheel" ]
+requires = ["setuptools>=77", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "word_forge"
-version = "0.1.0"
-description = "A lexical data processing and enrichment system"
+name = "word-forge"
+version = "1.0.0"
+description = "A multilingual living lexicon with semantic graphs, affective analysis, and neural search"
 readme = "README.md"
-authors = [ { name = "Eidosian Forge Team", email = "info@example.com" } ]
-license = { file = "LICENSE" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Lloyd Handyside", email = "ace1928@gmail.com" },
+    { name = "Eidos", email = "syntheticeidos@gmail.com" },
+]
+keywords = [
+    "computational-linguistics",
+    "knowledge-graph",
+    "lexicon",
+    "multilingual",
+    "natural-language-processing",
+    "semantic-search",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
     "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Linguistic",
+    "Typing :: Typed",
 ]
-requires-python = ">=3.8"
-dependencies = [
-    "nltk>=3.6.0",
-    "torch>=1.9.0",
-    "rdflib>=6.0.0",
-    "transformers>=4.15.0",
-    "networkx>=2.8.0",
-    "numpy>=1.23.0",
-    "pyvis>=0.3.2",
-    "plotly>=5.24.0",
-    "sentence-transformers>=2.2.2",
-    "chromadb>=0.4.24",
-    "faiss-cpu>=1.7.4",
-    "pyyaml>=6.0.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
-dev = [
-    "numpy>=1.23.0",
-    "black",
-    "isort",
-    "mypy",
-    "pytest",
-    "pytest-cov",
-    "pre-commit",
+nlp = [
+    "nltk>=3.9,<4",
+    "numpy>=1.26,<3",
+    "pydantic>=2.7,<3",
+    "tomli>=2.0; python_version < '3.11'",
+]
+graph = [
+    "networkx>=3.2,<4",
+    "numpy>=1.26,<3",
+    "python-louvain>=0.16,<1",
 ]
 visualization = [
-    "pyvis>=0.3.2",
-    "plotly>=5.24.0",
+    "plotly>=5.24,<7",
+    "pyvis>=0.3.2,<0.4",
 ]
 vector = [
-    "sentence-transformers>=2.2.2",
-    "chromadb>=0.4.24",
-    "faiss-cpu>=1.7.4",
-    "pyyaml>=6.0.0",
+    "chromadb>=1.0,<2",
+    "hnswlib>=0.8,<0.9",
+    "sentence-transformers>=3.0,<6",
+]
+emotion = [
+    "spacy>=3.8,<4",
+    "textblob>=0.19,<1",
+]
+llm = [
+    "accelerate>=0.34,<2",
+    "requests>=2.32,<3",
+    "torch>=2.2,<3",
+    "transformers>=4.45,<6",
+]
+linguistics = [
+    "morfessor>=2.0.6,<3",
+    "rdflib>=7,<8",
+]
+metrics = ["prometheus-client>=0.21,<1"]
+gui = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+]
+full = [
+    "accelerate>=0.34,<2",
+    "chromadb>=1.0,<2",
+    "fastapi>=0.115,<1",
+    "hnswlib>=0.8,<0.9",
+    "morfessor>=2.0.6,<3",
+    "networkx>=3.2,<4",
+    "nltk>=3.9,<4",
+    "numpy>=1.26,<3",
+    "plotly>=5.24,<7",
+    "prometheus-client>=0.21,<1",
+    "pyvis>=0.3.2,<0.4",
+    "pydantic>=2.7,<3",
+    "python-louvain>=0.16,<1",
+    "rdflib>=7,<8",
+    "requests>=2.32,<3",
+    "sentence-transformers>=3.0,<6",
+    "spacy>=3.8,<4",
+    "textblob>=0.19,<1",
+    "torch>=2.2,<3",
+    "transformers>=4.45,<6",
+    "tomli>=2.0; python_version < '3.11'",
+    "uvicorn[standard]>=0.30,<1",
+]
+dev = [
+    "build>=1.2,<2",
+    "httpx>=0.27,<1",
+    "httpx2>=2,<3",
+    "networkx>=3.2,<4",
+    "nltk>=3.9,<4",
+    "numpy>=1.26,<3",
+    "pydantic>=2.7,<3",
+    "python-louvain>=0.16,<1",
+    "mypy>=1.15,<3",
+    "pip-audit>=2.9,<3",
+    "pre-commit>=4,<5",
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.15,<1",
+    "twine>=6,<7",
+    "types-networkx>=3.2,<4",
 ]
 
-[tool.setuptools.packages.find]
-where   = [ "src" ]
-include = [ "word_forge*" ]
-
-[tool.setuptools.package-data]
-"word_forge" = [ "py.typed", "*.json", "*.jsonl", "*.ttl" ]
+[project.urls]
+Documentation = "https://github.com/Ace1928/word_forge/tree/main/docs"
+Homepage = "https://github.com/Ace1928/word_forge"
+Issues = "https://github.com/Ace1928/word_forge/issues"
+Repository = "https://github.com/Ace1928/word_forge.git"
 
 [project.scripts]
-word_forge = "word_forge.forge:main"
+word-forge = "word_forge.cli:main"
+word_forge = "word_forge.cli:main"
 
-[tool.black]
-line-length    = 88
-target-version = [ "py38" ]
+[tool.setuptools]
+include-package-data = true
 
-[tool.isort]
-profile     = "black"
-line_length = 88
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["word_forge*"]
+
+[tool.setuptools.package-data]
+word_forge = [
+    "py.typed",
+    "*.json",
+    "*.jsonl",
+    "*.ttl",
+    "web/static/*",
+    "web/static/assets/*",
+]
 
 [tool.ruff]
-line-length = 88
-exclude = ["src/old"]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["src/old"]
 
 [tool.ruff.lint]
-extend-ignore = ["E402"]
+select = ["E", "F", "I", "B"]
+ignore = [
+    "B019", # Legacy instance caches are tracked for replacement with bounded per-instance caches.
+    "B904", # Legacy exception translation is being migrated to explicit cause chaining.
+    "E501", # The formatter is authoritative; URLs and fixtures may exceed the target width.
+]
 
-[tool.mypy]
-python_version           = "3.8"
-warn_return_any          = true
-warn_unused_configs      = true
-disallow_untyped_defs    = true
-disallow_incomplete_defs = true
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
 
 [tool.pytest.ini_options]
-testpaths    = [ "tests" ]
-python_files = "test_*.py"
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+minversion = "8.0"
+testpaths = ["tests"]
+markers = [
+    "integration: exercises more than one Word Forge subsystem",
+    "slow: takes long enough to omit from the fastest developer loop",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["word_forge"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+no_implicit_optional = true
+pretty = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "chromadb.*",
+    "community.*",
+    "faiss.*",
+    "hnswlib.*",
+    "morfessor.*",
+    "nltk.*",
+    "plotly.*",
+    "prometheus_client.*",
+    "pyvis.*",
+    "sentence_transformers.*",
+    "spacy.*",
+    "textblob.*",
+    "torch.*",
+    "transformers.*",
+]
+ignore_missing_imports = true

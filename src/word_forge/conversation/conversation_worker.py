@@ -23,17 +23,20 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from threading import Event, Lock, RLock, Thread
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union, cast, final
+from typing import Any, TypedDict, cast, final
 
 from word_forge.conversation.conversation_manager import ConversationManager
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.observability import eidosian
 from word_forge.parser.parser_refiner import ParserRefiner
 from word_forge.queue.queue_manager import QueueManager, Result  # Import Result
 
@@ -67,8 +70,8 @@ class ConversationProcessingError(ConversationError):
     def __init__(
         self,
         message: str,
-        cause: Optional[Exception] = None,
-        context: Optional[Dict[str, Any]] = None,
+        cause: Exception | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.cause = cause
@@ -113,13 +116,13 @@ class ConversationWorkerStatus(TypedDict):
     processed_count: int
     success_count: int
     error_count: int
-    last_update: Optional[float]
-    uptime: Optional[float]
+    last_update: float | None
+    uptime: float | None
     state: str
     queue_size: int
-    recent_errors: List[str]
-    next_poll: Optional[float]
-    conversation_metrics: Dict[str, Any]
+    recent_errors: list[str]
+    next_poll: float | None
+    conversation_metrics: dict[str, Any]
     retry_queue_size: int
 
 
@@ -139,6 +142,15 @@ class ConversationTask(TypedDict, total=False):
         completion_callback: Optional function to call upon task completion.
     """
 
+    task_id: str
+    conversation_id: int | None
+    message: str
+    speaker: str
+    timestamp: float
+    priority: int
+    context: dict[str, Any]
+    completion_callback: Callable[[dict[str, Any]], None]
+
 
 @dataclass
 class ProcessingMetrics:
@@ -150,11 +162,12 @@ class ProcessingMetrics:
     timeout_count: int = 0
     deferred_count: int = 0
     invalid_count: int = 0
-    processing_times: List[float] = field(default_factory=list)
-    task_types: Dict[str, int] = field(default_factory=lambda: {})
-    error_types: Dict[str, int] = field(default_factory=lambda: {})
+    processing_times: list[float] = field(default_factory=list)
+    task_types: dict[str, int] = field(default_factory=lambda: {})
+    error_types: dict[str, int] = field(default_factory=lambda: {})
     _lock: Lock = field(default_factory=Lock)
 
+    @eidosian()
     def record_processed(self) -> None:
         """Increment the processed count thread-safely."""
         self._lock.acquire()
@@ -163,6 +176,7 @@ class ProcessingMetrics:
         finally:
             self._lock.release()
 
+    @eidosian()
     def record_result(self, result: TaskResult, processing_time: float) -> None:
         """Record a processing result with timing information."""
         self._lock.acquire()
@@ -185,6 +199,7 @@ class ProcessingMetrics:
         finally:
             self._lock.release()
 
+    @eidosian()
     def record_task_type(self, task_type: str) -> None:
         """Record a task type for distribution analysis."""
         self._lock.acquire()
@@ -193,6 +208,7 @@ class ProcessingMetrics:
         finally:
             self._lock.release()
 
+    @eidosian()
     def record_error(self, error_type: str) -> None:
         """Record an error type for error distribution analysis."""
         self._lock.acquire()
@@ -201,7 +217,8 @@ class ProcessingMetrics:
         finally:
             self._lock.release()
 
-    def get_avg_processing_time(self) -> Optional[float]:
+    @eidosian()
+    def get_avg_processing_time(self) -> float | None:
         """Calculate the average processing time with timeout protection."""
         try:
             # Use a timeout to prevent deadlocks during shutdown
@@ -218,7 +235,8 @@ class ProcessingMetrics:
             # Safely handle any exceptions during shutdown
             return None
 
-    def get_metrics_dict(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics_dict(self) -> dict[str, Any]:
         """
         Return a dictionary of all metrics, calculated thread-safely.
 
@@ -269,7 +287,7 @@ class ProcessingMetrics:
                 self._lock.release()
         except Exception as e:
             # Return error metrics if something goes wrong
-            return {"error": f"Failed to get metrics: {str(e)}", "processed_count": 0}
+            return {"error": f"Failed to get metrics: {e!s}", "processed_count": 0}
 
 
 class StateTracker:
@@ -285,12 +303,13 @@ class StateTracker:
         """Initialize state tracker with default values."""
         self._lock = RLock()
         self._state = ConversationWorkerState.STOPPED
-        self._start_time: Optional[float] = None
-        self._last_update: Optional[float] = None
-        self._next_poll: Optional[float] = None
-        self._recent_errors: List[Tuple[float, str]] = []
+        self._start_time: float | None = None
+        self._last_update: float | None = None
+        self._next_poll: float | None = None
+        self._recent_errors: list[tuple[float, str]] = []
         self._max_recent_errors = 10
 
+    @eidosian()
     def start(self) -> None:
         """Transition to RUNNING state."""
         with self._lock:
@@ -298,18 +317,21 @@ class StateTracker:
             self._start_time = time.time()
             self._last_update = time.time()
 
+    @eidosian()
     def stop(self) -> None:
         """Transition to STOPPED state."""
         with self._lock:
             self._state = ConversationWorkerState.STOPPED
             self._last_update = time.time()
 
+    @eidosian()
     def pause(self) -> None:
         """Transition to PAUSED state."""
         with self._lock:
             self._state = ConversationWorkerState.PAUSED
             self._last_update = time.time()
 
+    @eidosian()
     def resume(self) -> None:
         """Transition to RUNNING state from PAUSED."""
         with self._lock:
@@ -317,23 +339,27 @@ class StateTracker:
                 self._state = ConversationWorkerState.RUNNING
                 self._last_update = time.time()
 
+    @eidosian()
     def error(self) -> None:
         """Transition to ERROR state."""
         with self._lock:
             self._state = ConversationWorkerState.ERROR
             self._last_update = time.time()
 
+    @eidosian()
     def recovery(self) -> None:
         """Transition to RECOVERY state."""
         with self._lock:
             self._state = ConversationWorkerState.RECOVERY
             self._last_update = time.time()
 
+    @eidosian()
     def record_update(self) -> None:
         """Record a successful update to the state."""
         with self._lock:
             self._last_update = time.time()
 
+    @eidosian()
     def record_error(self, error_msg: str) -> None:
         """Record an error with timestamp."""
         with self._lock:
@@ -342,6 +368,7 @@ class StateTracker:
             if len(self._recent_errors) > self._max_recent_errors:
                 self._recent_errors = self._recent_errors[-self._max_recent_errors :]
 
+    @eidosian()
     def set_next_poll(self, next_poll: float) -> None:
         """Set the next scheduled poll time."""
         with self._lock:
@@ -360,7 +387,7 @@ class StateTracker:
             return self._state == ConversationWorkerState.RUNNING
 
     @property
-    def uptime(self) -> Optional[float]:
+    def uptime(self) -> float | None:
         """Calculate uptime in seconds if started."""
         with self._lock:
             if self._start_time is None:
@@ -368,30 +395,28 @@ class StateTracker:
             return time.time() - self._start_time
 
     @property
-    def last_update(self) -> Optional[float]:
+    def last_update(self) -> float | None:
         """Get timestamp of last update."""
         with self._lock:
             return self._last_update
 
     @property
-    def next_poll(self) -> Optional[float]:
+    def next_poll(self) -> float | None:
         """Get the next scheduled poll time."""
         with self._lock:
             return self._next_poll
 
     @property
-    def recent_errors(self) -> List[str]:
+    def recent_errors(self) -> list[str]:
         """Get list of recent error messages."""
         with self._lock:
             return [
-                error
-                for _, error in sorted(
-                    self._recent_errors, key=lambda x: x[0], reverse=True
-                )
+                error for _, error in sorted(self._recent_errors, key=lambda x: x[0], reverse=True)
             ]
 
+    @eidosian()
     def to_dict(
-        self, queue_size: int, retry_queue_size: int, metrics: Dict[str, Any]
+        self, queue_size: int, retry_queue_size: int, metrics: dict[str, Any]
     ) -> ConversationWorkerStatus:
         """
         Convert current state and metrics into a status dictionary.
@@ -409,15 +434,11 @@ class StateTracker:
             return ConversationWorkerStatus(
                 running=self.is_running,
                 state=str(self._state),
-                processed_count=metrics.get(
-                    "processed_count", 0
-                ),  # Use .get for safety
+                processed_count=metrics.get("processed_count", 0),  # Use .get for safety
                 success_count=metrics.get("success_count", 0),
                 error_count=metrics.get("error_count", 0),
                 last_update=self._last_update,
-                uptime=(
-                    round(uptime_val, 2) if uptime_val is not None else None
-                ),  # Round uptime
+                uptime=(round(uptime_val, 2) if uptime_val is not None else None),  # Round uptime
                 queue_size=queue_size,
                 retry_queue_size=retry_queue_size,  # Include retry queue size
                 recent_errors=self.recent_errors[:5],  # Limit recent errors shown
@@ -443,10 +464,10 @@ class ConversationWorker(Thread):
     def __init__(
         self,
         parser_refiner: ParserRefiner,
-        queue_manager: QueueManager[Union[ConversationTask, str, Dict[str, Any]]],
+        queue_manager: QueueManager[ConversationTask | str | dict[str, Any]],
         conversation_manager: ConversationManager,
         db_manager: DBManager,
-        emotion_manager: Optional[EmotionManager] = None,
+        emotion_manager: EmotionManager | None = None,
         poll_interval: float = 2.0,
         processing_timeout: float = 30.0,
         batch_size: int = 1,
@@ -478,8 +499,16 @@ class ConversationWorker(Thread):
         self.emotion_manager = emotion_manager
 
         # Configuration
-        self.poll_interval = poll_interval
-        self.processing_timeout = processing_timeout
+        if not math.isfinite(poll_interval) or poll_interval <= 0:
+            raise ValueError("poll_interval must be a finite number greater than zero")
+        if not math.isfinite(processing_timeout) or processing_timeout <= 0:
+            raise ValueError("processing_timeout must be a finite number greater than zero")
+        if isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        if isinstance(max_retries, bool) or max_retries < 0:
+            raise ValueError("max_retries must be a non-negative integer")
+        self.poll_interval = float(poll_interval)
+        self.processing_timeout = float(processing_timeout)
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.enable_logging = enable_logging
@@ -491,15 +520,16 @@ class ConversationWorker(Thread):
         self.state_tracker = StateTracker()
 
         # Advanced tracking
-        self._retry_queue: Dict[str, Tuple[ConversationTask, int]] = {}
-        self._processing_times: Dict[str, float] = {}
-        self._conversation_cache: Dict[int, Dict[str, Any]] = {}
+        self._retry_queue: dict[str, tuple[ConversationTask, int]] = {}
+        self._processing_times: dict[str, float] = {}
+        self._conversation_cache: dict[int, dict[str, Any]] = {}
 
         # Logger setup
         self.logger = logger if enable_logging else None
         if self.logger:
             self.logger.info("ConversationWorker initialized")
 
+    @eidosian()
     def start(self) -> None:
         """
         Start the conversation worker thread.
@@ -520,6 +550,7 @@ class ConversationWorker(Thread):
 
         super().start()
 
+    @eidosian()
     def stop(self) -> None:
         """
         Signal the worker thread to stop processing and shut down.
@@ -537,6 +568,7 @@ class ConversationWorker(Thread):
         self._pause_event.clear()  # Ensure thread isn't paused when stopping
         self.state_tracker.stop()
 
+    @eidosian()
     def restart(self) -> None:
         """
         Restart the worker thread by stopping it and starting a new one.
@@ -561,6 +593,7 @@ class ConversationWorker(Thread):
         if self.logger:
             self.logger.info("Conversation worker restarted")
 
+    @eidosian()
     def pause(self) -> None:
         """
         Pause the worker thread temporarily.
@@ -577,6 +610,7 @@ class ConversationWorker(Thread):
         if self.logger:
             self.logger.info("Conversation worker paused")
 
+    @eidosian()
     def resume(self) -> None:
         """
         Resume a paused worker thread.
@@ -592,6 +626,7 @@ class ConversationWorker(Thread):
         if self.logger:
             self.logger.info("Conversation worker resumed")
 
+    @eidosian()
     def run(self) -> None:
         """
         Main execution loop for the worker thread.
@@ -635,7 +670,7 @@ class ConversationWorker(Thread):
 
                 except Exception as e:
                     error_name = type(e).__name__
-                    error_msg = f"{error_name}: {str(e)}"
+                    error_msg = f"{error_name}: {e!s}"
                     self.state_tracker.record_error(error_msg)
                     self.metrics.record_error(error_name)
 
@@ -646,9 +681,7 @@ class ConversationWorker(Thread):
 
                     # Handle recovery
                     current_time = time.time()
-                    if (
-                        current_time - last_error_recovery > 60.0
-                    ):  # 1 minute between recoveries
+                    if current_time - last_error_recovery > 60.0:  # 1 minute between recoveries
                         self.state_tracker.recovery()
                         if self.logger:
                             self.logger.info("Entering recovery mode")
@@ -664,9 +697,7 @@ class ConversationWorker(Thread):
 
         except Exception as e:
             if self.logger:
-                self.logger.critical(
-                    f"Critical error in conversation worker: {str(e)}", exc_info=True
-                )
+                self.logger.critical(f"Critical error in conversation worker: {e!s}", exc_info=True)
             self.state_tracker.error()
 
         finally:
@@ -718,7 +749,7 @@ class ConversationWorker(Thread):
             except Exception as e:
                 if self.logger:
                     self.logger.error(
-                        f"Error processing retry task {task_id}: {str(e)}",
+                        f"Error processing retry task {task_id}: {e!s}",
                         exc_info=True,
                     )
                 # Increment retry attempt count
@@ -742,7 +773,7 @@ class ConversationWorker(Thread):
         for _ in range(self.batch_size):
             try:
                 # Get a task result from the queue
-                dequeue_result: Result[Union[ConversationTask, str, Dict[str, Any]]] = (
+                dequeue_result: Result[ConversationTask | str | dict[str, Any]] = (
                     self.queue_manager.dequeue(block=False)
                 )
 
@@ -785,18 +816,14 @@ class ConversationWorker(Thread):
                     if error is not None and error.error_code != "EMPTY_QUEUE":
                         if self.logger:
                             self.logger.error(f"Error dequeuing task: {error.message}")
-                        self.state_tracker.record_error(
-                            f"Dequeue error: {error.message}"
-                        )
+                        self.state_tracker.record_error(f"Dequeue error: {error.message}")
 
             except queue.Empty:
                 # No more tasks in queue
                 break
             except Exception as e:
                 if self.logger:
-                    self.logger.error(
-                        f"Error processing queue batch: {e}", exc_info=True
-                    )
+                    self.logger.error(f"Error processing queue batch: {e}", exc_info=True)
                 self.state_tracker.record_error(str(e))
 
         return processed_count
@@ -858,9 +885,7 @@ class ConversationWorker(Thread):
                     )
                 conversation_id = start_result.unwrap()
                 if self.logger:
-                    self.logger.info(
-                        f"Task {task_id}: Started new conversation {conversation_id}"
-                    )
+                    self.logger.info(f"Task {task_id}: Started new conversation {conversation_id}")
 
             # Ensure conversation_id is valid before proceeding
             if conversation_id is None:
@@ -888,7 +913,7 @@ class ConversationWorker(Thread):
             # Execute callback if provided
             completion_callback = task.get("completion_callback")
             if completion_callback and callable(completion_callback):
-                result_data: Dict[str, Any] = {
+                result_data: dict[str, Any] = {
                     "task_id": task_id,
                     "conversation_id": conversation_id,
                     "message_id": message_id,
@@ -916,24 +941,22 @@ class ConversationWorker(Thread):
 
             # Log error
             if self.logger:
-                self.logger.error(
-                    f"Error processing task {task_id}: {str(e)}", exc_info=True
-                )
+                self.logger.error(f"Error processing task {task_id}: {e!s}", exc_info=True)
 
             # Clean up processing tracking
             if task_id in self._processing_times:
                 del self._processing_times[task_id]
 
             # Re-raise as conversation error
-            context: Dict[str, Any] = {
+            error_context: dict[str, Any] = {
                 "task_id": task_id,
                 "conversation_id": task.get("conversation_id"),
                 "processing_time": processing_time,
             }
             raise ConversationProcessingError(
-                f"Failed to process conversation task: {str(e)}",
+                f"Failed to process conversation task: {e!s}",
                 cause=e,
-                context=context,
+                context=error_context,
             )
 
     def _clear_stale_processing(self) -> None:
@@ -944,7 +967,7 @@ class ConversationWorker(Thread):
         older than `processing_timeout` seconds, logging a warning for each.
         """
         current_time = time.time()
-        stale_tasks: List[str] = []
+        stale_tasks: list[str] = []
 
         for task_id, start_time in self._processing_times.items():
             if current_time - start_time > self.processing_timeout:
@@ -955,6 +978,7 @@ class ConversationWorker(Thread):
                 self.logger.warning(f"Clearing stale task {task_id}")
             del self._processing_times[task_id]
 
+    @eidosian()
     def get_status(self) -> ConversationWorkerStatus:
         """
         Retrieves the current operational status and metrics of the worker.
@@ -971,7 +995,8 @@ class ConversationWorker(Thread):
 
         return self.state_tracker.to_dict(queue_size, retry_queue_size, metrics_dict)
 
-    def get_metrics(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics(self) -> dict[str, Any]:
         """
         Retrieves the current performance metrics collected by the worker.
 
@@ -982,6 +1007,7 @@ class ConversationWorker(Thread):
         """
         return self.metrics.get_metrics_dict()
 
+    @eidosian()
     def process_task(self, task: ConversationTask) -> bool:
         """
         Processes a single task synchronously, bypassing the queue.
@@ -1001,14 +1027,11 @@ class ConversationWorker(Thread):
             return result == TaskResult.SUCCESS
         except Exception as e:
             if self.logger:
-                self.logger.error(
-                    f"Error in synchronous task processing: {str(e)}", exc_info=True
-                )
+                self.logger.error(f"Error in synchronous task processing: {e!s}", exc_info=True)
             return False
 
-    def submit_message(
-        self, conversation_id: Optional[int], message: str, speaker: str
-    ) -> Optional[str]:
+    @eidosian()
+    def submit_message(self, conversation_id: int | None, message: str, speaker: str) -> str | None:
         """
         Creates and enqueues a standard conversation task to add a message.
 
@@ -1046,5 +1069,5 @@ class ConversationWorker(Thread):
 
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Error submitting message: {str(e)}", exc_info=True)
+                self.logger.error(f"Error submitting message: {e!s}", exc_info=True)
             return None

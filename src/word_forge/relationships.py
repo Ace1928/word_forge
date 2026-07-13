@@ -23,7 +23,9 @@ Typical usage:
     props = get_relationship_properties("unknown_type")  # Returns default properties
 """
 
-from typing import Dict, Final, Literal, TypedDict, Union
+from typing import Final, Literal, TypedDict, Union
+
+from word_forge.observability import eidosian
 
 
 class RelationshipProperties(TypedDict):
@@ -130,7 +132,7 @@ RelationshipType = Union[
 
 
 # Expanded relationship types to include all relationships from ParserRefiner
-RELATIONSHIP_TYPES: Final[Dict[str, RelationshipProperties]] = {
+RELATIONSHIP_TYPES: Final[dict[str, RelationshipProperties]] = {
     # Core relationships
     "synonym": {"weight": 1.0, "color": "#4287f5", "bidirectional": True},
     "antonym": {"weight": 0.9, "color": "#f54242", "bidirectional": True},
@@ -189,6 +191,7 @@ RELATIONSHIP_TYPES: Final[Dict[str, RelationshipProperties]] = {
 }
 
 
+@eidosian()
 def get_relationship_properties(
     relationship_type: RelationshipType,
 ) -> RelationshipProperties:
@@ -215,6 +218,7 @@ def get_relationship_properties(
     return RELATIONSHIP_TYPES.get(str(relationship_type), RELATIONSHIP_TYPES["default"])
 
 
+@eidosian()
 def is_bidirectional(relationship_type: RelationshipType) -> bool:
     """Check if a relationship type is bidirectional.
 
@@ -237,6 +241,7 @@ def is_bidirectional(relationship_type: RelationshipType) -> bool:
     return get_relationship_properties(relationship_type)["bidirectional"]
 
 
+@eidosian()
 def get_relationship_weight(relationship_type: RelationshipType) -> float:
     """Get the weight value for a relationship type.
 
@@ -259,6 +264,7 @@ def get_relationship_weight(relationship_type: RelationshipType) -> float:
     return get_relationship_properties(relationship_type)["weight"]
 
 
+@eidosian()
 def get_relationship_color(relationship_type: RelationshipType) -> str:
     """Get the visual color code for a relationship type.
 

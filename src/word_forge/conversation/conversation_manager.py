@@ -31,8 +31,9 @@ Example:
 
 import sqlite3
 import traceback
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Dict, Iterator, List, Optional, cast
+from typing import Optional, cast
 
 # Import Result and Error types correctly
 from word_forge.configs.config_essentials import (
@@ -46,6 +47,7 @@ from word_forge.configs.config_essentials import (
 from word_forge.conversation.conversation_types import (
     AffectiveLexicalModel,
     ConversationDict,
+    ConversationSummaryDict,
     IdentityModel,
     LightweightModel,
     MessageDict,
@@ -55,9 +57,10 @@ from word_forge.conversation.conversation_types import (
 from word_forge.database.database_manager import DatabaseError, DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
 from word_forge.graph.graph_manager import GraphManager
-from word_forge.vectorizer.vector_store import VectorStore
-from word_forge.queue.queue_manager import QueueManager
+from word_forge.observability import eidosian
 from word_forge.parser.parser_refiner import TermExtractor
+from word_forge.queue.queue_manager import QueueManager
+from word_forge.vectorizer.vector_store import VectorStore
 
 
 # --- Custom Exceptions ---
@@ -73,7 +76,7 @@ class ConversationError(Exception):
         original_exception (Optional[Exception]): The underlying exception, if any.
     """
 
-    def __init__(self, message: str, original_exception: Optional[Exception] = None):
+    def __init__(self, message: str, original_exception: Exception | None = None):
         """
         Initializes a ConversationError.
 
@@ -201,8 +204,8 @@ class ConversationManager:
         lightweight_model: LightweightModel,
         affective_model: AffectiveLexicalModel,
         identity_model: IdentityModel,
-        queue_manager: Optional[QueueManager[str]] = None,
-        term_extractor: Optional[TermExtractor] = None,
+        queue_manager: QueueManager[str] | None = None,
+        term_extractor: TermExtractor | None = None,
     ) -> None:
         """
         Initializes the ConversationManager with dependencies and models.
@@ -255,7 +258,7 @@ class ConversationManager:
         Raises:
             ConversationError: If obtaining or managing the connection fails.
         """
-        conn: Optional[sqlite3.Connection] = None
+        conn: sqlite3.Connection | None = None
         try:
             with self.db_manager.get_connection() as db_conn:
                 conn = db_conn
@@ -311,6 +314,7 @@ class ConversationManager:
             if not self.db_manager.word_exists(term):
                 self.queue_manager.enqueue(term)
 
+    @eidosian()
     def start_conversation(self) -> Result[int]:
         """
         Initiates a new conversation record in the database.
@@ -381,6 +385,7 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
+    @eidosian()
     def end_conversation(self, conversation_id: int) -> Result[None]:
         """
         Marks an existing conversation as 'COMPLETED'.
@@ -462,6 +467,7 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
+    @eidosian()
     def add_message(
         self,
         conversation_id: int,
@@ -497,7 +503,7 @@ class ConversationManager:
         if not text or not text.strip():
             raise ValueError("Message text cannot be empty or whitespace.")
 
-        message_id: Optional[int] = None
+        message_id: int | None = None
         try:
             with self._db_connection() as conn:
                 cursor = conn.cursor()
@@ -543,9 +549,7 @@ class ConversationManager:
                     self._queue_terms_from_text(text)
 
             if generate_response and speaker.lower() != "assistant":
-                print(
-                    f"Triggering response generation for conversation {conversation_id}..."
-                )
+                print(f"Triggering response generation for conversation {conversation_id}...")
                 response_result: Result[int] = self.generate_and_add_response(
                     conversation_id, text, speaker
                 )
@@ -633,6 +637,7 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
+    @eidosian()
     def generate_and_add_response(
         self, conversation_id: int, last_user_text: str, last_user_speaker: str
     ) -> Result[int]:
@@ -687,9 +692,7 @@ class ConversationManager:
             "identity_state": None,
             "additional_data": {},
         }
-        print(
-            f"[{conversation_id}] Context prepared with {len(limited_history)} messages."
-        )
+        print(f"[{conversation_id}] Context prepared with {len(limited_history)} messages.")
 
         try:
             print(f"[{conversation_id}] Calling Reflexive Model...")
@@ -697,7 +700,7 @@ class ConversationManager:
             if reflexive_result.is_failure:
                 reflex_error_msg = "Unknown reflexive failure"
                 reflex_error_code = "REFLEX_UNKNOWN"
-                reflex_error_context: Optional[Dict[str, str]] = None
+                reflex_error_context: dict[str, str] | None = None
                 if reflexive_result.error:
                     reflex_error_msg = reflexive_result.error.message
                     reflex_error_code = reflexive_result.error.code
@@ -784,9 +787,7 @@ class ConversationManager:
                 conversation_id, final_response_text
             )
             if add_assistant_result.is_failure:
-                print(
-                    f"[{conversation_id}] Error: Failed to add assistant message to DB."
-                )
+                print(f"[{conversation_id}] Error: Failed to add assistant message to DB.")
                 failure_error = add_assistant_result.error or Error.create(
                     message="Failed to add assistant message internally without specific error.",
                     code="ADD_ASSISTANT_INTERNAL_FAILURE",
@@ -802,9 +803,7 @@ class ConversationManager:
                 )
 
             assistant_message_id = add_assistant_result.unwrap()
-            print(
-                f"[{conversation_id}] Assistant message {assistant_message_id} added."
-            )
+            print(f"[{conversation_id}] Assistant message {assistant_message_id} added.")
             return Result[int].success(assistant_message_id)
 
         except Exception as e:
@@ -826,9 +825,7 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
-    def _add_assistant_message_internal(
-        self, conversation_id: int, text: str
-    ) -> Result[int]:
+    def _add_assistant_message_internal(self, conversation_id: int, text: str) -> Result[int]:
         """
         Internal helper to add an 'Assistant' message using the Result pattern.
 
@@ -921,6 +918,7 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
+    @eidosian()
     def get_conversation(self, conversation_id: int) -> Result[ConversationDict]:
         """
         Retrieves full conversation details, including messages.
@@ -941,7 +939,7 @@ class ConversationManager:
                 cursor = conn.cursor()
 
                 cursor.execute(SQL_GET_CONVERSATION, (conversation_id,))
-                row: Optional[sqlite3.Row] = cursor.fetchone()
+                row: sqlite3.Row | None = cursor.fetchone()
 
                 if not row:
                     error = Error.create(
@@ -968,7 +966,7 @@ class ConversationManager:
                 }
 
                 cursor.execute(SQL_GET_MESSAGES, (conversation_id,))
-                messages_rows: List[sqlite3.Row] = cursor.fetchall()
+                messages_rows: list[sqlite3.Row] = cursor.fetchall()
 
                 for m_row in messages_rows:
                     message: MessageDict = {
@@ -1027,9 +1025,8 @@ class ConversationManager:
                 error.code, error.message, error.context, error.category, error.severity
             )
 
-    def get_conversation_if_exists(
-        self, conversation_id: int
-    ) -> Result[Optional[ConversationDict]]:
+    @eidosian()
+    def get_conversation_if_exists(self, conversation_id: int) -> Result[ConversationDict | None]:
         """
         Retrieves conversation details only if the conversation exists.
 
@@ -1067,7 +1064,8 @@ class ConversationManager:
                 failure_error.severity,
             )
 
-    def list_conversations(self, limit: int = 10) -> Result[List[ConversationDict]]:
+    @eidosian()
+    def list_conversations(self, limit: int = 10) -> Result[list[ConversationSummaryDict]]:
         """
         List recent conversations with their message counts.
 
@@ -1101,9 +1099,9 @@ class ConversationManager:
                     (limit,),
                 )
                 rows = cursor.fetchall()
-                conversations: List[ConversationDict] = []
+                conversations: list[ConversationSummaryDict] = []
                 for row in rows:
-                    conv: ConversationDict = {
+                    conv: ConversationSummaryDict = {
                         "id": row["id"],
                         "status": row["status"],
                         "created_at": row["created_at"],
@@ -1111,7 +1109,7 @@ class ConversationManager:
                         "message_count": row["message_count"],
                     }
                     conversations.append(conv)
-                return Result[List[ConversationDict]].success(conversations)
+                return Result[list[ConversationSummaryDict]].success(conversations)
         except sqlite3.Error as e:
             error = Error.create(
                 message=f"SQLite error listing conversations: {e}",
@@ -1120,7 +1118,7 @@ class ConversationManager:
                 severity=ErrorSeverity.ERROR,
                 context={"sql_operation": "list_conversations"},
             )
-            return Result[List[ConversationDict]].failure(
+            return Result[list[ConversationSummaryDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
         except ConversationError as e:
@@ -1131,7 +1129,7 @@ class ConversationManager:
                 severity=ErrorSeverity.ERROR,
                 context={"sql_operation": "list_conversations"},
             )
-            return Result[List[ConversationDict]].failure(
+            return Result[list[ConversationSummaryDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
         except Exception as e:
@@ -1145,13 +1143,12 @@ class ConversationManager:
                     "exception_type": type(e).__name__,
                 },
             )
-            return Result[List[ConversationDict]].failure(
+            return Result[list[ConversationSummaryDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
 
-    def get_messages(
-        self, conversation_id: int, limit: int = 50
-    ) -> Result[List[MessageDict]]:
+    @eidosian()
+    def get_messages(self, conversation_id: int, limit: int = 50) -> Result[list[MessageDict]]:
         """
         Get messages from a specific conversation.
 
@@ -1179,7 +1176,7 @@ class ConversationManager:
                         severity=ErrorSeverity.WARNING,
                         context={"conversation_id": str(conversation_id)},
                     )
-                    return Result[List[MessageDict]].failure(
+                    return Result[list[MessageDict]].failure(
                         error.code,
                         error.message,
                         error.context,
@@ -1191,9 +1188,9 @@ class ConversationManager:
                     """
                     SELECT
                         id,
-                        speaker as role,
-                        text as content,
-                        timestamp as created_at
+                        speaker,
+                        text,
+                        timestamp
                     FROM conversation_messages
                     WHERE conversation_id = ?
                     ORDER BY timestamp ASC
@@ -1202,16 +1199,17 @@ class ConversationManager:
                     (conversation_id, limit),
                 )
                 rows = cursor.fetchall()
-                messages: List[MessageDict] = []
+                messages: list[MessageDict] = []
                 for row in rows:
                     msg: MessageDict = {
                         "id": row["id"],
-                        "role": row["role"],
-                        "content": row["content"],
-                        "created_at": row["created_at"],
+                        "speaker": row["speaker"],
+                        "text": row["text"],
+                        "timestamp": row["timestamp"],
+                        "emotion": None,
                     }
                     messages.append(msg)
-                return Result[List[MessageDict]].success(messages)
+                return Result[list[MessageDict]].success(messages)
         except sqlite3.Error as e:
             error = Error.create(
                 message=f"SQLite error getting messages: {e}",
@@ -1223,7 +1221,7 @@ class ConversationManager:
                     "conversation_id": str(conversation_id),
                 },
             )
-            return Result[List[MessageDict]].failure(
+            return Result[list[MessageDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
         except ConversationError as e:
@@ -1237,7 +1235,7 @@ class ConversationManager:
                     "conversation_id": str(conversation_id),
                 },
             )
-            return Result[List[MessageDict]].failure(
+            return Result[list[MessageDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
         except Exception as e:
@@ -1252,20 +1250,20 @@ class ConversationManager:
                     "conversation_id": str(conversation_id),
                 },
             )
-            return Result[List[MessageDict]].failure(
+            return Result[list[MessageDict]].failure(
                 error.code, error.message, error.context, error.category, error.severity
             )
 
 
 __all__ = [
-    "ConversationManager",
-    "ConversationError",
-    "ConversationNotFoundError",
+    "AffectiveLexicalModel",
     "ConversationDict",
+    "ConversationError",
+    "ConversationManager",
+    "ConversationNotFoundError",
+    "IdentityModel",
+    "LightweightModel",
     "MessageDict",
     "ModelContext",
     "ReflexiveModel",
-    "LightweightModel",
-    "AffectiveLexicalModel",
-    "IdentityModel",
 ]

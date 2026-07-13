@@ -9,8 +9,8 @@ import math
 import pytest
 
 from word_forge.emotion.emotion_types import (
-    EmotionalContext,
     EmotionalConcept,
+    EmotionalContext,
     EmotionDimension,
     EmotionError,
     EmotionVector,
@@ -48,24 +48,15 @@ class TestEmotionDimension:
 
     def test_get_dimension_category_primary(self):
         """Test category identification for primary dimensions."""
-        assert (
-            EmotionDimension.get_dimension_category(EmotionDimension.VALENCE)
-            == "primary"
-        )
+        assert EmotionDimension.get_dimension_category(EmotionDimension.VALENCE) == "primary"
 
     def test_get_dimension_category_extended(self):
         """Test category identification for extended dimensions."""
-        assert (
-            EmotionDimension.get_dimension_category(EmotionDimension.CERTAINTY)
-            == "extended"
-        )
+        assert EmotionDimension.get_dimension_category(EmotionDimension.CERTAINTY) == "extended"
 
     def test_get_dimension_category_meta(self):
         """Test category identification for meta dimensions."""
-        assert (
-            EmotionDimension.get_dimension_category(EmotionDimension.META_COMPLEXITY)
-            == "meta"
-        )
+        assert EmotionDimension.get_dimension_category(EmotionDimension.META_COMPLEXITY) == "meta"
 
 
 class TestEmotionVector:
@@ -82,23 +73,17 @@ class TestEmotionVector:
 
     def test_create_vector_with_confidence(self):
         """Test creating a vector with custom confidence."""
-        vector = EmotionVector(
-            dimensions={EmotionDimension.VALENCE: 0.5}, confidence=0.8
-        )
+        vector = EmotionVector(dimensions={EmotionDimension.VALENCE: 0.5}, confidence=0.8)
         assert vector.confidence == 0.8
 
     def test_value_clamping(self):
         """Test that values are clamped to valid range."""
-        vector = EmotionVector(
-            dimensions={EmotionDimension.VALENCE: 2.0}  # Out of range
-        )
+        vector = EmotionVector(dimensions={EmotionDimension.VALENCE: 2.0})  # Out of range
         assert vector.dimensions[EmotionDimension.VALENCE] == 1.0
 
     def test_confidence_clamping(self):
         """Test that confidence is clamped to valid range."""
-        vector = EmotionVector(
-            dimensions={EmotionDimension.VALENCE: 0.5}, confidence=1.5
-        )
+        vector = EmotionVector(dimensions={EmotionDimension.VALENCE: 0.5}, confidence=1.5)
         assert vector.confidence == 1.0
 
     def test_distance_same_vector(self):

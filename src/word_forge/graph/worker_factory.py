@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from word_forge.observability import eidosian
+
 if TYPE_CHECKING:  # pragma: no cover - used only for type hints
     from .graph_worker import GraphWorker
 
 
-def restart_worker(worker: "GraphWorker") -> "GraphWorker":
+@eidosian()
+def restart_worker(worker: GraphWorker) -> GraphWorker:
     """Stop ``worker`` and return a new running ``GraphWorker`` instance."""
     worker.logger.info("Restarting GraphWorker via factory helper...")
     worker.stop()

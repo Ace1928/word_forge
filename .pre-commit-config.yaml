@@ -1,11 +1,32 @@
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
-  - repo: https://github.com/psf/black
-    rev: 23.12.1
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
     hooks:
-      - id: black
-        args: ["--line-length=88"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: trailing-whitespace
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.14
+    rev: v0.15.17
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: ["--fix"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: word-forge-tests
+        name: Word Forge fast tests
+        entry: python -m pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

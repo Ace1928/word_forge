@@ -22,23 +22,28 @@ Architecture:
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Protocol, TypedDict, Union, cast, final
+from typing import Any, Protocol, TypedDict, cast, final
 
 import numpy as np
-
-try:  # Optional heavy dependency
-    import torch
-except Exception:  # pragma: no cover - allow missing torch
-    torch = None  # type: ignore
 from numpy.typing import NDArray
 
 from word_forge.database.database_manager import DBManager
+from word_forge.observability import eidosian
 from word_forge.vectorizer.vector_store import VectorStore
+
+torch: Any = None
+try:  # Optional heavy dependency
+    torch = importlib.import_module("torch")
+except Exception:  # pragma: no cover - allow missing torch
+    pass
 
 
 class VectorState(Enum):
@@ -110,7 +115,7 @@ class WordData(Protocol):
         ...
 
     @property
-    def usage_examples(self) -> List[str]:
+    def usage_examples(self) -> list[str]:
         """Return usage examples for the word."""
         ...
 
@@ -133,7 +138,7 @@ class Word:
     id: int
     term: str
     definition: str
-    usage_examples: List[str]
+    usage_examples: list[str]
 
 
 class ProcessingResult(Enum):
@@ -161,8 +166,8 @@ class VectorWorkerStatus(TypedDict):
     processed_count: int  # Number of words processed in current cycle
     successful_count: int  # Number of successful operations
     error_count: int  # Number of failed operations
-    last_update: Optional[float]  # Timestamp of last update
-    uptime: Optional[float]  # Seconds since worker was started
+    last_update: float | None  # Timestamp of last update
+    uptime: float | None  # Seconds since worker was started
     state: str  # Current worker state (running, stopped, error)
 
 
@@ -185,9 +190,10 @@ class ProcessingStats:
     processed: int = 0
     successful: int = 0
     failed: int = 0
-    errors: Dict[str, int] = field(default_factory=dict)
-    last_update: Optional[float] = None
+    errors: dict[str, int] = field(default_factory=dict)
+    last_update: float | None = None
 
+    @eidosian()
     def record_result(self, word_id: int, result: ProcessingResult) -> None:
         """
         Record the result of processing a word.
@@ -208,6 +214,7 @@ class ProcessingStats:
             error_type = result.name
             self.errors[error_type] = self.errors.get(error_type, 0) + 1
 
+    @eidosian()
     def clear(self) -> None:
         """
         Reset all statistics.
@@ -243,6 +250,7 @@ class Embedder(Protocol):
     can generate vector embeddings from text.
     """
 
+    @eidosian()
     def embed(self, text: str) -> NDArray[np.float32]:
         """
         Generate an embedding vector for the given text.
@@ -267,18 +275,22 @@ class VectorWorkerInterface(Protocol):
     by any vector worker component.
     """
 
+    @eidosian()
     def start(self) -> None:
         """Start the worker thread."""
         ...
 
+    @eidosian()
     def stop(self) -> None:
         """Signal the worker to stop processing."""
         ...
 
+    @eidosian()
     def get_status(self) -> VectorWorkerStatus:
         """Return current worker status information."""
         ...
 
+    @eidosian()
     def is_alive(self) -> bool:
         """Check if the worker thread is running."""
         ...
@@ -306,10 +318,10 @@ class VectorWorker(threading.Thread):
         self,
         db: DBManager,
         vector_store: VectorStore,
-        embedder: Union[Embedder, str],  # Accept either embedder or model name
-        poll_interval: Optional[float] = None,
+        embedder: Embedder | str,  # Accept either embedder or model name
+        poll_interval: float | None = None,
         daemon: bool = True,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ):
         """
         Initialize the vector worker.
@@ -322,9 +334,10 @@ class VectorWorker(threading.Thread):
             daemon: Whether to run as a daemon thread
             logger: Optional logger for error reporting
         """
-        super().__init__(daemon=daemon)
+        super().__init__(daemon=daemon, name="VectorWorker")
         self.db = db
         self.vector_store = vector_store
+        self.embedder: Embedder
 
         # Convert string model name to embedder if needed
         if isinstance(embedder, str):
@@ -332,8 +345,7 @@ class VectorWorker(threading.Thread):
                 self.embedder = TransformerEmbedder(model_name=embedder)
                 if logger:
                     logger.info(
-                        f"Created TransformerEmbedder with model '{embedder}' "
-                        f"(dimension={self.embedder.dimension})"
+                        f"Created TransformerEmbedder with model '{embedder}' (dimension={self.embedder.dimension})"
                     )
             except EmbeddingError:
                 # Re-raise EmbeddingError as-is since it already has detailed info
@@ -345,17 +357,21 @@ class VectorWorker(threading.Thread):
         else:
             self.embedder = embedder
 
-        self.poll_interval = poll_interval or 10.0
+        resolved_interval = 10.0 if poll_interval is None else poll_interval
+        if not math.isfinite(resolved_interval) or resolved_interval <= 0:
+            raise ValueError("poll_interval must be a finite number greater than zero")
+        self.poll_interval = float(resolved_interval)
 
         self._stop_flag = False
         self._current_state = VectorState.STOPPED
         self._status_lock = threading.RLock()
-        self._start_time: Optional[float] = None
-        self.last_processed: Optional[float] = None
+        self._start_time: float | None = None
+        self.last_processed: float | None = None
 
         self.logger = logger or logging.getLogger(__name__)
         self.stats = ProcessingStats()
 
+    @eidosian()
     def run(self) -> None:
         """
         Run the worker thread until stopped.
@@ -391,7 +407,7 @@ class VectorWorker(threading.Thread):
                 with self._status_lock:
                     self._current_state = VectorState.ERROR
 
-                self.logger.error(f"Error in vector worker cycle: {str(e)}")
+                self.logger.error(f"Error in vector worker cycle: {e!s}")
                 # Continue running despite errors
                 time.sleep(max(1.0, self.poll_interval / 2))
 
@@ -400,6 +416,7 @@ class VectorWorker(threading.Thread):
 
         self.logger.info("Vector worker stopped")
 
+    @eidosian()
     def stop(self) -> None:
         """Signal the worker thread to stop after the current cycle."""
         self._stop_flag = True
@@ -419,6 +436,7 @@ class VectorWorker(threading.Thread):
                 "VectorWorker is running against a demo-mode in-memory VectorStore; vectors will not persist."
             )
 
+    @eidosian()
     def get_status(self) -> VectorWorkerStatus:
         """
         Return the current status of the vector worker.
@@ -450,7 +468,7 @@ class VectorWorker(threading.Thread):
 
             return status
 
-    def _get_all_words(self) -> List[Word]:
+    def _get_all_words(self) -> list[Word]:
         """
         Fetch new or updated words from the database.
 
@@ -467,8 +485,8 @@ class VectorWorker(threading.Thread):
                 rows = self.db.get_updated_words(self.last_processed)
             return [self._convert_row_to_word(row) for row in rows]
         except Exception as e:
-            self.logger.error(f"Failed to fetch words from database: {str(e)}")
-            raise DatabaseError(f"Database fetch failed: {str(e)}") from e
+            self.logger.error(f"Failed to fetch words from database: {e!s}")
+            raise DatabaseError(f"Database fetch failed: {e!s}") from e
 
     def _convert_row_to_word(self, row: WordRow) -> Word:
         """
@@ -487,7 +505,7 @@ class VectorWorker(threading.Thread):
             usage_examples=self._parse_usage_examples(row["usage_examples"]),
         )
 
-    def _parse_usage_examples(self, examples_string: str) -> List[str]:
+    def _parse_usage_examples(self, examples_string: str) -> list[str]:
         """
         Parse usage examples from a semicolon-separated string.
 
@@ -499,7 +517,7 @@ class VectorWorker(threading.Thread):
         """
         return examples_string.split("; ") if examples_string else []
 
-    def _process_words(self, words: List[Word]) -> None:
+    def _process_words(self, words: list[Word]) -> None:
         """
         Process a batch of words into vector embeddings.
 
@@ -541,12 +559,10 @@ class VectorWorker(threading.Thread):
                 self.stats.record_result(word.id, ProcessingResult.SUCCESS)
 
             except EmbeddingError as e:
-                self.logger.error(
-                    f"Embedding failed for word {word.term} (ID: {word.id}): {str(e)}"
-                )
+                self.logger.error(f"Embedding failed for word {word.term} (ID: {word.id}): {e!s}")
                 self.stats.record_result(word.id, ProcessingResult.EMBEDDING_ERROR)
             except Exception as e:
-                error_msg = f"Vector storage failed for word {word.term} (ID: {word.id}): {str(e)}"
+                error_msg = f"Vector storage failed for word {word.term} (ID: {word.id}): {e!s}"
                 if "object has no attribute 'upsert'" in str(e):
                     error_msg += f" (vector_store has type {type(self.vector_store).__name__}, should be VectorStore)"
                 elif "dimension" in str(e).lower():
@@ -554,8 +570,7 @@ class VectorWorker(threading.Thread):
                     embedder_dim = getattr(self.embedder, "dimension", "unknown")
                     store_dim = getattr(self.vector_store, "dimension", "unknown")
                     error_msg += (
-                        f" (embedder dimension: {embedder_dim}, "
-                        f"store dimension: {store_dim})"
+                        f" (embedder dimension: {embedder_dim}, store dimension: {store_dim})"
                     )
                 self.logger.error(error_msg)
                 self.stats.record_result(word.id, ProcessingResult.STORAGE_ERROR)
@@ -596,8 +611,10 @@ class SimpleEmbedder:
     """
     Simple embedding generator for demonstration purposes.
 
-    Creates random vectors of specified dimension. In a production environment,
-    this would be replaced with a proper embedding model.
+    Creates deterministic non-semantic vectors for demos and plumbing tests.
+
+    The output is stable for a given input but deliberately does not claim
+    semantic meaning. Production indexing should use ``TransformerEmbedder``.
 
     Attributes:
         dimension: Size of the embedding vector
@@ -610,17 +627,20 @@ class SimpleEmbedder:
         Args:
             dimension: Size of the embedding vector
         """
+        if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
+            raise ValueError("dimension must be a positive integer")
         self.dimension = dimension
 
+    @eidosian()
     def embed(self, text: str) -> NDArray[np.float32]:
         """
-        Generate a random embedding vector for the given text.
+        Generate a deterministic demonstration vector for the given text.
 
         Args:
             text: The text to embed
 
         Returns:
-            Random embedding vector as numpy array
+            Stable unit vector as a numpy array
 
         Raises:
             EmbeddingError: If text is empty or embedding fails
@@ -628,11 +648,13 @@ class SimpleEmbedder:
         if not text.strip():
             raise EmbeddingError("Cannot embed empty text")
 
-        try:
-            # For demonstration purposes, create a random vector
-            return np.random.rand(self.dimension).astype(np.float32)
-        except Exception as e:
-            raise EmbeddingError(f"Failed to generate embedding: {str(e)}") from e
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:8], byteorder="big", signed=False)
+        vector = np.random.default_rng(seed).standard_normal(self.dimension).astype(np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm == 0.0:  # Defensive; practically impossible for a random normal vector.
+            raise EmbeddingError("Could not generate a non-zero demonstration vector")
+        return vector / norm
 
 
 class TransformerEmbedder:
@@ -665,14 +687,11 @@ class TransformerEmbedder:
         # Try to import sentence_transformers
         try:
             from sentence_transformers import SentenceTransformer
-        except ImportError as e:
+        except ImportError as exc:
             raise EmbeddingError(
-                "Missing required package: sentence-transformers.\n"
-                "To fix this, install the vector dependencies:\n"
-                '    pip install "word_forge[vector]"\n'
-                "Or install sentence-transformers directly:\n"
-                "    pip install sentence-transformers"
-            ) from e
+                "The sentence-transformers package is required for transformer embeddings. "
+                'Install it with: pip install "word_forge[vector]"'
+            ) from exc
 
         # Try to load the model with detailed error handling
         # Note: We use string matching to detect error types because the
@@ -680,14 +699,11 @@ class TransformerEmbedder:
         # This approach provides helpful user guidance while still falling
         # back to the original error message if patterns don't match.
         try:
-            self.model = SentenceTransformer(model_name)  # type: ignore
+            self.model = SentenceTransformer(model_name)
         except OSError as e:
             error_msg = str(e)
             # Check for common error patterns in HuggingFace error messages
-            if (
-                "not a local folder" in error_msg
-                or "not a valid model identifier" in error_msg
-            ):
+            if "not a local folder" in error_msg or "not a valid model identifier" in error_msg:
                 raise EmbeddingError(
                     f"Model not found: '{model_name}'.\n"
                     "This model name is not recognized by HuggingFace.\n\n"
@@ -710,9 +726,7 @@ class TransformerEmbedder:
                     "  3. Or choose a public model instead"
                 ) from e
             else:
-                raise EmbeddingError(
-                    f"Failed to load model '{model_name}': {error_msg}"
-                ) from e
+                raise EmbeddingError(f"Failed to load model '{model_name}': {error_msg}") from e
         except ConnectionError as e:
             raise EmbeddingError(
                 f"Network error while loading model '{model_name}'.\n"
@@ -724,12 +738,12 @@ class TransformerEmbedder:
             ) from e
         except Exception as e:
             raise EmbeddingError(
-                f"Failed to initialize embedding model '{model_name}': {str(e)}"
+                f"Failed to initialize embedding model '{model_name}': {e!s}"
             ) from e
 
         # Get the actual dimension from the loaded model
         try:
-            model_dim = self.model.get_sentence_embedding_dimension()  # type: ignore
+            model_dim = self.model.get_sentence_embedding_dimension()
             if model_dim is None or not isinstance(model_dim, int) or model_dim <= 0:
                 raise EmbeddingError(
                     f"Model '{model_name}' returned invalid dimension: {model_dim}"
@@ -742,6 +756,7 @@ class TransformerEmbedder:
                 f"Could not determine embedding dimension for model '{model_name}': {e}"
             ) from e
 
+    @eidosian()
     def embed(self, text: str) -> NDArray[np.float32]:
         """
         Generate a high-quality embedding vector for the given text.
@@ -760,13 +775,11 @@ class TransformerEmbedder:
 
         try:
             # Format with task instruction for retrieval optimization
-            task = (
-                "Given a definition and examples, retrieve related terms and concepts"
-            )
+            task = "Given a definition and examples, retrieve related terms and concepts"
             formatted_text = f"Instruct: {task}\nQuery: {text}"
 
             # Generate embedding and return as numpy array
-            embedding = self.model.encode(  # type: ignore
+            embedding = self.model.encode(
                 sentences=formatted_text,  # Use the formatted text directly as sentences
                 batch_size=10,  # Batch text optimization
                 convert_to_numpy=True,
@@ -774,10 +787,8 @@ class TransformerEmbedder:
                 show_progress_bar=True,  # Show Progress
                 output_value="sentence_embedding",  # Ensure correct output
                 precision="float32",  # Use float32 for consistency
-                device=(
-                    "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
-                ),
+                device=("cuda" if torch is not None and torch.cuda.is_available() else "cpu"),
             )
             return cast(NDArray[np.float32], embedding)
         except Exception as e:
-            raise EmbeddingError(f"Failed to generate embedding: {str(e)}") from e
+            raise EmbeddingError(f"Failed to generate embedding: {e!s}") from e

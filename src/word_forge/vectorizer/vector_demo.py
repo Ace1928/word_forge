@@ -20,9 +20,10 @@ import logging
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Union, cast
+from typing import Literal, Union, cast
 
 from word_forge.database.database_manager import DBManager, WordEntryDict
+from word_forge.observability import eidosian
 from word_forge.vectorizer.vector_store import (
     SearchResultDict,
     StorageType,
@@ -64,8 +65,8 @@ class SearchResult:
     content_type: str
     language: str
     distance: float
-    text: Optional[str] = None
-    text_preview: Optional[str] = field(default=None, init=False)
+    text: str | None = None
+    text_preview: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         """
@@ -75,9 +76,7 @@ class SearchResult:
         or leaves short text unchanged.
         """
         if self.text:
-            self.text_preview = (
-                f"{self.text[:80]}..." if len(self.text) > 80 else self.text
-            )
+            self.text_preview = f"{self.text[:80]}..." if len(self.text) > 80 else self.text
 
 
 class DatabaseSetupError(Exception):
@@ -175,7 +174,7 @@ class VectorDemo:
         self,
         use_transformer: bool = True,
         storage_type: StorageType = StorageType.MEMORY,
-        demo_path: Optional[Path] = None,
+        demo_path: Path | None = None,
     ):
         """
         Initialize the vector demonstration.
@@ -204,24 +203,20 @@ class VectorDemo:
         try:
             self._setup_database()
         except Exception as e:
-            raise DatabaseSetupError(f"Failed to initialize database: {str(e)}") from e
+            raise DatabaseSetupError(f"Failed to initialize database: {e!s}") from e
 
         try:
             self.embedder = self._initialize_embedder(use_transformer)
         except Exception as e:
-            raise EmbedderInitializationError(
-                f"Failed to initialize embedder: {str(e)}"
-            ) from e
+            raise EmbedderInitializationError(f"Failed to initialize embedder: {e!s}") from e
 
         try:
             self.vector_store = self._initialize_vector_store(storage_type)
         except Exception as e:
-            raise VectorStoreInitializationError(
-                f"Failed to initialize vector store: {str(e)}"
-            ) from e
+            raise VectorStoreInitializationError(f"Failed to initialize vector store: {e!s}") from e
 
         # Keep track of added words
-        self.words: Dict[WordID, WordEntryDict] = {}
+        self.words: dict[WordID, WordEntryDict] = {}
 
         # Load existing words from database
         self._load_existing_words()
@@ -244,8 +239,7 @@ class VectorDemo:
             cursor = conn.cursor()
 
             # Create words table with AUTOINCREMENT
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     term TEXT NOT NULL,
@@ -253,15 +247,12 @@ class VectorDemo:
                     usage_examples TEXT,
                     language TEXT
                 )
-                """
-            )
+                """)
 
             # Create index on term for faster lookups
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_words_term ON words(term)
-                """
-            )
+                """)
 
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
@@ -294,7 +285,7 @@ class VectorDemo:
                 word_id, term, definition, usage_examples_str, language = row
 
                 # Convert string to list for usage examples
-                usage_examples: List[str] = (
+                usage_examples: list[str] = (
                     usage_examples_str.split("; ") if usage_examples_str else []
                 )
 
@@ -333,12 +324,11 @@ class VectorDemo:
         Raises:
             Exception: If both transformer and fallback initialization fail
         """
+        embedder: EmbedderType
         if use_transformer:
             try:
                 embedder = TransformerEmbedder()
-                logger.info(
-                    f"Using TransformerEmbedder with dimension {embedder.dimension}"
-                )
+                logger.info(f"Using TransformerEmbedder with dimension {embedder.dimension}")
                 return embedder
             except Exception as e:
                 logger.warning(f"Failed to initialize transformer embedder: {e}")
@@ -371,11 +361,12 @@ class VectorDemo:
             demo_mode=storage_type == StorageType.MEMORY,
         )
 
+    @eidosian()
     def add_word(
         self,
         term: str,
         definition: str,
-        usage_examples: Union[str, List[str]] = "",
+        usage_examples: str | list[str] = "",
         language: Language = "en",
         handle_duplicates: bool = True,
     ) -> WordID:
@@ -406,7 +397,7 @@ class VectorDemo:
             ...     "algorithm",
             ...     "A step-by-step procedure for solving a problem",
             ...     ["Sorting algorithms organize data efficiently"],
-            ...     "en"
+            ...     "en",
             ... )
         """
         # Format usage examples
@@ -431,9 +422,7 @@ class VectorDemo:
 
         try:
             # Store in database and get new ID
-            word_id = self._insert_word_in_database(
-                term, definition, examples_str, language
-            )
+            word_id = self._insert_word_in_database(term, definition, examples_str, language)
 
             # Create word entry with explicit string ID
             word: WordEntryDict = {
@@ -460,11 +449,9 @@ class VectorDemo:
             return word_id
 
         except Exception as e:
-            raise WordStorageError(f"Failed to store word '{term}': {str(e)}") from e
+            raise WordStorageError(f"Failed to store word '{term}': {e!s}") from e
 
-    def _check_for_duplicate_term(
-        self, term: str, language: Language
-    ) -> Optional[WordID]:
+    def _check_for_duplicate_term(self, term: str, language: Language) -> WordID | None:
         """
         Check if a term already exists in the database.
 
@@ -578,9 +565,9 @@ class VectorDemo:
             return word_id
 
         except Exception as e:
-            raise WordStorageError(f"Failed to update word '{term}': {str(e)}") from e
+            raise WordStorageError(f"Failed to update word '{term}': {e!s}") from e
 
-    def _format_usage_examples(self, usage_examples: Union[str, List[str]]) -> str:
+    def _format_usage_examples(self, usage_examples: str | list[str]) -> str:
         """
         Format usage examples into a standard string format.
 
@@ -597,6 +584,7 @@ class VectorDemo:
             return "; ".join(usage_examples)
         return usage_examples
 
+    @eidosian()
     def add_multilingual_examples(self) -> None:
         """
         Add a set of multilingual test examples to the demonstration.
@@ -611,7 +599,7 @@ class VectorDemo:
         logger.info("Adding multilingual examples...")
 
         # Dictionary of examples by language
-        examples: Dict[Language, List[Dict[str, Union[str, List[str]]]]] = {
+        examples: dict[Language, list[dict[str, str | list[str]]]] = {
             "en": [
                 {
                     "term": "algorithm",
@@ -689,16 +677,17 @@ class VectorDemo:
                     logger.info(f"Duplicate word '{e.term}' with ID {e.word_id}")
                     duplicate_count += 1
                 except WordStorageError as e:
-                    logger.error(f"Failed to add word: {str(e)}")
+                    logger.error(f"Failed to add word: {e!s}")
                     error_count += 1
 
         logger.info(
             f"Added {success_count} words ({duplicate_count} duplicates handled, {error_count} errors)"
         )
 
+    @eidosian()
     def search_similar(
-        self, query: str, k: int = 3, filter_language: Optional[Language] = None
-    ) -> List[SearchResult]:
+        self, query: str, k: int = 3, filter_language: Language | None = None
+    ) -> list[SearchResult]:
         """
         Search for words similar to the query and display results.
 
@@ -739,9 +728,7 @@ class VectorDemo:
 
         return results
 
-    def _format_search_results(
-        self, raw_results: List[SearchResultDict]
-    ) -> List[SearchResult]:
+    def _format_search_results(self, raw_results: list[SearchResultDict]) -> list[SearchResult]:
         """
         Convert raw search results into formatted search results.
 
@@ -754,7 +741,7 @@ class VectorDemo:
         Returns:
             List of formatted SearchResult objects
         """
-        formatted_results: List[SearchResult] = []
+        formatted_results: list[SearchResult] = []
 
         for result in raw_results:
             metadata = result["metadata"] or {}
@@ -775,7 +762,7 @@ class VectorDemo:
 
         return formatted_results
 
-    def _display_search_results(self, query: str, results: List[SearchResult]) -> None:
+    def _display_search_results(self, query: str, results: list[SearchResult]) -> None:
         """
         Display formatted search results to the console.
 
@@ -791,7 +778,7 @@ class VectorDemo:
 
         for i, result in enumerate(results):
             print(
-                f"{i+1}. {result.term} (Type: {result.content_type}, "
+                f"{i + 1}. {result.term} (Type: {result.content_type}, "
                 f"Language: {result.language}, Distance: {result.distance:.4f})"
             )
 
@@ -802,7 +789,8 @@ class VectorDemo:
                 print("   Text: Not available")
         print("\n")
 
-    def get_word_by_id(self, word_id: WordID) -> Optional[WordEntryDict]:
+    @eidosian()
+    def get_word_by_id(self, word_id: WordID) -> WordEntryDict | None:
         """
         Retrieve a word entry by its ID.
 
@@ -859,6 +847,7 @@ class VectorDemo:
             return None
 
 
+@eidosian()
 def main() -> None:
     """
     Main entry point for running the vector demo.
@@ -879,9 +868,7 @@ def main() -> None:
         # Perform sample searches
         demo.search_similar("algorithm for solving problems")
         demo.search_similar("递归技术", k=5)  # "recursive technique" in Chinese
-        demo.search_similar(
-            "procédure étape par étape"
-        )  # "step by step procedure" in French
+        demo.search_similar("procédure étape par étape")  # "step by step procedure" in French
 
         # Demonstrate language filtering
         demo.search_similar("algorithm", filter_language="zh")

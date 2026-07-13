@@ -22,8 +22,11 @@ Architecture:
 from __future__ import annotations
 
 import functools  # Import functools
+import importlib.util
 import logging
-from typing import TYPE_CHECKING, Dict, List, Optional, cast
+from collections.abc import Callable
+from enum import Enum
+from typing import TYPE_CHECKING, Any, cast
 
 import networkx as nx
 
@@ -31,10 +34,10 @@ import networkx as nx
 from word_forge.exceptions import GraphLayoutError
 from word_forge.graph.graph_config import (
     LayoutAlgorithm,
-    Position,
     PositionDict,
     WordId,  # Alias to avoid naming conflict
 )
+from word_forge.observability import eidosian
 
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
@@ -66,7 +69,8 @@ class GraphLayout:
         # Use config from manager for consistency
         self._config = self.manager.config
 
-    def compute_layout(self, algorithm: Optional[LayoutAlgorithm] = None) -> None:
+    @eidosian()
+    def compute_layout(self, algorithm: LayoutAlgorithm | None = None) -> None:
         """
         Compute node positions for the entire graph using a specified algorithm.
 
@@ -98,18 +102,16 @@ class GraphLayout:
         try:
             # Ensure layout_algo_name is the string value if it's an Enum
             algo_str = (
-                layout_algo_name.value
-                if hasattr(layout_algo_name, "value")
-                else layout_algo_name
+                str(layout_algo_name.value)
+                if isinstance(layout_algo_name, Enum)
+                else str(layout_algo_name)
             )
-            layout_func = self._get_layout_function(
-                algo_str, dimensions
-            )  # Pass string value
+            layout_func = self._get_layout_function(algo_str, dimensions)  # Pass string value
             # Pass the graph instance from the manager
-            computed_positions: Dict[WordId, Position] = layout_func(self.manager.g)
+            computed_positions = cast(PositionDict, layout_func(self.manager.g))
 
             # Store the computed positions in the manager's state
-            self.manager._positions = cast(PositionDict, computed_positions)
+            self.manager._positions = computed_positions
             self.logger.info(
                 f"Layout computation complete. Stored {len(self.manager._positions)} node positions."
             )
@@ -117,9 +119,7 @@ class GraphLayout:
         except AttributeError as e:
             # Use algo_str in error message
             self.logger.error(f"Invalid layout algorithm specified: '{algo_str}'. {e}")
-            raise GraphLayoutError(
-                f"Layout algorithm '{algo_str}' not found or failed.", e
-            ) from e
+            raise GraphLayoutError(f"Layout algorithm '{algo_str}' not found or failed.", e) from e
         except Exception as e:
             # Use algo_str in error message
             self.logger.error(
@@ -130,7 +130,8 @@ class GraphLayout:
             # self.manager._positions.clear()
             raise GraphLayoutError(f"Layout computation failed: {e}", e) from e
 
-    def update_layout_incrementally(self, new_node_ids: List[WordId]) -> None:
+    @eidosian()
+    def update_layout_incrementally(self, new_node_ids: list[WordId]) -> None:
         """
         Update layout incrementally, focusing on positioning new nodes.
 
@@ -150,29 +151,23 @@ class GraphLayout:
             self.logger.debug("No new nodes provided for incremental layout update.")
             return
 
-        self.logger.info(
-            f"Received {len(new_node_ids)} new nodes. Updating layout incrementally."
-        )
+        self.logger.info(f"Received {len(new_node_ids)} new nodes. Updating layout incrementally.")
 
         default_algo = self._config.default_layout
-        algo_str = (
-            default_algo.value if hasattr(default_algo, "value") else default_algo
-        )
+        algo_str = str(default_algo.value) if isinstance(default_algo, Enum) else str(default_algo)
 
         if algo_str != "force_directed" or not self.manager._positions:
             # Fallback to full recompute for unsupported algorithms or missing positions
             self.logger.debug(
                 "Incremental update not supported for this layout. Recomputing full layout."
             )
-            self.compute_layout(algorithm=algo_str)
+            self.compute_layout(algorithm=cast(LayoutAlgorithm, algo_str))
             return
 
         try:
             fixed_nodes = [n for n in self.manager.g.nodes() if n not in new_node_ids]
             pos_init = {
-                n: self.manager._positions[n]
-                for n in fixed_nodes
-                if n in self.manager._positions
+                n: self.manager._positions[n] for n in fixed_nodes if n in self.manager._positions
             }
             k_value = getattr(self._config, "layout_k", None)
             iterations = getattr(self._config, "layout_iterations", 50)
@@ -195,7 +190,7 @@ class GraphLayout:
             )
             raise GraphLayoutError(f"Incremental layout update failed: {e}") from e
 
-    def _get_layout_function(self, algorithm_name: str, dimensions: int) -> callable:
+    def _get_layout_function(self, algorithm_name: str, dimensions: int) -> Callable[..., Any]:
         """
         Retrieve the appropriate NetworkX layout function based on name and dimension.
         Ensures correct parameters are passed to the underlying layout function.
@@ -221,7 +216,7 @@ class GraphLayout:
         iterations = getattr(self._config, "layout_iterations", 50)
 
         # Define base layout functions
-        layout_map_base: Dict[str, callable] = {
+        layout_map_base: dict[str, Callable[..., Any]] = {
             "force_directed": nx.spring_layout,
             "spectral": nx.spectral_layout,
             "circular": nx.circular_layout,
@@ -274,10 +269,10 @@ class GraphLayout:
                         nx.spring_layout, dim=3, k=k_value, iterations=iterations
                     )
                 else:
-                    # Check for pygraphviz dependency
+                    # Check for pygraphviz without importing its native module.
                     try:
-                        import pygraphviz  # noqa: F401
-
+                        if importlib.util.find_spec("pygraphviz") is None:
+                            raise ImportError("pygraphviz is not installed")
                         return base_func  # Return the lambda defined in layout_map_base
                     except ImportError:
                         self.logger.warning(
@@ -289,9 +284,7 @@ class GraphLayout:
                             nx.spring_layout, dim=2, k=k_value, iterations=iterations
                         )
             elif algorithm_name == "grid":
-                self.logger.debug(
-                    "Grid layout requested, using spring layout as fallback."
-                )
+                self.logger.debug("Grid layout requested, using spring layout as fallback.")
                 return functools.partial(
                     nx.spring_layout, dim=dimensions, k=k_value, iterations=iterations
                 )

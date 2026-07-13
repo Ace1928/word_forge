@@ -27,24 +27,35 @@ Example:
 import logging  # Import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, cast
+from typing import cast
 
-import nltk  # type: ignore
-from nltk import Tree  # type: ignore
-from nltk.corpus import wordnet as wn  # type: ignore
-from nltk.corpus.reader.wordnet import Lemma as WordNetLemma  # type: ignore
+import nltk
+from nltk import Tree
+from nltk.corpus import wordnet as wn
+from nltk.corpus.reader.wordnet import Lemma as WordNetLemma
 from nltk.corpus.reader.wordnet import Synset as WordNetSynset
-from nltk.stem import WordNetLemmatizer  # type: ignore
+from nltk.stem import WordNetLemmatizer
 
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.database_manager import DBManager
+from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.linguistics.g2p_manager import G2PManager, LLMG2PProvider
+from word_forge.linguistics.morphology import MorphologyManager
+from word_forge.linguistics.phonetics_manager import PhoneticsManager
+from word_forge.linguistics.prosody import ProsodyEngine
+from word_forge.observability import eidosian
 from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset
+from word_forge.parser.structured_validator import PhraseExtractionSchema, validated_query
+from word_forge.phrases.phrase_manager import PhraseManager
 from word_forge.queue.queue_manager import QueueManager
+from word_forge.utils import metrics
 from word_forge.utils.nltk_utils import ensure_nltk_data
+from word_forge.utils.result import Result, failure, success
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +68,23 @@ class ProcessingStatistics:
     successful_count: int = 0
     error_count: int = 0
 
+    @eidosian()
     def increment_processed(self) -> None:
         """Increment the processed counter."""
         self.processed_count += 1
 
+    @eidosian()
     def increment_successful(self) -> None:
         """Increment the successful counter."""
         self.successful_count += 1
 
+    @eidosian()
     def increment_error(self) -> None:
         """Increment the error counter."""
         self.error_count += 1
 
-    def as_dict(self, queue_size: int, unique_words: int) -> Dict[str, int]:
+    @eidosian()
+    def as_dict(self, queue_size: int, unique_words: int) -> dict[str, int]:
         """Convert statistics to a dictionary including queue metrics."""
         return {
             "processed": self.processed_count,
@@ -85,7 +100,7 @@ class LexicalResources:
     """Manages resource paths for lexical data sources."""
 
     data_dir: str
-    paths: Dict[str, str] = field(init=False)
+    paths: dict[str, str] = field(init=False)
 
     def __post_init__(self) -> None:
         """Initialize resource paths based on data directory."""
@@ -101,6 +116,7 @@ class LexicalResources:
             "thesaurus": f"{self.data_dir}/thesaurus.jsonl",
         }
 
+    @eidosian()
     def get_path(self, resource_name: str) -> str:
         """Get the path for a specific resource."""
         return self.paths.get(resource_name, "")
@@ -112,13 +128,12 @@ class TermExtractor:
     # Class-level flag to track whether NER is available
     _ner_available: bool = True
 
-    def __init__(self) -> None:
+    def __init__(self, model_state: ModelState | None = None) -> None:
         """Initialize the term extractor with necessary NLP components."""
         ensure_nltk_data()
-        self._stop_words: FrozenSet[str] = frozenset(
-            nltk.corpus.stopwords.words("english")  # type: ignore
-        )
-        self._common_words: FrozenSet[str] = frozenset(
+        self.llm_state = model_state
+        self._stop_words: frozenset[str] = frozenset(nltk.corpus.stopwords.words("english"))
+        self._common_words: frozenset[str] = frozenset(
             [
                 "the",
                 "and",
@@ -144,7 +159,7 @@ class TermExtractor:
                 "than",
             ]
         )
-        self._lemmatizer: WordNetLemmatizer = nltk.stem.WordNetLemmatizer()  # type: ignore
+        self._lemmatizer: WordNetLemmatizer = nltk.stem.WordNetLemmatizer()
 
     @lru_cache(maxsize=1024)
     def _get_wordnet_pos(self, treebank_tag: str) -> str:
@@ -160,9 +175,10 @@ class TermExtractor:
         tag_map = {"J": wn.ADJ, "V": wn.VERB, "N": wn.NOUN, "R": wn.ADV}
         return tag_map.get(treebank_tag[0], wn.NOUN)
 
+    @eidosian()
     def extract_terms(
-        self, definition: str, examples: List[str], original_term: str
-    ) -> Tuple[List[str], List[str]]:
+        self, definition: str, examples: list[str], original_term: str
+    ) -> tuple[list[str], list[str]]:
         """
         Extract high-value lexical terms from definitions and examples.
 
@@ -179,19 +195,17 @@ class TermExtractor:
         original_term_lower = original_term.lower()
 
         # Initialize term collections
-        discovered_terms: Set[str] = set()
-        multiword_expressions: Set[str] = set()
-        named_entities: Set[str] = set()
+        discovered_terms: set[str] = set()
+        multiword_expressions: set[str] = set()
+        named_entities: set[str] = set()
 
         # Fallback basic extraction (always performed for reliability)
-        regex_terms = {
-            word.lower() for word in re.findall(r"\b[a-zA-Z]{3,}\b", text_to_parse)
-        }
+        regex_terms = {word.lower() for word in re.findall(r"\b[a-zA-Z]{3,}\b", text_to_parse)}
         discovered_terms.update(regex_terms)
 
         try:
             # Process text with advanced NLP techniques
-            sentences: List[str] = nltk.sent_tokenize(text_to_parse)  # type: ignore
+            sentences: list[str] = nltk.sent_tokenize(text_to_parse)
             for sentence in sentences:
                 self._process_sentence(
                     sentence, discovered_terms, multiword_expressions, named_entities
@@ -204,9 +218,15 @@ class TermExtractor:
         except Exception as e:
             # Fallback to regex-only results if NLP processing fails
             logger.warning(
-                f"Advanced NLP processing failed, using regex fallback: {str(e)}",
+                f"Advanced NLP processing failed, using regex fallback: {e!s}",
                 exc_info=True,
             )
+
+        # LLM phrase/entity extraction must not depend on local NLTK corpus availability.
+        if self.llm_state:
+            llm_terms = self._extract_llm_terms(text_to_parse, original_term)
+            multiword_expressions.update(llm_terms.get("phrases", []))
+            named_entities.update(llm_terms.get("entities", []))
 
         # Filter out problematic terms
         filtered_terms = self._filter_terms(
@@ -218,12 +238,30 @@ class TermExtractor:
 
         return priority_terms, standard_terms
 
+    def _extract_llm_terms(self, text: str, term: str) -> dict[str, list[str]]:
+        """Extract domain-specific terms and entities using LLM."""
+        prompt = (
+            f"Task: extract salient lexical candidates related to '{term}'.\n"
+            'Return only valid JSON using exactly this schema: {"phrases":[string],"entities":[string]}.\n'
+            f"Text: {text}"
+        )
+
+        result = validated_query(
+            model_state=self.llm_state,
+            prompt=prompt,
+            context_word=term,
+            max_retries=1,
+            schema=PhraseExtractionSchema,
+        )
+
+        return result.unwrap() if result.is_success else {"phrases": [], "entities": []}
+
     def _process_sentence(
         self,
         sentence: str,
-        discovered_terms: Set[str],
-        multiword_expressions: Set[str],
-        named_entities: Set[str],
+        discovered_terms: set[str],
+        multiword_expressions: set[str],
+        named_entities: set[str],
     ) -> None:
         """
         Process a single sentence with multiple NLP techniques.
@@ -235,19 +273,15 @@ class TermExtractor:
             named_entities: Set to collect named entities
         """
         # Basic tokenization and POS tagging
-        tokens = nltk.word_tokenize(sentence)  # type: ignore
-        tagged: List[Tuple[str, str]] = nltk.pos_tag(tokens)  # type: ignore
+        tokens = nltk.word_tokenize(sentence)
+        tagged: list[tuple[str, str]] = nltk.pos_tag(tokens)
 
         # Extract single words with POS filtering and lemmatization
         for word, tag in tagged:
             word_lower: str = word.lower()  # Normalize to lowercase
 
             # Skip punctuation, short words, stop words, and numbers
-            if (
-                len(word_lower) < 3
-                or not word_lower.isalpha()
-                or word_lower in self._stop_words
-            ):
+            if len(word_lower) < 3 or not word_lower.isalpha() or word_lower in self._stop_words:
                 continue
 
             # Apply proper lemmatization based on part of speech
@@ -264,9 +298,9 @@ class TermExtractor:
 
     def _extract_named_entities(
         self,
-        tagged: List[Tuple[str, str]],
-        named_entities: Set[str],
-        discovered_terms: Set[str],
+        tagged: list[tuple[str, str]],
+        named_entities: set[str],
+        discovered_terms: set[str],
     ) -> None:
         """
         Extract named entities from tagged tokens.
@@ -281,12 +315,10 @@ class TermExtractor:
             return
 
         try:
-            chunked: Tree = nltk.ne_chunk(tagged)  # type: ignore
+            chunked: Tree = nltk.ne_chunk(tagged)
             for subtree in chunked:
                 if isinstance(subtree, Tree) and hasattr(subtree, "label"):
-                    leaves: List[Tuple[str, str]] = cast(
-                        List[Tuple[str, str]], subtree.leaves()
-                    )
+                    leaves: list[tuple[str, str]] = cast(list[tuple[str, str]], subtree.leaves())
                     entity = " ".join(word for word, _ in leaves)
                     if len(entity) > 3:  # Filter out very short entities
                         entity_lower = entity.lower()
@@ -300,12 +332,11 @@ class TermExtractor:
             # Soft fail for NER - disable for future calls and continue
             TermExtractor._ner_available = False
             logger.warning(
-                f"Named entity recognition disabled due to error: {str(e)}. "
-                "Processing will continue without NER."
+                f"Named entity recognition disabled due to error: {e!s}. Processing will continue without NER."
             )
 
     def _extract_multiword_expressions(
-        self, tagged: List[Tuple[str, str]], multiword_expressions: Set[str]
+        self, tagged: list[tuple[str, str]], multiword_expressions: set[str]
     ) -> None:
         """
         Extract multiword expressions using POS patterns.
@@ -321,13 +352,13 @@ class TermExtractor:
         for i in range(len(tagged) - 1):
             # Adjective + Noun pattern (e.g., "blue sky")
             if tagged[i][1].startswith("JJ") and tagged[i + 1][1].startswith("NN"):
-                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                bigram = f"{tagged[i][0].lower()} {tagged[i + 1][0].lower()}"
                 if len(bigram) > 5:  # Avoid very short bigrams
                     multiword_expressions.add(bigram)
 
             # Noun + Noun pattern (e.g., "database system")
             if tagged[i][1].startswith("NN") and tagged[i + 1][1].startswith("NN"):
-                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                bigram = f"{tagged[i][0].lower()} {tagged[i + 1][0].lower()}"
                 if len(bigram) > 5:  # Avoid very short bigrams
                     multiword_expressions.add(bigram)
 
@@ -335,12 +366,12 @@ class TermExtractor:
             if tagged[i][1].startswith("VB") and (
                 tagged[i + 1][1] == "RP" or tagged[i + 1][1].startswith("RB")
             ):
-                bigram = f"{tagged[i][0].lower()} {tagged[i+1][0].lower()}"
+                bigram = f"{tagged[i][0].lower()} {tagged[i + 1][0].lower()}"
                 if len(bigram) > 5:  # Avoid very short bigrams
                     multiword_expressions.add(bigram)
 
     @lru_cache(maxsize=128)
-    def _extract_semantic_terms(self, base_terms: FrozenSet[str]) -> Set[str]:
+    def _extract_semantic_terms(self, base_terms: frozenset[str]) -> set[str]:
         """
         Find semantically related terms through WordNet.
 
@@ -366,7 +397,7 @@ class TermExtractor:
             - Silently continues on WordNet lookup failures (term not found, etc.)
         """
         ensure_nltk_data()
-        semantic_terms: Set[str] = set()
+        semantic_terms: set[str] = set()
         term_sample = list(base_terms)[:75]
 
         def _process_lemma(lemma: WordNetLemma) -> None:
@@ -386,21 +417,21 @@ class TermExtractor:
         for base_term in term_sample:
             try:
                 # Retrieve all synsets (word senses) for the term
-                synsets: List[WordNetSynset] = wn.synsets(base_term)  # type: ignore
+                synsets: list[WordNetSynset] = wn.synsets(base_term)
                 for synset in synsets:
                     # 1. Process direct synonyms from the synset
-                    for lemma in synset.lemmas():  # type: ignore
-                        _process_lemma(lemma)  # type: ignore
+                    for lemma in synset.lemmas():
+                        _process_lemma(lemma)
 
                     # 2. Process hypernyms (broader/parent categories)
-                    for hypernym in synset.hypernyms():  # type: ignore
-                        for lemma in hypernym.lemmas():  # type: ignore
-                            _process_lemma(lemma)  # type: ignore
+                    for hypernym in synset.hypernyms():
+                        for lemma in hypernym.lemmas():
+                            _process_lemma(lemma)
 
                     # 3. Process hyponyms (more specific/child categories)
-                    for hyponym in synset.hyponyms():  # type: ignore
-                        for lemma in hyponym.lemmas():  # type: ignore
-                            _process_lemma(lemma)  # type: ignore
+                    for hyponym in synset.hyponyms():
+                        for lemma in hyponym.lemmas():
+                            _process_lemma(lemma)
 
             except (LookupError, AttributeError, ValueError, TypeError):
                 continue
@@ -416,11 +447,11 @@ class TermExtractor:
 
     def _filter_terms(
         self,
-        discovered_terms: Set[str],
-        multiword_expressions: Set[str],
-        named_entities: Set[str],
+        discovered_terms: set[str],
+        multiword_expressions: set[str],
+        named_entities: set[str],
         original_term: str,
-    ) -> Set[str]:
+    ) -> set[str]:
         """
         Filter the collected terms to remove unwanted items.
 
@@ -444,7 +475,7 @@ class TermExtractor:
 
         return all_terms
 
-    def _score_and_sort_terms(self, terms: Set[str]) -> Tuple[List[str], List[str]]:
+    def _score_and_sort_terms(self, terms: set[str]) -> tuple[list[str], list[str]]:
         """
         Score and sort terms by potential lexical value.
 
@@ -454,7 +485,7 @@ class TermExtractor:
         Returns:
             Tuple of (priority_terms, standard_terms)
         """
-        scored_terms: List[Tuple[str, int]] = []
+        scored_terms: list[tuple[str, int]] = []
 
         for term in terms:
             # Scoring heuristics: length, complexity, multiword bonus
@@ -485,11 +516,12 @@ class ParserRefiner:
 
     def __init__(
         self,
-        db_manager: Optional[DBManager] = None,
-        queue_manager: Optional[QueueManager[str]] = None,
+        db_manager: DBManager | None = None,
+        queue_manager: QueueManager[str] | None = None,
         data_dir: str = "data",
-        model_name: Optional[str] = None,
-        llm_state: Optional[ModelState] = None,
+        model_name: str | None = None,
+        llm_state: ModelState | None = None,
+        enable_llm: bool = True,
     ):
         """
         Initialize the ParserRefiner with database and queue managers.
@@ -499,23 +531,36 @@ class ParserRefiner:
             queue_manager: QueueManager instance for enqueuing new terms
             data_dir: Path to the folder containing lexical resources
             model_name: Custom model name to use (if None, uses default)
+            llm_state: Optional preconfigured model state for tests or custom backends
+            enable_llm: Whether to create/use an LLM backend for enrichment
         """
         self.db_manager = db_manager or DBManager()
-        self.queue_manager = (
-            queue_manager if queue_manager is not None else QueueManager[str]()
-        )
+        self.queue_manager = queue_manager if queue_manager is not None else QueueManager[str]()
         self.resources = LexicalResources(data_dir)
-        self.term_extractor = TermExtractor()
+
+        self.llm_state = (
+            llm_state if llm_state is not None else (ModelState(model_name) if enable_llm else None)
+        )
+        self.term_extractor = TermExtractor(model_state=self.llm_state)
         self.stats = ProcessingStatistics()
 
-        self.llm_state = llm_state or ModelState(
-            model_name or "qwen/qwen2.5-0.5b-instruct"
+        # Initialize linguistic and phrase managers
+        self.phonetics_manager = PhoneticsManager(self.db_manager)
+        self.g2p_manager = G2PManager(
+            primary_provider=LLMG2PProvider(self.llm_state) if self.llm_state is not None else None
         )
+        self.phrase_manager = PhraseManager(self.db_manager)
+        self.morphology_manager = MorphologyManager(self.db_manager)
+
+        # Initialize emotional and prosody engines
+        self.emotion_manager = EmotionManager(self.db_manager)
+        self.prosody_engine = ProsodyEngine(model_state=self.llm_state)
 
         # Initialize thread pool for parallel processing
         self._executor = ThreadPoolExecutor(max_workers=5)
 
-    def process_word(self, term: str) -> bool:
+    @eidosian()
+    def process_word(self, term: str) -> Result[bool, str]:
         """
         Process a word using the integrated lexical resources.
 
@@ -525,12 +570,13 @@ class ParserRefiner:
             term: The word to process
 
         Returns:
-            Boolean indicating whether processing was successful
+            Result[bool, str]: Ok(True) on success, Err(error_msg) on failure
         """
         term_lower = term.strip().lower()
         if not term_lower:
-            return False
+            return failure("Empty term provided")
 
+        start_time = time.time()
         try:
             self.stats.increment_processed()
 
@@ -559,23 +605,71 @@ class ParserRefiner:
                 usage_examples=usage_examples,
             )
 
-            # Process relationships and discovered terms in parallel tasks
+            # Retrieve word_id for background tasks
+            word_id = self.db_manager.get_word_id(term_lower)
+
+            # Process relationships, linguistics, and phrases in parallel tasks
             self._executor.submit(self._process_relationships, term_lower, dataset)
+            self._executor.submit(self._process_linguistics, word_id, term_lower, full_definition)
             self._executor.submit(
                 self._discover_new_terms, term_lower, full_definition, usage_examples
             )
 
             self.stats.increment_successful()
-            return True
 
+            # Record metrics
+            metrics.record_word_processed()
+            metrics.observe_latency(time.time() - start_time)
+
+            return success(True)
         except Exception as e:
             self.stats.increment_error()
-            logger.error(
-                f"Error processing word '{term_lower}': {str(e)}", exc_info=True
-            )
-            return False
+            metrics.record_error()
+            logger.error(f"Error processing word '{term_lower}': {e!s}", exc_info=True)
+            return failure(str(e))
 
-    def _extract_all_definitions(self, dataset: LexicalDataset) -> List[str]:
+    def _process_linguistics(self, word_id: int, term: str, definition: str) -> None:
+        """
+        Extract and store phonetic and morphological information for a word.
+
+        Args:
+            word_id: Database ID of the word
+            term: The word text
+            definition: The word's definition (for context)
+        """
+        logger.debug(f"Starting linguistic processing for '{term}' (ID: {word_id})")
+        try:
+            # 1. Phonetic extraction
+            g2p_result = self.g2p_manager.convert(term, context=definition)
+
+            ipa = g2p_result.get("ipa")
+            if isinstance(ipa, str) and ipa:
+                self.phonetics_manager.upsert_phonetics(
+                    word_id=word_id,
+                    ipa=ipa,
+                    arpabet=g2p_result.get("arpabet"),
+                    stress_pattern=g2p_result.get("stress_pattern"),
+                    source="LLM-G2P",
+                )
+                logger.info(f"Phonetics stored for '{term}': {g2p_result['ipa']}")
+            else:
+                logger.warning(f"No IPA generated for '{term}'")
+
+            # 2. Morphological decomposition
+            morpheme_texts = self.morphology_manager.decompose(term)
+            if morpheme_texts:
+                morpheme_ids = []
+                for m_text in morpheme_texts:
+                    m_id = self.morphology_manager.upsert_morpheme(m_text)
+                    morpheme_ids.append(m_id)
+
+                self.morphology_manager.set_word_morphemes(word_id, morpheme_ids)
+                logger.info(f"Morphemes stored for '{term}': {' + '.join(morpheme_texts)}")
+
+        except Exception as e:
+            logger.error(f"Linguistic processing failed for '{term}': {e}", exc_info=True)
+
+    def _extract_all_definitions(self, dataset: LexicalDataset) -> list[str]:
         """
         Extract and deduplicate definitions from all sources.
 
@@ -585,7 +679,7 @@ class ParserRefiner:
         Returns:
             List of unique definitions from all sources
         """
-        combined_definitions: Set[str] = set()
+        combined_definitions: set[str] = set()
 
         # WordNet definitions
         # Use .get with default empty list
@@ -599,7 +693,7 @@ class ParserRefiner:
         # ODict / OpenDictData
         odict_data = dataset.get("odict_data", {})
         # Add type check for odict_data
-        odict_def: Optional[str] = (
+        odict_def: str | None = (
             odict_data.get("definition", "") if isinstance(odict_data, dict) else None
         )
         if odict_def and odict_def != "Not Found":
@@ -607,10 +701,8 @@ class ParserRefiner:
 
         opendict_data = dataset.get("opendict_data", {})
         # Add type check for opendict_data
-        open_dict_def: Optional[str] = (
-            opendict_data.get("definition", "")
-            if isinstance(opendict_data, dict)
-            else None
+        open_dict_def: str | None = (
+            opendict_data.get("definition", "") if isinstance(opendict_data, dict) else None
         )
         if open_dict_def and open_dict_def != "Not Found":
             combined_definitions.add(open_dict_def)
@@ -639,16 +731,12 @@ class ParserRefiner:
         # Use .get with default empty list
         wordnet_data = dataset.get("wordnet_data", [])
         # Ensure list is not empty and first element is a dict
-        if (
-            wordnet_data
-            and isinstance(wordnet_data, list)
-            and isinstance(wordnet_data[0], dict)
-        ):
-            pos: Optional[str] = wordnet_data[0].get("part_of_speech", "")
+        if wordnet_data and isinstance(wordnet_data, list) and isinstance(wordnet_data[0], dict):
+            pos: str | None = wordnet_data[0].get("part_of_speech", "")
             return pos if pos else ""  # Return empty string if None or empty
         return ""
 
-    def _extract_usage_examples(self, dataset: LexicalDataset) -> List[str]:
+    def _extract_usage_examples(self, dataset: LexicalDataset) -> list[str]:
         """
         Extract usage examples from all sources.
 
@@ -658,7 +746,7 @@ class ParserRefiner:
         Returns:
             List of unique usage examples from all sources
         """
-        usage_examples: Set[str] = set()
+        usage_examples: set[str] = set()
 
         # WordNet examples
         for wn_data in dataset.get("wordnet_data", []):  # Use .get
@@ -681,8 +769,8 @@ class ParserRefiner:
             term: The base term
             dataset: Comprehensive lexical dataset for the term
         """
-        relationship_cache: Dict[Tuple[str, str, str], bool] = {}
-        discovered_terms: Set[str] = set()
+        relationship_cache: dict[tuple[str, str, str], bool] = {}
+        discovered_terms: set[str] = set()
 
         # Process WordNet relationships
         for wn_data in dataset.get("wordnet_data", []):
@@ -729,9 +817,7 @@ class ParserRefiner:
                 trans_lower = translation.lower()
                 rel_key = (term, trans_lower, "translation")
                 if rel_key not in relationship_cache:
-                    self.db_manager.insert_relationship(
-                        term, trans_lower, "translation"
-                    )
+                    self.db_manager.insert_relationship(term, trans_lower, "translation")
                     relationship_cache[rel_key] = True
                     discovered_terms.add(trans_lower)
 
@@ -739,11 +825,9 @@ class ParserRefiner:
         for discovered_term in discovered_terms:
             self.queue_manager.enqueue(discovered_term)
 
-    def _discover_new_terms(
-        self, term: str, definition: str, examples: List[str]
-    ) -> None:
+    def _discover_new_terms(self, term: str, definition: str, examples: list[str]) -> None:
         """
-        Discover and enqueue new terms from definitions and examples using advanced NLP techniques.
+        Discover and enqueue new terms and phrases from definitions and examples.
 
         Args:
             term: The base term being processed
@@ -754,17 +838,45 @@ class ParserRefiner:
             definition, examples, term
         )
 
-        # Enqueue priority terms first (multiword expressions and specialized terms)
-        for new_term in priority_terms:
+        # Enqueue terms for the processing queue
+        for new_term in priority_terms + standard_terms:
             if new_term != term.lower():
                 self.queue_manager.enqueue(new_term)
 
-        # Then enqueue other discovered terms
-        for new_term in standard_terms:
-            if new_term != term.lower():
-                self.queue_manager.enqueue(new_term)
+        # Handle phrases specifically for the phrase inventory
+        for discovered_term in priority_terms:
+            if " " in discovered_term:
+                try:
+                    # Analyze emotional context
+                    valence, arousal = self.emotion_manager.analyze_text_emotion(discovered_term)
 
-    def get_stats(self) -> Dict[str, int]:
+                    # Generate prosody priors
+                    priors = self.prosody_engine.generate_priors(discovered_term, valence, arousal)
+
+                    # Upsert the phrase record with prosody and affect links
+                    phrase_id = self.phrase_manager.upsert_phrase(
+                        text=discovered_term,
+                        prosody_priors=priors,
+                        affect_link=f"V:{valence:.2f},A:{arousal:.2f}",
+                        novelty_score=1.0,
+                    )
+
+                    # Identify components
+                    component_words = discovered_term.split()
+                    component_ids = []
+                    for cw in component_words:
+                        # Ensure the component word exists in the database
+                        if not self.db_manager.word_exists(cw):
+                            self.db_manager.insert_or_update_word(term=cw)
+                        component_ids.append(self.db_manager.get_word_id(cw))
+
+                    # Link components
+                    self.phrase_manager.set_phrase_components(phrase_id, component_ids)
+                except Exception as e:
+                    logger.error(f"Failed to process phrase '{discovered_term}': {e}")
+
+    @eidosian()
+    def get_stats(self) -> dict[str, int]:
         """
         Get processing statistics.
 
@@ -775,7 +887,7 @@ class ParserRefiner:
         unique_words = 0
         if self.queue_manager and hasattr(self.queue_manager, "_seen_items"):
             try:
-                unique_words = len(self.queue_manager._seen_items)  # type: ignore
+                unique_words = len(self.queue_manager._seen_items)
             except TypeError:
                 pass
 
@@ -784,10 +896,11 @@ class ParserRefiner:
             unique_words=unique_words,
         )
 
+    @eidosian()
     def shutdown(self) -> None:
         """Gracefully shut down resources like thread pools."""
         self._executor.shutdown(wait=True)
 
 
 # Export all components for module usage
-__all__ = ["ParserRefiner", "TermExtractor", "LexicalResources", "ProcessingStatistics"]
+__all__ = ["LexicalResources", "ParserRefiner", "ProcessingStatistics", "TermExtractor"]

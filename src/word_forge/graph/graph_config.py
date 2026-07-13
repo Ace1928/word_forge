@@ -28,14 +28,10 @@ from pathlib import Path
 from typing import (  # NewType # Optional: Use NewType for stronger typing if desired
     Any,
     ClassVar,
-    Dict,
-    List,
     Literal,
-    Optional,
-    Set,
-    Tuple,
     TypedDict,
     Union,
+    cast,
 )
 
 from word_forge.configs.config_essentials import (
@@ -49,6 +45,7 @@ from word_forge.configs.config_essentials import (
     GraphNodeSizeStrategy,
     SQLTemplates,
 )
+from word_forge.observability import eidosian
 
 # ==========================================
 # Relationship Dimension Types
@@ -59,29 +56,27 @@ Term = str
 RelType = str
 ColorHex = str  # Define ColorHex as a string alias
 
-RelationshipDimension = Literal[
-    "lexical", "emotional", "affective", "connotative", "contextual"
-]
+RelationshipDimension = Literal["lexical", "emotional", "affective", "connotative", "contextual"]
 
-WordTuple = Tuple[WordId, Term]
+WordTuple = tuple[WordId, Term]
 
-RelationshipTuple = Tuple[
+RelationshipTuple = tuple[
     WordId,
     Term,
     RelType,
     RelationshipDimension,
-    Optional[float],
-    Optional[float],
+    float | None,
+    float | None,
 ]
 
-GraphData = Tuple[List[WordTuple], List[RelationshipTuple]]
+GraphData = tuple[list[WordTuple], list[RelationshipTuple]]
 
-Position = Union[Tuple[float, float], Tuple[float, float, float]]
-PositionDict = Dict[WordId, Position]
+Position = Union[tuple[float, float], tuple[float, float, float]]
+PositionDict = dict[WordId, Position]
 
 RelationshipStrength = float  # 0.0 to 1.0, representing connection strength
 
-DimensionWeighting = Dict[RelationshipDimension, float]
+DimensionWeighting = dict[RelationshipDimension, float]
 
 # Define layout algorithm types
 LayoutAlgorithm = Literal[
@@ -116,8 +111,8 @@ class RelationshipTupleDict(TypedDict):
     related_term: str
     relationship_type: str
     dimension: RelationshipDimension
-    valence: Optional[float]
-    arousal: Optional[float]
+    valence: float | None
+    arousal: float | None
 
 
 class GraphInfoDict(TypedDict):
@@ -136,9 +131,9 @@ class GraphInfoDict(TypedDict):
     nodes: int
     edges: int
     dimensions: int
-    sample_nodes: List[WordTupleDict]
-    sample_relationships: List[Dict[str, str]]
-    relationship_types: List[str]
+    sample_nodes: list[WordTupleDict]
+    sample_relationships: list[dict[str, str]]
+    relationship_types: list[str]
 
 
 @dataclass
@@ -213,69 +208,72 @@ class GraphConfig:
 
     # SQL templates for graph database operations
     sql_templates: SQLTemplates = field(
-        default_factory=lambda: {
-            "check_words_table": """
+        default_factory=lambda: cast(
+            SQLTemplates,
+            {
+                "check_words_table": """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='words'
             """,
-            "check_relationships_table": """
+                "check_relationships_table": """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='relationships'
             """,
-            "fetch_all_words": """
+                "fetch_all_words": """
                 SELECT id, term, last_refreshed FROM words
             """,
-            "fetch_words_since": """
+                "fetch_words_since": """
                 SELECT id, term, last_refreshed
                 FROM words
                 WHERE last_refreshed > ?
                 ORDER BY last_refreshed ASC
             """,
-            "fetch_all_relationships": """
+                "fetch_all_relationships": """
                 SELECT word_id, related_term, relationship_type
                 FROM relationships
             """,
-            "fetch_relationships_since": """
+                "fetch_relationships_since": """
                 SELECT r.word_id, r.related_term, r.relationship_type
                 FROM relationships AS r
                 JOIN words AS w ON w.id = r.word_id
                 WHERE w.last_refreshed > ?
             """,
-            "get_all_words": """
+                "get_all_words": """
                 SELECT id, term, definition FROM words
             """,
-            "get_all_relationships": """
+                "get_all_relationships": """
                 SELECT word_id, related_term, relationship_type
                 FROM relationships
             """,
-            "get_emotional_relationships": """
+                "get_emotional_relationships": """
                 SELECT word_id, related_term, relationship_type, valence, arousal
                 FROM emotional_relationships
                 WHERE word_id = ?
             """,
-            "get_all_emotional_relationships": """
+                "get_all_emotional_relationships": """
                 SELECT word_id, related_term, relationship_type, valence, arousal
                 FROM emotional_relationships
             """,
-            "get_emotional_relationships_since": """
+                "get_emotional_relationships_since": """
                 SELECT word_id, related_term, relationship_type, valence, arousal
                 FROM emotional_relationships
                 WHERE last_updated > ?
             """,
-            "insert_sample_word": """
+                "insert_sample_word": """
                 INSERT OR IGNORE INTO words (term, definition, part_of_speech)
                 VALUES (?, ?, ?)
             """,
-            "insert_sample_relationship": """
+                "insert_sample_relationship": """
                 INSERT OR IGNORE INTO relationships
                 (word_id, related_term, relationship_type)
                 VALUES (?, ?, ?)
             """,
-        }
+            },
+        )
     )
 
     # Sample relationships for initial graph population
-    sample_relationships: List[tuple] = field(
+    sample_relationships: list[tuple] = field(
         default_factory=lambda: [
             ("algorithm", "computation", "domain"),
             ("algorithm", "procedure", "synonym"),
@@ -303,13 +301,13 @@ class GraphConfig:
 
     # Performance settings
     animation_duration_ms: int = 800
-    limit_node_count: Optional[int] = 1000
-    limit_edge_count: Optional[int] = 2000
+    limit_node_count: int | None = 1000
+    limit_edge_count: int | None = 2000
 
     # Multidimensional relationship settings
     # By default, include lexical, emotional, and contextual dimensions
     # to provide a comprehensive view of word relationships
-    active_dimensions: Set[RelationshipDimension] = field(
+    active_dimensions: set[RelationshipDimension] = field(
         default_factory=lambda: {"lexical", "emotional", "affective", "contextual"}
     )
 
@@ -326,7 +324,7 @@ class GraphConfig:
     # Color mappings for different relationship dimensions
 
     # Traditional lexical relationships
-    relationship_colors: Dict[str, str] = field(
+    relationship_colors: dict[str, str] = field(
         default_factory=lambda: {
             "synonym": "#4287f5",  # Blue
             "antonym": "#f54242",  # Red
@@ -342,7 +340,7 @@ class GraphConfig:
     )
 
     # Emotional dimension relationships
-    emotional_relationship_colors: Dict[str, str] = field(
+    emotional_relationship_colors: dict[str, str] = field(
         default_factory=lambda: {
             "joy_associated": "#ffde17",  # Bright yellow
             "sadness_associated": "#0077be",  # Blue
@@ -358,7 +356,7 @@ class GraphConfig:
     )
 
     # Affective dimension relationships
-    affective_relationship_colors: Dict[str, str] = field(
+    affective_relationship_colors: dict[str, str] = field(
         default_factory=lambda: {
             "positive_valence": "#00cc66",  # Green
             "negative_valence": "#cc3300",  # Red
@@ -377,7 +375,7 @@ class GraphConfig:
     dimension_z_separation: float = 50.0  # For 3D visualizations
 
     # Export format options
-    supported_export_formats: List[GraphExportFormat] = field(
+    supported_export_formats: list[GraphExportFormat] = field(
         default_factory=lambda: ["graphml", "gexf", "json", "png", "svg", "pdf"]
     )
 
@@ -430,7 +428,7 @@ class GraphConfig:
         return self.default_export_format in self.supported_export_formats
 
     @cached_property
-    def all_relationship_colors(self) -> Dict[str, str]:
+    def all_relationship_colors(self) -> dict[str, str]:
         """
         Get combined color mapping for all relationship types across dimensions.
 
@@ -452,6 +450,7 @@ class GraphConfig:
     # Public Methods
     # ==========================================
 
+    @eidosian()
     def get_relationship_color(self, relationship_type: str) -> str:
         """
         Get color for a specific relationship type.
@@ -488,6 +487,7 @@ class GraphConfig:
         # Fall back to default color
         return self.relationship_colors["default"]
 
+    @eidosian()
     def with_layout(self, layout: GraphLayoutAlgorithm) -> "GraphConfig":
         """
         Create a new config with a different layout algorithm.
@@ -500,6 +500,7 @@ class GraphConfig:
         """
         return self._create_modified_config(default_layout=layout)
 
+    @eidosian()
     def optimize_for_interactivity(self) -> "GraphConfig":
         """
         Create a new config optimized for interactive visualization.
@@ -517,6 +518,7 @@ class GraphConfig:
             limit_edge_count=400,  # Lower edge count for responsiveness
         )
 
+    @eidosian()
     def optimize_for_publication(self) -> "GraphConfig":
         """
         Create a new config optimized for high-quality export/publication.
@@ -537,6 +539,7 @@ class GraphConfig:
             animation_duration_ms=0,  # No animation for static export
         )
 
+    @eidosian()
     def with_emotional_relationships(self) -> "GraphConfig":
         """
         Create a new config that includes emotional relationship dimensions.
@@ -552,6 +555,7 @@ class GraphConfig:
             enable_cross_dimension_edges=True,
         )
 
+    @eidosian()
     def with_affective_relationships(self) -> "GraphConfig":
         """
         Create a new config that includes affective relationship dimensions.
@@ -567,6 +571,7 @@ class GraphConfig:
             enable_cross_dimension_edges=True,
         )
 
+    @eidosian()
     def with_all_relationship_dimensions(self) -> "GraphConfig":
         """
         Create a new config that includes all relationship dimensions.
@@ -591,6 +596,7 @@ class GraphConfig:
             dimension_z_separation=100.0,  # Increase separation for better visibility
         )
 
+    @eidosian()
     def get_export_filepath(self, graph_name: str) -> Path:
         """
         Generate full export filepath with proper extension.
@@ -613,7 +619,8 @@ class GraphConfig:
         filename = f"{graph_name}.{self.default_export_format}"
         return self.get_export_path / filename
 
-    def get_visualization_dimensions(self) -> Dict[str, int]:
+    @eidosian()
+    def get_visualization_dimensions(self) -> dict[str, int]:
         """
         Get width and height for visualization.
 
@@ -625,14 +632,15 @@ class GraphConfig:
             "height": self.vis_height,
         }
 
-    def get_display_settings(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_display_settings(self) -> dict[str, Any]:
         """
         Get display-related settings as a dictionary.
 
         Returns:
             Dict[str, Any]: Display configuration dictionary
         """
-        settings = {
+        settings: dict[str, Any] = {
             "enable_labels": self.enable_labels,
             "enable_edge_labels": self.enable_edge_labels,
             "enable_tooltips": self.enable_tooltips,
@@ -661,7 +669,8 @@ class GraphConfig:
 
         return settings
 
-    def get_dimension_settings(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_dimension_settings(self) -> dict[str, Any]:
         """
         Get settings related to multidimensional relationships.
 
@@ -675,6 +684,7 @@ class GraphConfig:
             "enable_cross_dimension_edges": self.enable_cross_dimension_edges,
         }
 
+    @eidosian()
     def validate(self) -> None:
         """
         Validate the entire configuration for consistency and correctness.
@@ -694,8 +704,7 @@ class GraphConfig:
         # Validate node size range
         if self.min_node_size >= self.max_node_size:
             errors.append(
-                f"Minimum node size ({self.min_node_size}) must be less than "
-                f"maximum node size ({self.max_node_size})"
+                f"Minimum node size ({self.min_node_size}) must be less than maximum node size ({self.max_node_size})"
             )
 
         # Validate edge width range
@@ -709,9 +718,7 @@ class GraphConfig:
         if self.vis_width <= 0:
             errors.append(f"Visualization width must be positive, got {self.vis_width}")
         if self.vis_height <= 0:
-            errors.append(
-                f"Visualization height must be positive, got {self.vis_height}"
-            )
+            errors.append(f"Visualization height must be positive, got {self.vis_height}")
 
         # Validate node and edge limits
         if self.limit_node_count is not None and self.limit_node_count <= 0:
@@ -728,9 +735,7 @@ class GraphConfig:
                 )
 
         if errors:
-            raise GraphConfigError(
-                f"Configuration validation failed: {'; '.join(errors)}"
-            )
+            raise GraphConfigError(f"Configuration validation failed: {'; '.join(errors)}")
 
     # ==========================================
     # Private Helper Methods
@@ -789,7 +794,7 @@ class GraphConfig:
         new_config_args.update(kwargs)
 
         # Create and return new instance
-        return GraphConfig(**new_config_args)
+        return GraphConfig(**new_config_args)  # type: ignore[arg-type]
 
 
 # ==========================================

@@ -21,7 +21,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
@@ -35,6 +35,7 @@ from word_forge.graph.graph_config import (
     WordId,
     WordTupleDict,
 )
+from word_forge.observability import eidosian
 
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
@@ -65,7 +66,8 @@ class GraphQuery:
         # Use config from manager for consistency
         self._config = self.manager.config
 
-    def get_node_id(self, term: Term) -> Optional[WordId]:
+    @eidosian()
+    def get_node_id(self, term: Term) -> WordId | None:
         """
         Retrieve the node ID for a given term (case-insensitive).
 
@@ -77,9 +79,8 @@ class GraphQuery:
         """
         return self.manager._term_to_id.get(term.lower())
 
-    def get_related_terms(
-        self, term: Term, rel_type: Optional[RelType] = None
-    ) -> List[Term]:
+    @eidosian()
+    def get_related_terms(self, term: Term, rel_type: RelType | None = None) -> list[Term]:
         """
         Find terms directly related to a given term in the graph.
 
@@ -98,7 +99,7 @@ class GraphQuery:
         if start_node_id is None:
             raise NodeNotFoundError(f"Term '{term}' not found in the graph.")
 
-        related_terms_list: List[Term] = []
+        related_terms_list: list[Term] = []
         # Iterate through neighbors of the start node
         for neighbor_id in self.manager.g.neighbors(start_node_id):
             # Get edge data between start_node and neighbor
@@ -127,6 +128,7 @@ class GraphQuery:
         )
         return related_terms_list
 
+    @eidosian()
     def get_node_count(self) -> int:
         """
         Get the total number of nodes (words) in the graph.
@@ -136,6 +138,7 @@ class GraphQuery:
         """
         return self.manager.g.number_of_nodes()
 
+    @eidosian()
     def get_edge_count(self) -> int:
         """
         Get the total number of edges (relationships) in the graph.
@@ -145,7 +148,8 @@ class GraphQuery:
         """
         return self.manager.g.number_of_edges()
 
-    def get_term_by_id(self, word_id: WordId) -> Optional[Term]:
+    @eidosian()
+    def get_term_by_id(self, word_id: WordId) -> Term | None:
         """
         Retrieve the term associated with a given node ID.
 
@@ -162,6 +166,7 @@ class GraphQuery:
             return str(term_attr) if term_attr is not None else None
         return None
 
+    @eidosian()
     def get_graph_info(self) -> GraphInfoDict:
         """
         Retrieve detailed information about the graph structure and content.
@@ -177,16 +182,14 @@ class GraphQuery:
 
         # Sample nodes
         sample_node_ids = list(self.manager.g.nodes())[:5]
-        sample_nodes_data: List[WordTupleDict] = []
+        sample_nodes_data: list[WordTupleDict] = []
         for node_id in sample_node_ids:
             node_data = self.manager.g.nodes[node_id]
-            term = node_data.get(
-                "term", f"ID:{node_id}"
-            )  # Provide default if term missing
+            term = node_data.get("term", f"ID:{node_id}")  # Provide default if term missing
             sample_nodes_data.append({"id": node_id, "term": term})
 
         # Sample relationships (more complex to get terms efficiently)
-        sample_relationships_data: List[Dict[str, str]] = []
+        sample_relationships_data: list[dict[str, str]] = []
         edge_count = 0
         for u, v, data in self.manager.g.edges(data=True):
             if edge_count >= 5:
@@ -194,9 +197,7 @@ class GraphQuery:
             term_u = self.manager.g.nodes[u].get("term", f"ID:{u}")
             term_v = self.manager.g.nodes[v].get("term", f"ID:{v}")
             rel_type = data.get("relationship", "unknown")
-            sample_relationships_data.append(
-                {"source": term_u, "target": term_v, "type": rel_type}
-            )
+            sample_relationships_data.append({"source": term_u, "target": term_v, "type": rel_type})
             edge_count += 1
 
         # Get unique relationship types from stored counts
@@ -212,6 +213,7 @@ class GraphQuery:
         }
         return info
 
+    @eidosian()
     def display_graph_summary(self) -> None:
         """
         Print a formatted summary of the graph's statistics to the console.
@@ -241,6 +243,7 @@ class GraphQuery:
             print("\nNo relationship types found.")
         print("---------------------\n")
 
+    @eidosian()
     def get_subgraph(self, term: Term, depth: int = 1) -> nx.Graph:
         """
         Extract a subgraph centered around a specific term up to a given depth.
@@ -266,9 +269,7 @@ class GraphQuery:
             raise NodeNotFoundError(f"Term '{term}' not found for subgraph extraction.")
 
         # Use ego_graph to find all nodes within the specified radius (depth)
-        subgraph_nodes = nx.ego_graph(
-            self.manager.g, start_node_id, radius=depth
-        ).nodes()
+        subgraph_nodes = nx.ego_graph(self.manager.g, start_node_id, radius=depth).nodes()
 
         # Create the subgraph from the identified nodes
         subgraph_view = self.manager.g.subgraph(subgraph_nodes)
@@ -279,12 +280,13 @@ class GraphQuery:
         )
         return subgraph_view.copy()
 
+    @eidosian()
     def get_relationships_by_dimension(
         self,
         dimension: RelationshipDimension = "lexical",
-        rel_type: Optional[RelType] = None,
-        valence_range: Optional[Tuple[float, float]] = None,
-    ) -> List[Tuple[Term, Term, RelType, Dict[str, Any]]]:
+        rel_type: RelType | None = None,
+        valence_range: tuple[float, float] | None = None,
+    ) -> list[tuple[Term, Term, RelType, dict[str, Any]]]:
         """
         Retrieve relationships filtered by dimension and other optional criteria.
 
@@ -306,7 +308,7 @@ class GraphQuery:
         self.logger.debug(
             f"Querying relationships for dimension '{dimension}' (type: {rel_type}, valence: {valence_range})."
         )
-        filtered_relationships: List[Tuple[Term, Term, RelType, Dict[str, Any]]] = []
+        filtered_relationships: list[tuple[Term, Term, RelType, dict[str, Any]]] = []
 
         for u, v, data in self.manager.g.edges(data=True):
             edge_dimension = data.get("dimension")
@@ -321,11 +323,7 @@ class GraphQuery:
                 continue
 
             # --- Valence Filter (Apply only if relevant and specified) ---
-            apply_valence_filter = valence_range is not None and dimension in [
-                "emotional",
-                "affective",
-            ]
-            if apply_valence_filter:
+            if valence_range is not None and dimension in ["emotional", "affective"]:
                 # Check valence on both nodes (or edge if stored there)
                 # This example assumes valence is primarily a node attribute
                 valence_u = self.manager.g.nodes[u].get("valence")
@@ -354,7 +352,5 @@ class GraphQuery:
 
             filtered_relationships.append((term_u, term_v, edge_rel_type, data))
 
-        self.logger.debug(
-            f"Found {len(filtered_relationships)} relationships matching criteria."
-        )
+        self.logger.debug(f"Found {len(filtered_relationships)} relationships matching criteria.")
         return filtered_relationships

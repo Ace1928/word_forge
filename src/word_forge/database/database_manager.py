@@ -47,7 +47,7 @@ Usage Examples:
     ...     "algorithm",
     ...     "A step-by-step procedure for solving a problem",
     ...     "noun",
-    ...     ["The sorting algorithm runs in O(n log n) time"]
+    ...     ["The sorting algorithm runs in O(n log n) time"],
     ... )
     >>>
     >>> # Create relationships between words
@@ -62,27 +62,34 @@ Usage Examples:
     ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("syntax",))
 """
 
+import hashlib
+import json
 import sqlite3
 import time
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock, local
 from typing import (
     Any,
-    Dict,
-    Iterator,
-    List,
-    Optional,
     Protocol,
-    Tuple,
     TypedDict,
     TypeVar,
     Union,
     cast,
 )
 
-from word_forge.config import config
+from word_forge.database.migrations import (
+    MigrationError,
+    apply_migrations,
+    detect_script,
+    normalize_lemma,
+)
+from word_forge.observability import eidosian
+from word_forge.paths import DATABASE_PATH
+from word_forge.utils.result import Result, failure, success
 
 
 class DatabaseError(Exception):
@@ -97,7 +104,7 @@ class DatabaseError(Exception):
         cause: Original exception that triggered this error
     """
 
-    def __init__(self, message: str, cause: Optional[Exception] = None) -> None:
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
         """
         Initialize with detailed error message and optional cause.
 
@@ -114,7 +121,7 @@ class DatabaseError(Exception):
         """Provide detailed error message including cause if available."""
         error_msg = self.message
         if self.cause:
-            error_msg += f" | Cause: {str(self.cause)}"
+            error_msg += f" | Cause: {self.cause!s}"
         return error_msg
 
 
@@ -154,8 +161,8 @@ class ConnectionError(DatabaseError):
     def __init__(
         self,
         message: str,
-        cause: Optional[Exception] = None,
-        db_path: Optional[str] = None,
+        cause: Exception | None = None,
+        db_path: str | None = None,
     ) -> None:
         """
         Initialize connection error with context details.
@@ -184,9 +191,9 @@ class QueryError(DatabaseError):
     def __init__(
         self,
         message: str,
-        cause: Optional[Exception] = None,
-        query: Optional[str] = None,
-        params: Optional[Union[Tuple[Any, ...], Dict[str, Any]]] = None,
+        cause: Exception | None = None,
+        query: str | None = None,
+        params: tuple[Any, ...] | dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize query error with context details.
@@ -236,8 +243,8 @@ class SchemaError(DatabaseError):
     def __init__(
         self,
         message: str,
-        cause: Optional[Exception] = None,
-        table: Optional[str] = None,
+        cause: Exception | None = None,
+        table: str | None = None,
     ) -> None:
         """
         Initialize schema error with context details.
@@ -249,6 +256,19 @@ class SchemaError(DatabaseError):
         """
         super().__init__(message, cause)
         self.table = table
+
+
+class RevisionConflictError(DatabaseError):
+    """Raised when an update targets a stale lexical revision."""
+
+    def __init__(self, entity: str, expected: int, actual: int | None) -> None:
+        actual_text = "missing" if actual is None else str(actual)
+        super().__init__(
+            f"Revision conflict for {entity}: expected {expected}, current revision is {actual_text}"
+        )
+        self.entity = entity
+        self.expected = expected
+        self.actual = actual
 
 
 class RelationshipDict(TypedDict):
@@ -291,10 +311,10 @@ class WordEntryDict(TypedDict):
     term: str
     definition: str
     part_of_speech: str
-    usage_examples: List[str]
+    usage_examples: list[str]
     language: str
     last_refreshed: float
-    relationships: List[RelationshipDict]
+    relationships: list[RelationshipDict]
 
 
 class WordDataDict(TypedDict):
@@ -328,12 +348,12 @@ class SQLExecutor(Protocol):
     def execute(
         self,
         sql: str,
-        parameters: Union[Tuple[Any, ...], List[Any], Dict[str, Any]] = (),
+        parameters: tuple[Any, ...] | list[Any] | dict[str, Any] = (),
     ) -> Any: ...
 
-    def fetchone(self) -> Optional[Tuple[Any, ...]]: ...
+    def fetchone(self) -> tuple[Any, ...] | None: ...
 
-    def fetchall(self) -> List[Tuple[Any, ...]]: ...
+    def fetchall(self) -> list[tuple[Any, ...]]: ...
 
 
 # Type variables for return type annotations
@@ -341,7 +361,7 @@ T = TypeVar("T")
 Row = sqlite3.Row
 Connection = sqlite3.Connection
 Cursor = sqlite3.Cursor
-QueryParams = Union[Tuple[Any, ...], Dict[str, Any]]
+QueryParams = Union[tuple[Any, ...], dict[str, Any]]
 
 
 # SQL constants for database schema operations
@@ -403,26 +423,208 @@ CREATE TABLE IF NOT EXISTS graph_metadata (
 )
 """
 
-SQL_CHECK_WORDS_TABLE = (
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
+SQL_CREATE_LEXEMES_TABLE = """
+CREATE TABLE IF NOT EXISTS lexemes (
+    id INTEGER PRIMARY KEY,
+    lemma TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    part_of_speech TEXT,
+    gloss TEXT,
+    base_term TEXT,
+    source TEXT,
+    last_refreshed REAL NOT NULL,
+    UNIQUE(lemma, lang)
 )
+"""
+
+SQL_CREATE_TRANSLATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS translations (
+    id INTEGER PRIMARY KEY,
+    lexeme_id INTEGER NOT NULL,
+    target_lang TEXT NOT NULL,
+    target_term TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    source TEXT,
+    last_refreshed REAL NOT NULL,
+    FOREIGN KEY(lexeme_id) REFERENCES lexemes(id),
+    UNIQUE(lexeme_id, target_lang, target_term, relation)
+)
+"""
+
+SQL_CREATE_LANGUAGE_MAP_TABLE = """
+CREATE TABLE IF NOT EXISTS language_map (
+    lang TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+)
+"""
+
+SQL_CREATE_PHONETICS_TABLE = """
+CREATE TABLE IF NOT EXISTS phonetics (
+    id INTEGER PRIMARY KEY,
+    word_id INTEGER NOT NULL,
+    ipa TEXT NOT NULL,
+    arpabet TEXT,
+    stress_pattern TEXT,
+    source TEXT,
+    is_exception BOOLEAN DEFAULT 0,
+    last_updated REAL NOT NULL,
+    FOREIGN KEY(word_id) REFERENCES words(id),
+    UNIQUE(word_id, ipa)
+)
+"""
+
+SQL_CREATE_PRONUNCIATION_VARIANTS_TABLE = """
+CREATE TABLE IF NOT EXISTS pronunciation_variants (
+    id INTEGER PRIMARY KEY,
+    phonetic_id INTEGER NOT NULL,
+    variant_ipa TEXT NOT NULL,
+    context TEXT,
+    frequency_weight REAL DEFAULT 1.0,
+    FOREIGN KEY(phonetic_id) REFERENCES phonetics(id)
+)
+"""
+
+SQL_CREATE_PHRASES_TABLE = """
+CREATE TABLE IF NOT EXISTS phrases (
+    id INTEGER PRIMARY KEY,
+    text TEXT UNIQUE NOT NULL,
+    phoneme_template TEXT,
+    prosody_priors TEXT, -- JSON blob
+    affect_link TEXT,
+    is_recurring BOOLEAN DEFAULT 0,
+    novelty_score REAL DEFAULT 0.0,
+    last_seen REAL NOT NULL
+)
+"""
+
+SQL_CREATE_PHRASE_COMPONENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS phrase_components (
+    phrase_id INTEGER NOT NULL,
+    word_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY(phrase_id, position),
+    FOREIGN KEY(phrase_id) REFERENCES phrases(id),
+    FOREIGN KEY(word_id) REFERENCES words(id)
+)
+"""
+
+SQL_CREATE_PHRASE_REALIZATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS phrase_realizations (
+    id INTEGER PRIMARY KEY,
+    phrase_id INTEGER NOT NULL,
+    speaker_id TEXT NOT NULL,
+    realization_ipa TEXT,
+    prosody_actuals TEXT, -- JSON blob
+    count INTEGER DEFAULT 1,
+    last_realized REAL NOT NULL,
+    FOREIGN KEY(phrase_id) REFERENCES phrases(id),
+    UNIQUE(phrase_id, speaker_id)
+)
+"""
+
+SQL_CREATE_MORPHEMES_TABLE = """
+CREATE TABLE IF NOT EXISTS morphemes (
+    id INTEGER PRIMARY KEY,
+    text TEXT UNIQUE NOT NULL,
+    type TEXT, -- prefix, suffix, root
+    meaning TEXT,
+    last_updated REAL NOT NULL
+)
+"""
+
+SQL_CREATE_WORD_MORPHEMES_TABLE = """
+CREATE TABLE IF NOT EXISTS word_morphemes (
+    word_id INTEGER NOT NULL,
+    morpheme_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY(word_id, position),
+    FOREIGN KEY(word_id) REFERENCES words(id),
+    FOREIGN KEY(morpheme_id) REFERENCES morphemes(id)
+)
+"""
+
+SQL_CREATE_LEXEME_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_lexemes_lang ON lexemes(lang)
+"""
+
+SQL_CREATE_TRANSLATION_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_translations_lang ON translations(target_lang)
+"""
+
+SQL_CHECK_WORDS_TABLE = "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
+
+SQL_CHECK_LEXEMES_TABLE = "SELECT name FROM sqlite_master WHERE type='table' AND name='lexemes'"
 
 # SQL query constants for data operations
 SQL_INSERT_OR_UPDATE_WORD = """
-INSERT INTO words (term, definition, part_of_speech, usage_examples, last_refreshed)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO words (
+    term, definition, part_of_speech, usage_examples, last_refreshed,
+    uid, normalized_term, script, revision, source, confidence,
+    review_state, created_at, updated_at, deleted_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, '', 1.0, 'unreviewed', ?, ?, NULL)
 ON CONFLICT(term)
 DO UPDATE SET
     definition=excluded.definition,
     part_of_speech=excluded.part_of_speech,
     usage_examples=excluded.usage_examples,
-    last_refreshed=excluded.last_refreshed
+    last_refreshed=excluded.last_refreshed,
+    normalized_term=excluded.normalized_term,
+    script=excluded.script,
+    revision=words.revision + 1,
+    updated_at=excluded.updated_at,
+    deleted_at=NULL
+"""
+
+SQL_INSERT_OR_UPDATE_LEXEME = """
+INSERT INTO lexemes (
+    lemma, lang, part_of_speech, gloss, base_term, source, last_refreshed,
+    uid, normalized_lemma, script, revision, confidence, review_state,
+    created_at, updated_at, deleted_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1.0, 'unreviewed', ?, ?, NULL)
+ON CONFLICT(lemma, lang)
+DO UPDATE SET
+    part_of_speech=excluded.part_of_speech,
+    gloss=excluded.gloss,
+    base_term=excluded.base_term,
+    source=excluded.source,
+    last_refreshed=excluded.last_refreshed,
+    normalized_lemma=excluded.normalized_lemma,
+    script=excluded.script,
+    revision=lexemes.revision + 1,
+    updated_at=excluded.updated_at,
+    deleted_at=NULL
+"""
+
+SQL_INSERT_TRANSLATION = """
+INSERT INTO translations (
+    lexeme_id, target_lang, target_term, relation, source, last_refreshed,
+    uid, revision, confidence, review_state, created_at, updated_at, deleted_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1.0, 'unreviewed', ?, ?, NULL)
+ON CONFLICT(lexeme_id, target_lang, target_term, relation)
+DO UPDATE SET
+    source=excluded.source,
+    last_refreshed=excluded.last_refreshed,
+    revision=translations.revision + 1,
+    updated_at=excluded.updated_at,
+    deleted_at=NULL
+"""
+
+SQL_GET_LEXEME_ID = """
+SELECT id FROM lexemes WHERE lemma = ? AND lang = ?
+"""
+
+SQL_UPDATE_LEXEME_BASE = """
+UPDATE lexemes SET base_term = ?, last_refreshed = ? WHERE lemma = ? AND lang = ?
 """
 
 SQL_INSERT_RELATIONSHIP = """
 INSERT OR IGNORE INTO relationships
-(word_id, related_term, relationship_type)
-VALUES (?, ?, ?)
+(word_id, related_term, relationship_type, uid, revision, source,
+ confidence, review_state, created_at, updated_at, deleted_at)
+VALUES (?, ?, ?, ?, 1, 'manual', 1.0, 'unreviewed', ?, ?, NULL)
 """
 
 SQL_GET_WORD_ENTRY = """
@@ -481,13 +683,16 @@ class DBManager:
     across different execution contexts including multithreaded environments.
     """
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
         """Initialize the database manager with an optional custom path."""
-        self.db_path = Path(db_path) if db_path else Path(config.database.db_path)
+        self.db_path = Path(db_path) if db_path else DATABASE_PATH
         self._thread_local = local()  # Thread-local storage for connections
         self._thread_local.conn_pool = []  # Initialize connection pool
         self._lock = Lock()
-        self._max_pool_size = getattr(config.database, "max_connections", 5)
+        self._registry_lock = Lock()
+        self._connections: set[sqlite3.Connection] = set()
+        self._closing = False
+        self._max_pool_size = 5
 
         try:
             self._ensure_database_directory()
@@ -501,22 +706,21 @@ class DBManager:
             )
 
     @property
-    def connection(self) -> Optional[sqlite3.Connection]:
+    def connection(self) -> sqlite3.Connection | None:
         """Get the current thread's connection, if any."""
         return getattr(self._thread_local, "connection", None)
 
     @connection.setter
-    def connection(self, conn: Optional[sqlite3.Connection]) -> None:
+    def connection(self, conn: sqlite3.Connection | None) -> None:
         """Set the current thread's connection."""
         self._thread_local.connection = conn
 
     @property
-    def _conn_pool(self) -> List[Connection]:
+    def _conn_pool(self) -> list[Connection]:
         """Get the connection pool for the current thread."""
         if not hasattr(self._thread_local, "conn_pool"):
             self._thread_local.conn_pool = []  # Connection list is created empty
-        return cast(List[Connection], self._thread_local.conn_pool)  # type: ignore
-        return self._thread_local.conn_pool
+        return cast(list[Connection], self._thread_local.conn_pool)
 
     def _ensure_database_directory(self) -> None:
         """Ensure the database directory exists."""
@@ -526,13 +730,25 @@ class DBManager:
         """Create a new database connection with proper configuration."""
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(str(self.db_path))
+            # Set isolation_level=None to disable implicit transactions
+            if self._closing:
+                raise ConnectionError(f"Database manager for {self.db_path} is closing")
+            connection = sqlite3.connect(
+                str(self.db_path),
+                isolation_level=None,
+                check_same_thread=False,
+                timeout=30.0,
+            )
             connection.row_factory = sqlite3.Row
 
             # Configure connection for optimal performance and safety
             connection.execute(SQL_PRAGMA_FOREIGN_KEYS)
             connection.execute(SQL_PRAGMA_JOURNAL_MODE)
             connection.execute(SQL_PRAGMA_SYNCHRONOUS)
+            connection.execute("PRAGMA busy_timeout = 30000")
+
+            with self._registry_lock:
+                self._connections.add(connection)
 
             return connection
         except sqlite3.Error as e:
@@ -540,6 +756,7 @@ class DBManager:
                 f"Failed to connect to database at {self.db_path}", e, str(self.db_path)
             )
 
+    @eidosian()
     def create_connection(self) -> sqlite3.Connection:
         """Create a new database connection."""
         with self._lock:
@@ -547,6 +764,7 @@ class DBManager:
             self._conn_pool.append(conn)
             return conn
 
+    @eidosian()
     def create_tables(self) -> None:
         """Create database tables if they don't exist."""
         try:
@@ -556,24 +774,56 @@ class DBManager:
                 conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
                 conn.execute(SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE)
                 conn.execute(SQL_CREATE_GRAPH_METADATA_TABLE)
+                conn.execute(SQL_CREATE_LEXEMES_TABLE)
+                conn.execute(SQL_CREATE_TRANSLATIONS_TABLE)
+                conn.execute(SQL_CREATE_LANGUAGE_MAP_TABLE)
+
+                # Create phonetic and phrase tables
+                conn.execute(SQL_CREATE_PHONETICS_TABLE)
+                conn.execute(SQL_CREATE_PRONUNCIATION_VARIANTS_TABLE)
+                conn.execute(SQL_CREATE_PHRASES_TABLE)
+                conn.execute(SQL_CREATE_PHRASE_COMPONENTS_TABLE)
+                conn.execute(SQL_CREATE_PHRASE_REALIZATIONS_TABLE)
+                conn.execute(SQL_CREATE_MORPHEMES_TABLE)
+                conn.execute(SQL_CREATE_WORD_MORPHEMES_TABLE)
 
                 # Create indexes for performance
                 conn.execute(SQL_CREATE_WORD_ID_INDEX)
                 conn.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
                 conn.execute(SQL_CREATE_UNIQUE_EMOTIONAL_RELATIONSHIP_INDEX)
+                conn.execute(SQL_CREATE_LEXEME_INDEX)
+                conn.execute(SQL_CREATE_TRANSLATION_INDEX)
+
+                # Create phonetic/phrase/morpheme indexes
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_phonetics_word ON phonetics(word_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_phrases_text ON phrases(text)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_phrase_comp_phrase ON phrase_components(phrase_id)"
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_morphemes_text ON morphemes(text)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_word_morphemes_word ON word_morphemes(word_id)"
+                )
+
+                # Upgrade older databases only after their compatibility tables
+                # exist. Each migration is committed atomically and records its
+                # own durable schema version.
+                apply_migrations(conn)
 
                 # Configure database settings
                 conn.execute(SQL_PRAGMA_FOREIGN_KEYS)
                 conn.execute(SQL_PRAGMA_JOURNAL_MODE)
                 conn.execute(SQL_PRAGMA_SYNCHRONOUS)
-        except (ConnectionError, sqlite3.Error) as e:
+        except (ConnectionError, MigrationError, sqlite3.Error) as e:
             raise SchemaError("Failed to create database schema", e)
 
+    @eidosian()
     def ensure_tables_exist(self) -> None:
         """Ensure that all required tables exist in the database."""
-        if not self.table_exists("words"):
+        if not self.table_exists("words") or not self.table_exists("lexemes"):
             self.create_tables()
 
+    @eidosian()
     @contextmanager
     def get_connection(self) -> Iterator[Connection]:
         """
@@ -602,9 +852,7 @@ class DBManager:
                 conn = None  # Prevent closing outside
 
         except sqlite3.Error as e:
-            raise ConnectionError(
-                "Failed to get database connection", e, str(self.db_path)
-            )
+            raise ConnectionError("Failed to get database connection", e, str(self.db_path))
 
         finally:
             # Close connection if not returned to pool
@@ -613,6 +861,9 @@ class DBManager:
                     conn.close()
                 except sqlite3.Error:
                     pass  # Already closing due to error, ignore
+                finally:
+                    with self._registry_lock:
+                        self._connections.discard(conn)
 
     def _get_connection(self) -> sqlite3.Connection:
         """
@@ -625,6 +876,7 @@ class DBManager:
             self.connection = self._create_connection()
         return self.connection
 
+    @eidosian()
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
         """
@@ -635,7 +887,7 @@ class DBManager:
         """
         with self.get_connection() as conn:
             try:
-                conn.execute("BEGIN")
+                conn.execute("BEGIN IMMEDIATE")
                 yield conn
                 conn.commit()
             except Exception as e:
@@ -654,13 +906,10 @@ class DBManager:
                 elif isinstance(e, sqlite3.Error):
                     raise QueryError("SQL error during transaction", e) from e
                 else:
-                    raise TransactionError(
-                        "Error during database transaction", e
-                    ) from e
+                    raise TransactionError("Error during database transaction", e) from e
 
-    def execute_query(
-        self, query: str, params: Optional[QueryParams] = None
-    ) -> List[Row]:
+    @eidosian()
+    def execute_query(self, query: str, params: QueryParams | None = None) -> list[Row]:
         """
         Execute a query and return all results.
 
@@ -689,7 +938,8 @@ class DBManager:
         except sqlite3.Error as e:
             raise QueryError("Query execution failed", e, query, params or ())
 
-    def execute_scalar(self, query: str, params: Optional[QueryParams] = None) -> Any:
+    @eidosian()
+    def execute_scalar(self, query: str, params: QueryParams | None = None) -> Any:
         """
         Execute a query and return a single scalar value.
 
@@ -718,6 +968,105 @@ class DBManager:
         except sqlite3.Error as e:
             raise QueryError("Scalar query execution failed", e, query, params or ())
 
+    @staticmethod
+    def _record_change(
+        conn: Connection,
+        *,
+        entity_type: str,
+        entity_id: str,
+        revision: int,
+        operation: str,
+        actor: str,
+        payload: dict[str, object],
+        invalidates: tuple[str, ...] = ("graph", "search", "vector"),
+    ) -> None:
+        """Append one audit event and its derived-data invalidations atomically."""
+
+        payload_json = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        checksum = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        occurred_at = time.time()
+        conn.execute(
+            """
+            INSERT INTO change_log(
+                entity_type, entity_id, revision, operation, actor,
+                occurred_at, payload_json, checksum
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entity_type,
+                entity_id,
+                revision,
+                operation,
+                actor or "local",
+                occurred_at,
+                payload_json,
+                checksum,
+            ),
+        )
+        for kind in invalidates:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO invalidation_queue(
+                    kind, entity_id, source_revision, reason, state, created_at
+                ) VALUES (?, ?, ?, ?, 'pending', ?)
+                """,
+                (kind, entity_id, revision, f"{entity_type}.{operation}", occurred_at),
+            )
+
+    @staticmethod
+    def _ensure_source(conn: Connection, source: str) -> str:
+        """Create or return a stable provenance-source record."""
+
+        name = source.strip() or "manual"
+        source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"word-forge:source:{name}"))
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO sources(id, name, origin, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (source_id, name, name, time.time()),
+        )
+        return source_id
+
+    @property
+    def schema_version(self) -> int:
+        """Return the durable schema revision of this lexicon database."""
+
+        value = self.execute_scalar("PRAGMA user_version")
+        return int(value or 0)
+
+    def invalidation_watermark(self, kind: str) -> int:
+        """Return the newest pending invalidation ID for one derived view."""
+
+        value = self.execute_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM invalidation_queue WHERE kind = ? AND state = 'pending'",
+            (kind,),
+        )
+        return int(value or 0)
+
+    def complete_invalidations(self, kind: str, *, through_id: int) -> int:
+        """Acknowledge only work that existed before a successful rebuild."""
+
+        if through_id <= 0:
+            return 0
+        completed_at = time.time()
+        try:
+            with self.transaction() as conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE invalidation_queue
+                    SET state = 'completed', completed_at = ?
+                    WHERE kind = ? AND state = 'pending' AND id <= ?
+                    """,
+                    (completed_at, kind, through_id),
+                )
+                return cursor.rowcount
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError(f"Failed to complete {kind} invalidations", e)
+
+    @eidosian()
     def table_exists(self, table_name: str) -> bool:
         """
         Check if a table exists in the database.
@@ -738,12 +1087,13 @@ class DBManager:
         except QueryError:
             return False
 
+    @eidosian()
     def insert_or_update_word(
         self,
         term: str,
         definition: str = "",
         part_of_speech: str = "",
-        usage_examples: Optional[List[str]] = None,
+        usage_examples: list[str] | None = None,
     ) -> None:
         """
         Insert a new word or update an existing word in the database.
@@ -763,7 +1113,7 @@ class DBManager:
             ...     "algorithm",
             ...     "A step-by-step procedure for solving a problem",
             ...     "noun",
-            ...     ["The sorting algorithm runs in O(n log n) time"]
+            ...     ["The sorting algorithm runs in O(n log n) time"],
             ... )
         """
         if not term:
@@ -776,9 +1126,13 @@ class DBManager:
         examples = usage_examples if usage_examples else []
         serialized_examples = "\n".join(examples)
         current_time = time.time()
+        normalized = normalize_lemma(term)
+        script = detect_script(term)
+        candidate_uid = str(uuid.uuid4())
 
         try:
             with self.transaction() as conn:
+                existing = conn.execute("SELECT uid FROM words WHERE term = ?", (term,)).fetchone()
                 conn.execute(
                     SQL_INSERT_OR_UPDATE_WORD,
                     (
@@ -787,11 +1141,382 @@ class DBManager:
                         part_of_speech,
                         serialized_examples,
                         current_time,
+                        candidate_uid,
+                        normalized,
+                        script,
+                        current_time,
+                        current_time,
                     ),
+                )
+                stored = conn.execute(
+                    "SELECT uid, revision FROM words WHERE term = ?", (term,)
+                ).fetchone()
+                if stored is None or not stored[0]:
+                    raise DatabaseError("Failed to fetch word identity after upsert")
+                self._record_change(
+                    conn,
+                    entity_type="word",
+                    entity_id=str(stored[0]),
+                    revision=int(stored[1]),
+                    operation="update" if existing else "create",
+                    actor="local",
+                    payload={"term": term, "language": "en"},
                 )
         except (sqlite3.Error, TransactionError) as e:
             raise DatabaseError(f"Failed to insert or update word '{term}'", e)
 
+    @eidosian()
+    def insert_or_update_lexeme(
+        self,
+        lemma: str,
+        lang: str,
+        part_of_speech: str = "",
+        gloss: str = "",
+        source: str = "",
+        base_term: str = "",
+        *,
+        usage_examples: list[str] | None = None,
+        expected_revision: int | None = None,
+        sync_english_word: bool = False,
+    ) -> int:
+        """
+        Insert or update a multilingual lexeme record.
+        """
+        if not lemma or not lang:
+            raise ValueError("Lemma and language are required")
+        if expected_revision is not None and expected_revision < 0:
+            raise ValueError("expected_revision cannot be negative")
+
+        self.ensure_tables_exist()
+        current_time = time.time()
+        candidate_uid = str(uuid.uuid4())
+        normalized = normalize_lemma(lemma)
+        script = detect_script(lemma)
+
+        try:
+            with self.transaction() as conn:
+                existing = conn.execute(
+                    "SELECT uid, revision FROM lexemes WHERE lemma = ? AND lang = ?",
+                    (lemma, lang),
+                ).fetchone()
+                actual_revision = int(existing[1]) if existing is not None else None
+                if expected_revision is not None:
+                    valid_create = existing is None and expected_revision == 0
+                    valid_update = actual_revision == expected_revision
+                    if not valid_create and not valid_update:
+                        raise RevisionConflictError(
+                            f"{lemma} ({lang})", expected_revision, actual_revision
+                        )
+                self._ensure_source(conn, source)
+
+                if sync_english_word and lang == "en":
+                    word_existing = conn.execute(
+                        "SELECT uid FROM words WHERE term = ?", (lemma,)
+                    ).fetchone()
+                    serialized_examples = "\n".join(usage_examples or [])
+                    word_uid = str(uuid.uuid4())
+                    conn.execute(
+                        SQL_INSERT_OR_UPDATE_WORD,
+                        (
+                            lemma,
+                            gloss,
+                            part_of_speech,
+                            serialized_examples,
+                            current_time,
+                            word_uid,
+                            normalized,
+                            script,
+                            current_time,
+                            current_time,
+                        ),
+                    )
+                    stored_word = conn.execute(
+                        "SELECT uid, revision FROM words WHERE term = ?", (lemma,)
+                    ).fetchone()
+                    if stored_word is None or not stored_word[0]:
+                        raise DatabaseError("Failed to fetch word identity after upsert")
+                    self._record_change(
+                        conn,
+                        entity_type="word",
+                        entity_id=str(stored_word[0]),
+                        revision=int(stored_word[1]),
+                        operation="update" if word_existing else "create",
+                        actor=source or "manual",
+                        payload={"term": lemma, "language": "en"},
+                    )
+
+                conn.execute(
+                    SQL_INSERT_OR_UPDATE_LEXEME,
+                    (
+                        lemma,
+                        lang,
+                        part_of_speech,
+                        gloss,
+                        base_term,
+                        source,
+                        current_time,
+                        candidate_uid,
+                        normalized,
+                        script,
+                        current_time,
+                        current_time,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT id, uid, revision FROM lexemes WHERE lemma = ? AND lang = ?",
+                    (lemma, lang),
+                ).fetchone()
+                if row is None:
+                    raise DatabaseError("Failed to fetch lexeme ID after upsert")
+                self._record_change(
+                    conn,
+                    entity_type="lexeme",
+                    entity_id=str(row[1]),
+                    revision=int(row[2]),
+                    operation="update" if existing else "create",
+                    actor=source or "manual",
+                    payload={"lemma": lemma, "language": lang, "script": script},
+                )
+                return cast(int, row[0])
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError(f"Failed to insert or update lexeme '{lemma}'", e)
+
+    @eidosian()
+    def get_lexeme_id(self, lemma: str, lang: str) -> int:
+        """
+        Get the lexeme ID for a given lemma/language pair.
+        """
+        result = self.execute_scalar(SQL_GET_LEXEME_ID, (lemma, lang))
+        if result is None:
+            raise TermNotFoundError(f"{lemma} ({lang})")
+        return cast(int, result)
+
+    @eidosian()
+    def add_translation(
+        self,
+        lexeme_id: int,
+        target_lang: str,
+        target_term: str,
+        relation: str = "translation",
+        source: str = "",
+    ) -> None:
+        """Insert or update a translation record for a lexeme."""
+        if not target_lang or not target_term:
+            raise ValueError("Target language and term are required")
+        self.ensure_tables_exist()
+        current_time = time.time()
+        candidate_uid = str(uuid.uuid4())
+
+        try:
+            with self.transaction() as conn:
+                existing = conn.execute(
+                    """
+                    SELECT uid FROM translations
+                    WHERE lexeme_id = ? AND target_lang = ?
+                      AND target_term = ? AND relation = ?
+                    """,
+                    (lexeme_id, target_lang, target_term, relation),
+                ).fetchone()
+                self._ensure_source(conn, source)
+                conn.execute(
+                    SQL_INSERT_TRANSLATION,
+                    (
+                        lexeme_id,
+                        target_lang,
+                        target_term,
+                        relation,
+                        source,
+                        current_time,
+                        candidate_uid,
+                        current_time,
+                        current_time,
+                    ),
+                )
+                stored = conn.execute(
+                    """
+                    SELECT uid, revision FROM translations
+                    WHERE lexeme_id = ? AND target_lang = ?
+                      AND target_term = ? AND relation = ?
+                    """,
+                    (lexeme_id, target_lang, target_term, relation),
+                ).fetchone()
+                if stored is None or not stored[0]:
+                    raise DatabaseError("Failed to fetch translation identity after upsert")
+                self._record_change(
+                    conn,
+                    entity_type="translation",
+                    entity_id=str(stored[0]),
+                    revision=int(stored[1]),
+                    operation="update" if existing else "create",
+                    actor=source or "manual",
+                    payload={"target_term": target_term, "target_language": target_lang},
+                )
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError("Failed to add translation", e)
+
+    @eidosian()
+    def update_lexeme_base(self, lemma: str, lang: str, base_term: str) -> None:
+        """Update base-term alignment for a lexeme."""
+        if not base_term:
+            return
+        self.ensure_tables_exist()
+        current_time = time.time()
+        try:
+            with self.transaction() as conn:
+                conn.execute(
+                    SQL_UPDATE_LEXEME_BASE,
+                    (base_term, current_time, lemma, lang),
+                )
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError("Failed to update lexeme base term", e)
+
+    @eidosian()
+    def upsert_sense(
+        self,
+        *,
+        lexeme_uid: str,
+        definition: str,
+        part_of_speech: str = "",
+        domain: str = "",
+        register: str = "",
+        source: str = "manual",
+        confidence: float = 1.0,
+        review_state: str = "unreviewed",
+        sense_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> str:
+        """Create or revise one sense in the same transaction as its audit event."""
+
+        if not lexeme_uid:
+            raise ValueError("lexeme_uid is required")
+        if not definition.strip():
+            raise ValueError("sense definition is required")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if review_state not in {"unreviewed", "reviewed", "rejected"}:
+            raise ValueError("review_state must be unreviewed, reviewed, or rejected")
+        if expected_revision is not None and expected_revision < 0:
+            raise ValueError("expected_revision cannot be negative")
+
+        identifier = sense_id or str(uuid.uuid4())
+        timestamp = time.time()
+        try:
+            with self.transaction() as conn:
+                lexeme = conn.execute(
+                    "SELECT uid FROM lexemes WHERE uid = ? AND deleted_at IS NULL",
+                    (lexeme_uid,),
+                ).fetchone()
+                if lexeme is None:
+                    raise TermNotFoundError(f"lexeme {lexeme_uid}")
+                existing = conn.execute(
+                    "SELECT lexeme_uid, revision FROM senses WHERE id = ?",
+                    (identifier,),
+                ).fetchone()
+                if existing is not None and str(existing[0]) != lexeme_uid:
+                    raise ValueError("sense_id belongs to a different lexeme")
+                actual_revision = int(existing[1]) if existing is not None else None
+                if expected_revision is not None:
+                    valid_create = existing is None and expected_revision == 0
+                    valid_update = actual_revision == expected_revision
+                    if not valid_create and not valid_update:
+                        raise RevisionConflictError(
+                            f"sense {identifier}", expected_revision, actual_revision
+                        )
+                source_id = self._ensure_source(conn, source)
+                conn.execute(
+                    """
+                    INSERT INTO senses(
+                        id, lexeme_uid, definition, part_of_speech, domain,
+                        register_name, source_id, confidence, review_state,
+                        revision, created_at, updated_at, deleted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)
+                    ON CONFLICT(id) DO UPDATE SET
+                        definition=excluded.definition,
+                        part_of_speech=excluded.part_of_speech,
+                        domain=excluded.domain,
+                        register_name=excluded.register_name,
+                        source_id=excluded.source_id,
+                        confidence=excluded.confidence,
+                        review_state=excluded.review_state,
+                        revision=senses.revision + 1,
+                        updated_at=excluded.updated_at,
+                        deleted_at=NULL
+                    """,
+                    (
+                        identifier,
+                        lexeme_uid,
+                        definition.strip(),
+                        part_of_speech.strip(),
+                        domain.strip(),
+                        register.strip(),
+                        source_id,
+                        confidence,
+                        review_state,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                stored_revision = conn.execute(
+                    "SELECT revision FROM senses WHERE id = ?", (identifier,)
+                ).fetchone()
+                if stored_revision is None:
+                    raise DatabaseError("Failed to fetch sense after upsert")
+                self._record_change(
+                    conn,
+                    entity_type="sense",
+                    entity_id=identifier,
+                    revision=int(stored_revision[0]),
+                    operation="update" if existing else "create",
+                    actor=source or "manual",
+                    payload={"lexeme_uid": lexeme_uid, "domain": domain},
+                )
+                return identifier
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError("Failed to store lexical sense", e)
+
+    @eidosian()
+    def delete_sense(self, sense_id: str, *, expected_revision: int | None = None) -> bool:
+        """Tombstone one sense while preserving provenance and audit history."""
+
+        if not sense_id:
+            raise ValueError("sense_id is required")
+        timestamp = time.time()
+        try:
+            with self.transaction() as conn:
+                row = conn.execute(
+                    "SELECT lexeme_uid, revision, deleted_at FROM senses WHERE id = ?",
+                    (sense_id,),
+                ).fetchone()
+                if row is None or row[2] is not None:
+                    return False
+                actual_revision = int(row[1])
+                if expected_revision is not None and expected_revision != actual_revision:
+                    raise RevisionConflictError(
+                        f"sense {sense_id}", expected_revision, actual_revision
+                    )
+                revision = actual_revision + 1
+                conn.execute(
+                    """
+                    UPDATE senses
+                    SET revision = ?, updated_at = ?, deleted_at = ?
+                    WHERE id = ?
+                    """,
+                    (revision, timestamp, timestamp, sense_id),
+                )
+                self._record_change(
+                    conn,
+                    entity_type="sense",
+                    entity_id=sense_id,
+                    revision=revision,
+                    operation="delete",
+                    actor="local",
+                    payload={"lexeme_uid": str(row[0])},
+                )
+                return True
+        except (sqlite3.Error, TransactionError) as e:
+            raise DatabaseError("Failed to delete lexical sense", e)
+
+    @eidosian()
     def get_word_id(self, term: str) -> int:
         """
         Get the database ID for a specific term.
@@ -821,6 +1546,26 @@ class DBManager:
         except QueryError as e:
             raise QueryError(f"Database error while retrieving ID for term '{term}'", e)
 
+    @eidosian()
+    def get_word_id_safe(self, term: str) -> Result[int, str]:
+        """
+        Get word ID returning a Result monad instead of raising exceptions.
+
+        Args:
+            term: Word to look up
+
+        Returns:
+            Result[int, str]: Ok(word_id) on success, Err(error_msg) on failure
+        """
+        try:
+            word_id = self.get_word_id(term)
+            return success(word_id)
+        except TermNotFoundError:
+            return failure(f"Term not found: {term}")
+        except Exception as e:
+            return failure(str(e))
+
+    @eidosian()
     def word_exists(self, term: str) -> bool:
         """Return ``True`` if the given term already exists in the database."""
 
@@ -831,6 +1576,7 @@ class DBManager:
         except QueryError:
             return False
 
+    @eidosian()
     def insert_relationship(
         self, base_term: str, related_term: str, relationship_type: str
     ) -> bool:
@@ -867,8 +1613,39 @@ class DBManager:
             # Insert the relationship
             with self.transaction() as conn:
                 cursor = conn.execute(
-                    SQL_INSERT_RELATIONSHIP, (word_id, related_term, relationship_type)
+                    SQL_INSERT_RELATIONSHIP,
+                    (
+                        word_id,
+                        related_term,
+                        relationship_type,
+                        str(uuid.uuid4()),
+                        time.time(),
+                        time.time(),
+                    ),
                 )
+                if cursor.rowcount > 0:
+                    stored = conn.execute(
+                        """
+                        SELECT uid, revision FROM relationships
+                        WHERE word_id = ? AND related_term = ? AND relationship_type = ?
+                        """,
+                        (word_id, related_term, relationship_type),
+                    ).fetchone()
+                    if stored is None or not stored[0]:
+                        raise DatabaseError("Failed to fetch relationship identity after insert")
+                    self._record_change(
+                        conn,
+                        entity_type="relationship",
+                        entity_id=str(stored[0]),
+                        revision=int(stored[1]),
+                        operation="create",
+                        actor="manual",
+                        payload={
+                            "source_term": base_term,
+                            "target_term": related_term,
+                            "kind": relationship_type,
+                        },
+                    )
                 # Return True if a new row was inserted
                 return cursor.rowcount > 0
         except (sqlite3.Error, TransactionError) as e:
@@ -900,6 +1677,7 @@ class DBManager:
         if base_term == related_term:
             raise ValueError("Cannot create relationship to self")
 
+    @eidosian()
     def get_word_entry(self, term: str) -> WordEntryDict:
         """
         Get complete information about a word including its relationships.
@@ -953,7 +1731,7 @@ class DBManager:
             last_refreshed: float = result["last_refreshed"] or time.time()
 
             # Parse usage examples with guaranteed type safety
-            usage_examples: List[str] = self._parse_usage_examples(usage_examples_str)
+            usage_examples: list[str] = self._parse_usage_examples(usage_examples_str)
 
             # Get relationships
             relationships = self.get_relationships(str(word_id_int))
@@ -973,7 +1751,7 @@ class DBManager:
         except QueryError as e:
             raise DatabaseError(f"Database error while retrieving term '{term}'", e)
 
-    def _parse_usage_examples(self, examples_str: str) -> List[str]:
+    def _parse_usage_examples(self, examples_str: str) -> list[str]:
         """
         Parse newline-separated usage examples into a list.
 
@@ -991,7 +1769,8 @@ class DBManager:
         """
         return examples_str.split("\n") if examples_str else []
 
-    def get_relationships(self, word_id: str) -> List[RelationshipDict]:
+    @eidosian()
+    def get_relationships(self, word_id: str) -> list[RelationshipDict]:
         """
         Get all relationships for a word identified by its ID.
 
@@ -1033,7 +1812,8 @@ class DBManager:
                 (word_id,),
             )
 
-    def get_all_words(self) -> List[WordDataDict]:
+    @eidosian()
+    def get_all_words(self) -> list[WordDataDict]:
         """
         Get a list of all words in the database.
 
@@ -1073,7 +1853,8 @@ class DBManager:
         except QueryError as e:
             raise QueryError("Failed to retrieve word list", e, SQL_GET_ALL_WORDS)
 
-    def get_updated_words(self, since: float) -> List[WordDataDict]:
+    @eidosian()
+    def get_updated_words(self, since: float) -> list[WordDataDict]:
         """Return words updated after the given timestamp."""
         try:
             rows = self.execute_query(SQL_GET_UPDATED_WORDS, (since,))
@@ -1094,23 +1875,20 @@ class DBManager:
                 (since,),
             )
 
+    @eidosian()
     def close(self) -> None:
-        """Close the database connection for the current thread."""
-        # Close thread-local connection
-        if self.connection is not None:
-            try:
-                self.connection.close()
-            except sqlite3.Error:
-                pass  # Ignore errors during cleanup
-            finally:
-                self.connection = None
+        """Close every registered connection, including worker-thread pools."""
 
-        # Close thread-local pooled connections
-        for conn in self._conn_pool:
+        self._closing = True
+        with self._registry_lock:
+            connections = tuple(self._connections)
+            self._connections.clear()
+        for conn in connections:
             try:
                 conn.close()
             except sqlite3.Error:
-                pass  # Ignore errors during cleanup
+                pass
+        self.connection = None
         self._conn_pool.clear()
 
 
@@ -1140,8 +1918,9 @@ class RelationshipTypeManager:
         """
         self.db_manager = db_manager
         # Proper type definition matching actual usage pattern
-        self._cache: Dict[str, List[str]] = {}
+        self._cache: dict[str, list[str]] = {}
 
+    @eidosian()
     @lru_cache(maxsize=128)
     def is_valid_relationship_type(self, relationship_type: str) -> bool:
         """
@@ -1185,7 +1964,8 @@ class RelationshipTypeManager:
         valid_prefixes = ["custom_", "domain_", "project_"]
         return any(relationship_type.startswith(prefix) for prefix in valid_prefixes)
 
-    def get_all_relationship_types(self) -> List[str]:
+    @eidosian()
+    def get_all_relationship_types(self) -> list[str]:
         """
         Get all defined relationship types.
 
@@ -1202,9 +1982,7 @@ class RelationshipTypeManager:
 
         # Flatten the dictionary of categories into a single list
         return [
-            relationship_type
-            for category in self._cache.values()
-            for relationship_type in category
+            relationship_type for category in self._cache.values() for relationship_type in category
         ]
 
     def _refresh_cache(self) -> None:
@@ -1224,7 +2002,7 @@ class RelationshipTypeManager:
             # Non-fatal error - continue with empty cache
             self._cache = {"other": []}
 
-    def _categorize_relationship_types(self, types: List[str]) -> Dict[str, List[str]]:
+    def _categorize_relationship_types(self, types: list[str]) -> dict[str, list[str]]:
         """
         Categorize relationship types into semantic groups.
 
@@ -1234,7 +2012,7 @@ class RelationshipTypeManager:
         Returns:
             Dictionary mapping categories to lists of relationship types
         """
-        categories: Dict[str, List[str]] = {
+        categories: dict[str, list[str]] = {
             "lexical": [],
             "semantic": [],
             "emotional": [],
@@ -1259,15 +2037,16 @@ class RelationshipTypeManager:
 
 # Export public elements
 __all__ = [
-    "DBManager",
-    "WordEntryDict",
-    "RelationshipDict",
-    "DatabaseError",
     "ConnectionError",
+    "DBManager",
+    "DatabaseError",
     "QueryError",
-    "SchemaError",
-    "TransactionError",
-    "TermNotFoundError",
+    "RelationshipDict",
     "RelationshipTypeManager",
+    "RevisionConflictError",
     "Row",
+    "SchemaError",
+    "TermNotFoundError",
+    "TransactionError",
+    "WordEntryDict",
 ]

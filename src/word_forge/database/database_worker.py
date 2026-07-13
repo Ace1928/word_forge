@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import random
 import sqlite3
 import threading
@@ -32,10 +33,25 @@ import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Tuple, TypedDict, Union, final
+from typing import Any, Protocol, TypedDict, final
 
 from word_forge.config import config
 from word_forge.database.database_manager import DBManager
+from word_forge.observability import eidosian
+
+
+def _positive_interval(value: object, *, fallback: float, name: str) -> float:
+    """Return a finite positive scheduling interval or raise a clear error."""
+
+    candidate = fallback if value is None else value
+    if (
+        isinstance(candidate, bool)
+        or not isinstance(candidate, (int, float))
+        or not math.isfinite(candidate)
+        or candidate <= 0
+    ):
+        raise ValueError(f"{name} must be a finite number greater than zero")
+    return float(candidate)
 
 
 class DBWorkerState(Enum):
@@ -58,14 +74,14 @@ class DBWorkerStatus(TypedDict):
     running: bool
     operation_count: int
     error_count: int
-    last_operation: Optional[str]
-    last_update: Optional[float]
-    uptime: Optional[float]
+    last_operation: str | None
+    last_update: float | None
+    uptime: float | None
     state: str
-    recent_errors: List[str]
-    next_maintenance: Optional[float]
+    recent_errors: list[str]
+    next_maintenance: float | None
     optimization_level: int
-    integrity_status: Optional[str]
+    integrity_status: str | None
     pending_operations: int
 
 
@@ -117,11 +133,9 @@ class DatabaseWorkerInterface(Protocol):
     def is_alive(self) -> bool: ...
     def run_maintenance(self, wait: bool = False) -> bool: ...
     def run_optimization(self, level: int = 1, wait: bool = False) -> bool: ...
-    def run_backup(
-        self, target_path: Optional[str] = None, wait: bool = False
-    ) -> bool: ...
-    def run_integrity_check(self, wait: bool = False) -> Tuple[bool, Optional[str]]: ...
-    def get_metrics(self) -> Dict[str, Any]: ...
+    def run_backup(self, target_path: str | None = None, wait: bool = False) -> bool: ...
+    def run_integrity_check(self, wait: bool = False) -> tuple[bool, str | None]: ...
+    def get_metrics(self) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -148,11 +162,11 @@ class OperationMetrics:
     operation_count: int = 0
     error_count: int = 0
     avg_duration_ms: float = 0.0
-    last_maintenance: Optional[float] = None
-    last_optimization: Optional[float] = None
-    last_backup: Optional[float] = None
-    last_integrity_check: Optional[float] = None
-    operation_times: Dict[str, List[float]] = field(
+    last_maintenance: float | None = None
+    last_optimization: float | None = None
+    last_backup: float | None = None
+    last_integrity_check: float | None = None
+    operation_times: dict[str, list[float]] = field(
         default_factory=lambda: {
             "maintenance": [],
             "optimization": [],
@@ -162,8 +176,9 @@ class OperationMetrics:
             "schema_update": [],
         }
     )
-    error_types: Dict[str, int] = field(default_factory=dict)
+    error_types: dict[str, int] = field(default_factory=dict)
 
+    @eidosian()
     def record_operation(
         self, operation_type: str, duration_ms: float, success: bool = True
     ) -> None:
@@ -186,9 +201,7 @@ class OperationMetrics:
 
             # Limit the size of recorded times to avoid unbounded growth
             if len(self.operation_times[operation_type]) > 100:
-                self.operation_times[operation_type] = self.operation_times[
-                    operation_type
-                ][-100:]
+                self.operation_times[operation_type] = self.operation_times[operation_type][-100:]
 
         # Record timestamp for specific operation types
         if operation_type == "maintenance":
@@ -210,6 +223,7 @@ class OperationMetrics:
         if not success:
             self.error_count += 1
 
+    @eidosian()
     def record_error(self, error_type: str) -> None:
         """
         Record occurrence of an error type.
@@ -226,7 +240,8 @@ class OperationMetrics:
         else:
             self.error_types[error_type] = 1
 
-    def get_operation_avg(self, operation_type: str) -> Optional[float]:
+    @eidosian()
+    def get_operation_avg(self, operation_type: str) -> float | None:
         """
         Get average duration for a specific operation type.
 
@@ -236,16 +251,14 @@ class OperationMetrics:
         Returns:
             Average duration in milliseconds or None if no data
         """
-        if (
-            operation_type in self.operation_times
-            and self.operation_times[operation_type]
-        ):
+        if self.operation_times.get(operation_type):
             return sum(self.operation_times[operation_type]) / len(
                 self.operation_times[operation_type]
             )
         return None
 
-    def get_most_common_error(self) -> Optional[Tuple[str, int]]:
+    @eidosian()
+    def get_most_common_error(self) -> tuple[str, int] | None:
         """
         Get the most frequently occurring error.
 
@@ -256,7 +269,8 @@ class OperationMetrics:
             return None
         return max(self.error_types.items(), key=lambda x: x[1])
 
-    def get_recent_errors(self, limit: int = 5) -> List[str]:
+    @eidosian()
+    def get_recent_errors(self, limit: int = 5) -> list[str]:
         """
         Get the most frequent recent error types.
 
@@ -266,9 +280,7 @@ class OperationMetrics:
         Returns:
             List of error type names sorted by frequency
         """
-        sorted_errors = sorted(
-            self.error_types.items(), key=lambda x: x[1], reverse=True
-        )
+        sorted_errors = sorted(self.error_types.items(), key=lambda x: x[1], reverse=True)
         return [error_type for error_type, _ in sorted_errors[:limit]]
 
 
@@ -303,12 +315,12 @@ class DatabaseWorker(threading.Thread):
     def __init__(
         self,
         db_manager: DBManager,
-        poll_interval: Optional[float] = None,
-        backup_interval: Optional[float] = None,
-        backup_path: Optional[Union[str, Path]] = None,
-        optimization_interval: Optional[float] = None,
+        poll_interval: float | None = None,
+        backup_interval: float | None = None,
+        backup_path: str | Path | None = None,
+        optimization_interval: float | None = None,
         daemon: bool = True,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         """
         Initialize the database worker.
@@ -322,18 +334,30 @@ class DatabaseWorker(threading.Thread):
             daemon: Whether thread should run as daemon
             logger: Optional logger for detailed logging
         """
-        super().__init__(daemon=daemon)
+        super().__init__(daemon=daemon, name="DatabaseWorker")
         self.db_manager = db_manager
 
         # Configuration parameters with defaults from config
-        self.poll_interval = poll_interval or getattr(
-            config.database, "poll_interval", 3600.0
+        self.poll_interval = _positive_interval(
+            poll_interval
+            if poll_interval is not None
+            else getattr(config.database, "poll_interval", None),
+            fallback=3600.0,
+            name="poll_interval",
         )
-        self.backup_interval = backup_interval or getattr(
-            config.database, "backup_interval", 86400.0
+        self.backup_interval = _positive_interval(
+            backup_interval
+            if backup_interval is not None
+            else getattr(config.database, "backup_interval", None),
+            fallback=86400.0,
+            name="backup_interval",
         )
-        self.optimization_interval = optimization_interval or getattr(
-            config.database, "optimization_interval", 43200.0
+        self.optimization_interval = _positive_interval(
+            optimization_interval
+            if optimization_interval is not None
+            else getattr(config.database, "optimization_interval", None),
+            fallback=43200.0,
+            name="optimization_interval",
         )
 
         # Set up backup path with fallback to config or default
@@ -354,37 +378,33 @@ class DatabaseWorker(threading.Thread):
         # Thread control flags
         self._stop_flag = False
         self._pause_flag = False
-        self._wake_event = (
-            threading.Event()
-        )  # For interruptible sleep (stop or new operation)
+        self._wake_event = threading.Event()  # For interruptible sleep (stop or new operation)
         self._status_lock = threading.RLock()
         self._operation_lock = threading.RLock()
         self._current_state = DBWorkerState.STOPPED
-        self._start_time: Optional[float] = None
-        self._last_update: Optional[float] = None
+        self._start_time: float | None = None
+        self._last_update: float | None = None
 
         # Schedule trackers
-        self._next_maintenance: Optional[float] = None
-        self._next_backup: Optional[float] = None
-        self._next_optimization: Optional[float] = None
-        self._last_operation: Optional[str] = None
+        self._next_maintenance: float | None = None
+        self._next_backup: float | None = None
+        self._next_optimization: float | None = None
+        self._last_operation: str | None = None
 
         # Error handling
         self._consecutive_errors = 0
         self._backoff_time = 0.0
         self._error_backoff_base = 30.0  # Base backoff time in seconds
-        self._recent_errors: List[str] = []
+        self._recent_errors: list[str] = []
 
         # Optimization level (0-3, higher is more aggressive)
         self._optimization_level = 1
 
         # Integrity status from last check
-        self._integrity_status: Optional[str] = None
+        self._integrity_status: str | None = None
 
         # Operation queue for externally-requested operations
-        self._pending_operations: List[
-            Tuple[str, Dict[str, Any], Optional[threading.Event]]
-        ] = []
+        self._pending_operations: list[tuple[str, dict[str, Any], threading.Event | None]] = []
 
         # Performance metrics
         self.metrics = OperationMetrics()
@@ -392,6 +412,7 @@ class DatabaseWorker(threading.Thread):
         # Configure logging
         self.logger = logger or logging.getLogger(__name__)
 
+    @eidosian()
     def run(self) -> None:
         """
         Main execution loop that periodically performs database maintenance.
@@ -460,9 +481,7 @@ class DatabaseWorker(threading.Thread):
                     ]
                     if t is not None
                 )
-                sleep_time = max(
-                    0.1, min(next_op_time - time.time(), self.poll_interval)
-                )
+                sleep_time = max(0.1, min(next_op_time - time.time(), self.poll_interval))
                 # Use event.wait() for interruptible sleep
                 self._wake_event.wait(timeout=sleep_time)
 
@@ -650,7 +669,7 @@ class DatabaseWorker(threading.Thread):
             self.logger.error(error_msg)
             raise OptimizationError(error_msg) from e
 
-    def _execute_backup(self, target_path: Optional[str] = None) -> bool:
+    def _execute_backup(self, target_path: str | None = None) -> bool:
         """
         Perform database backup operation.
 
@@ -701,9 +720,7 @@ class DatabaseWorker(threading.Thread):
             duration_ms = (time.time() - start_time) * 1000
             self.metrics.record_operation("backup", duration_ms)
 
-            self.logger.info(
-                f"Database backup completed in {duration_ms:.2f}ms: {backup_file}"
-            )
+            self.logger.info(f"Database backup completed in {duration_ms:.2f}ms: {backup_file}")
             return True
 
         except Exception as e:
@@ -739,7 +756,7 @@ class DatabaseWorker(threading.Thread):
             except Exception as e:
                 self.logger.warning(f"Failed to remove old backup {old_file}: {e}")
 
-    def _execute_integrity_check(self) -> Tuple[bool, Optional[str]]:
+    def _execute_integrity_check(self) -> tuple[bool, str | None]:
         """
         Perform database integrity check.
 
@@ -775,15 +792,11 @@ class DatabaseWorker(threading.Thread):
             # Check results
             if len(results) == 1 and results[0][0] == "ok" and not fk_results:
                 integrity_status = "ok"
-                self.logger.info(
-                    f"Database integrity check passed in {duration_ms:.2f}ms"
-                )
+                self.logger.info(f"Database integrity check passed in {duration_ms:.2f}ms")
             else:
                 # Combine all integrity errors
                 integrity_errors = [row[0] for row in results if row[0] != "ok"]
-                fk_errors = [
-                    f"Foreign key violation in table {row[0]}" for row in fk_results
-                ]
+                fk_errors = [f"Foreign key violation in table {row[0]}" for row in fk_results]
                 all_errors = integrity_errors + fk_errors
 
                 if all_errors:
@@ -793,9 +806,7 @@ class DatabaseWorker(threading.Thread):
                     )
                 else:
                     integrity_status = "unknown"
-                    self.logger.warning(
-                        "Database integrity check returned unexpected results"
-                    )
+                    self.logger.warning("Database integrity check returned unexpected results")
 
             with self._status_lock:
                 self._integrity_status = integrity_status
@@ -827,9 +838,7 @@ class DatabaseWorker(threading.Thread):
             self._current_state = DBWorkerState.ERROR
 
             # Calculate exponential backoff with jitter
-            backoff_base = self._error_backoff_base * (
-                2 ** min(6, self._consecutive_errors - 1)
-            )
+            backoff_base = self._error_backoff_base * (2 ** min(6, self._consecutive_errors - 1))
             jitter = random.uniform(0, backoff_base * 0.1)
             self._backoff_time = min(300, backoff_base + jitter)  # Cap at 5 minutes
 
@@ -840,13 +849,13 @@ class DatabaseWorker(threading.Thread):
 
         # Log error message
         self.logger.error(
-            f"Database worker error ({error_type}): {error}. "
-            f"Retrying in {self._backoff_time:.1f}s"
+            f"Database worker error ({error_type}): {error}. Retrying in {self._backoff_time:.1f}s"
         )
 
         # Log detailed traceback at debug level
         self.logger.debug(f"Error traceback: {traceback.format_exc()}")
 
+    @eidosian()
     def stop(self) -> None:
         """Signal the worker to stop and wait for any current operation to complete."""
         self.logger.info("Database worker stopping...")
@@ -865,6 +874,7 @@ class DatabaseWorker(threading.Thread):
         # Signal the wake event to wake up any sleeping thread
         self._wake_event.set()
 
+    @eidosian()
     def restart(self) -> None:
         """
         Restart the worker thread.
@@ -887,6 +897,7 @@ class DatabaseWorker(threading.Thread):
         # Start new thread
         self.start()
 
+    @eidosian()
     def pause(self) -> None:
         """
         Pause worker execution without stopping the thread.
@@ -901,6 +912,7 @@ class DatabaseWorker(threading.Thread):
 
         self.logger.info("Database worker paused")
 
+    @eidosian()
     def resume(self) -> None:
         """
         Resume worker execution after being paused.
@@ -914,6 +926,7 @@ class DatabaseWorker(threading.Thread):
 
         self.logger.info("Database worker resumed")
 
+    @eidosian()
     def get_status(self) -> DBWorkerStatus:
         """
         Return the current status of the database worker.
@@ -930,9 +943,7 @@ class DatabaseWorker(threading.Thread):
                 uptime = time.time() - self._start_time
 
             return {
-                "running": self.is_alive()
-                and not self._stop_flag
-                and not self._pause_flag,
+                "running": self.is_alive() and not self._stop_flag and not self._pause_flag,
                 "operation_count": self.metrics.operation_count,
                 "error_count": self.metrics.error_count,
                 "last_operation": self._last_operation,
@@ -946,6 +957,7 @@ class DatabaseWorker(threading.Thread):
                 "pending_operations": len(self._pending_operations),
             }
 
+    @eidosian()
     def run_maintenance(self, wait: bool = False) -> bool:
         """
         Schedule an immediate maintenance operation.
@@ -976,6 +988,7 @@ class DatabaseWorker(threading.Thread):
 
         return True
 
+    @eidosian()
     def run_optimization(self, level: int = 1, wait: bool = False) -> bool:
         """
         Schedule an immediate optimization operation.
@@ -999,9 +1012,7 @@ class DatabaseWorker(threading.Thread):
         completion_event = threading.Event() if wait else None
 
         with self._operation_lock:
-            self._pending_operations.append(
-                ("optimization", {"level": level}, completion_event)
-            )
+            self._pending_operations.append(("optimization", {"level": level}, completion_event))
 
         # Wake up the worker thread to process the operation immediately
         self._wake_event.set()
@@ -1013,7 +1024,8 @@ class DatabaseWorker(threading.Thread):
 
         return True
 
-    def run_backup(self, target_path: Optional[str] = None, wait: bool = False) -> bool:
+    @eidosian()
+    def run_backup(self, target_path: str | None = None, wait: bool = False) -> bool:
         """
         Schedule an immediate backup operation.
 
@@ -1046,7 +1058,8 @@ class DatabaseWorker(threading.Thread):
 
         return True
 
-    def run_integrity_check(self, wait: bool = False) -> Tuple[bool, Optional[str]]:
+    @eidosian()
+    def run_integrity_check(self, wait: bool = False) -> tuple[bool, str | None]:
         """
         Schedule an immediate integrity check operation.
 
@@ -1080,14 +1093,15 @@ class DatabaseWorker(threading.Thread):
 
         return True, None
 
-    def get_metrics(self) -> Dict[str, Any]:
+    @eidosian()
+    def get_metrics(self) -> dict[str, Any]:
         """
         Get detailed worker performance metrics.
 
         Returns:
             Dictionary containing comprehensive metrics and statistics
         """
-        metrics_dict: Dict[str, Any] = {
+        metrics_dict: dict[str, Any] = {
             "operation_count": self.metrics.operation_count,
             "error_count": self.metrics.error_count,
             "avg_duration_ms": self.metrics.avg_duration_ms,

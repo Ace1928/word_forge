@@ -42,8 +42,9 @@ import logging
 import sqlite3
 import threading
 from collections import Counter
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union, cast
+from typing import Any, cast
 
 import networkx as nx
 
@@ -74,6 +75,7 @@ from word_forge.graph.graph_io import GraphIO
 from word_forge.graph.graph_layout import GraphLayout
 from word_forge.graph.graph_query import GraphQuery
 from word_forge.graph.graph_visualizer import GraphVisualizer
+from word_forge.observability import eidosian
 
 # Make relationship_properties accessible if needed internally
 from word_forge.relationships import RELATIONSHIP_TYPES as relationship_properties
@@ -104,7 +106,7 @@ class GraphManager:
     def __init__(
         self,
         db_manager: DBManager,
-        graph_config: Optional[GraphConfig] = None,
+        graph_config: GraphConfig | None = None,
         graph_type: type = nx.Graph,  # Default to undirected graph
         dimensions: int = 2,
     ) -> None:
@@ -123,12 +125,12 @@ class GraphManager:
         self.logger.info("Initializing GraphManager...")
 
         # --- Core Graph State ---
-        self.g: Union[nx.Graph, nx.DiGraph] = graph_type()
+        self.g: nx.Graph | nx.DiGraph = graph_type()
         self.dimensions: int = dimensions
-        self._term_to_id: Dict[str, WordId] = {}  # term (lowercase) -> node_id mapping
+        self._term_to_id: dict[str, WordId] = {}  # term (lowercase) -> node_id mapping
         self._positions: PositionDict = {}  # node_id -> position tuple mapping
         self._relationship_counts: Counter[RelType] = Counter()
-        self._emotional_contexts: Dict[str, Dict[str, float]] = {}  # Stored contexts
+        self._emotional_contexts: dict[str, dict[str, float]] = {}  # Stored contexts
 
         # --- Lock for thread safety on graph modifications ---
         # RLock allows re-entrant locking within the same thread
@@ -170,6 +172,7 @@ class GraphManager:
     # ==========================================
     # Public Accessors for Internal State
     # ==========================================
+    @eidosian()
     def get_positions(self) -> PositionDict:
         """
         Return a copy of the computed node positions. Thread-safe.
@@ -184,6 +187,7 @@ class GraphManager:
     # ==========================================
     # Graph Building & Modification Methods (via Builder)
     # ==========================================
+    @eidosian()
     def build_graph(self) -> None:
         """
         Build the graph from the database, replacing the existing graph.
@@ -197,6 +201,7 @@ class GraphManager:
         with self._graph_lock:
             self.builder.build_graph()
 
+    @eidosian()
     def update_graph(self) -> int:
         """
         Incrementally update the graph with new data from the database.
@@ -213,12 +218,14 @@ class GraphManager:
         with self._graph_lock:
             return self.builder.update_graph()
 
+    @eidosian()
     def get_last_update_metrics(self) -> GraphUpdateMetrics:
         """Expose metrics from the most recent graph build or update cycle."""
 
         with self._graph_lock:
             return self.builder.last_update_metrics
 
+    @eidosian()
     def ensure_sample_data(self) -> bool:
         """
         Ensure sample data exists in the database if it's empty.
@@ -236,6 +243,7 @@ class GraphManager:
         # For simplicity here, assuming DB operations are safe or handled by DBManager
         return self.builder.ensure_sample_data()
 
+    @eidosian()
     def verify_database_tables(self) -> bool:
         """
         Verify that required database tables exist.
@@ -247,9 +255,8 @@ class GraphManager:
         """
         return self.builder.verify_database_tables()
 
-    def add_word_node(
-        self, term: Term, attributes: Optional[Dict[str, Any]] = None
-    ) -> WordId:
+    @eidosian()
+    def add_word_node(self, term: Term, attributes: dict[str, Any] | None = None) -> WordId:
         """
         Add a single word node to the graph if it doesn't exist.
 
@@ -302,15 +309,16 @@ class GraphManager:
 
                 return new_id
 
+    @eidosian()
     def add_relationship(
         self,
-        source_term_or_id: Union[Term, WordId],
-        target_term_or_id: Union[Term, WordId],
+        source_term_or_id: Term | WordId,
+        target_term_or_id: Term | WordId,
         relationship: RelType,
-        dimension: Optional[RelationshipDimension] = None,
-        weight: Optional[float] = None,
-        color: Optional[str] = None,
-        bidirectional: Optional[bool] = None,
+        dimension: RelationshipDimension | None = None,
+        weight: float | None = None,
+        color: str | None = None,
+        bidirectional: bool | None = None,
         **kwargs: Any,
     ) -> bool:
         """
@@ -353,9 +361,7 @@ class GraphManager:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Source term '{source_term_or_id}' not found, adding implicitly.")
                     # source_id = self.add_word_node(source_term_or_id)  # add_word_node handles locking
-                    raise NodeNotFoundError(
-                        f"Source term '{source_term_or_id}' not found."
-                    )
+                    raise NodeNotFoundError(f"Source term '{source_term_or_id}' not found.")
             elif isinstance(source_term_or_id, int):
                 source_id = source_term_or_id
                 if source_id not in self.g.nodes():
@@ -370,9 +376,7 @@ class GraphManager:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Target term '{target_term_or_id}' not found, adding implicitly.")
                     # target_id = self.add_word_node(target_term_or_id)  # add_word_node handles locking
-                    raise NodeNotFoundError(
-                        f"Target term '{target_term_or_id}' not found."
-                    )
+                    raise NodeNotFoundError(f"Target term '{target_term_or_id}' not found.")
             elif isinstance(target_term_or_id, int):
                 target_id = target_term_or_id
                 if target_id not in self.g.nodes():
@@ -382,9 +386,7 @@ class GraphManager:
 
             # Prevent self-loops
             if source_id == target_id:
-                self.logger.warning(
-                    f"Attempted to add self-loop for node {source_id}. Skipped."
-                )
+                self.logger.warning(f"Attempted to add self-loop for node {source_id}. Skipped.")
                 return False
 
             # --- Determine Edge Properties ---
@@ -422,9 +424,7 @@ class GraphManager:
             )
             if has_edge:
                 nx.set_edge_attributes(self.g, {(source_id, target_id): edge_attrs})
-                self.logger.debug(
-                    f"Updated existing edge between {source_id} and {target_id}."
-                )
+                self.logger.debug(f"Updated existing edge between {source_id} and {target_id}.")
             else:
                 self.g.add_edge(source_id, target_id, **edge_attrs)
                 self._relationship_counts[relationship] += 1
@@ -437,55 +437,61 @@ class GraphManager:
     # ==========================================
     # Query Methods (via Query)
     # ==========================================
-    def get_node_id(self, term: Term) -> Optional[WordId]:
+    @eidosian()
+    def get_node_id(self, term: Term) -> WordId | None:
         """Retrieve node ID for a term. Delegates to GraphQuery."""
         return self.query.get_node_id(term)
 
-    def get_related_terms(
-        self, term: Term, rel_type: Optional[RelType] = None
-    ) -> List[Term]:
+    @eidosian()
+    def get_related_terms(self, term: Term, rel_type: RelType | None = None) -> list[Term]:
         """Find related terms. Delegates to GraphQuery."""
         return self.query.get_related_terms(term, rel_type)
 
+    @eidosian()
     def get_node_count(self) -> int:
         """Get node count. Delegates to GraphQuery."""
         return self.query.get_node_count()
 
+    @eidosian()
     def get_edge_count(self) -> int:
         """Get edge count. Delegates to GraphQuery."""
         return self.query.get_edge_count()
 
-    def get_term_by_id(self, word_id: WordId) -> Optional[Term]:
+    @eidosian()
+    def get_term_by_id(self, word_id: WordId) -> Term | None:
         """Get term by ID. Delegates to GraphQuery."""
         return self.query.get_term_by_id(word_id)
 
+    @eidosian()
     def get_graph_info(self) -> GraphInfoDict:
         """Get graph summary info. Delegates to GraphQuery."""
         return self.query.get_graph_info()
 
+    @eidosian()
     def display_graph_summary(self) -> None:
         """Display graph summary. Delegates to GraphQuery."""
         self.query.display_graph_summary()
 
+    @eidosian()
     def get_subgraph(self, term: Term, depth: int = 1) -> nx.Graph:
         """Extract a subgraph. Delegates to GraphQuery."""
         return self.query.get_subgraph(term, depth)
 
+    @eidosian()
     def get_relationships_by_dimension(
         self,
         dimension: RelationshipDimension = "lexical",
-        rel_type: Optional[RelType] = None,
-        valence_range: Optional[Tuple[float, float]] = None,
-    ) -> List[Tuple[Term, Term, RelType, Dict[str, Any]]]:
+        rel_type: RelType | None = None,
+        valence_range: tuple[float, float] | None = None,
+    ) -> list[tuple[Term, Term, RelType, dict[str, Any]]]:
         """Get relationships filtered by dimension. Delegates to GraphQuery."""
-        return self.query.get_relationships_by_dimension(
-            dimension, rel_type, valence_range
-        )
+        return self.query.get_relationships_by_dimension(dimension, rel_type, valence_range)
 
     # ==========================================
     # Layout Methods (via Layout)
     # ==========================================
-    def compute_layout(self, algorithm: Optional[LayoutAlgorithm] = None) -> None:
+    @eidosian()
+    def compute_layout(self, algorithm: LayoutAlgorithm | None = None) -> None:
         """Compute graph layout. Delegates to GraphLayout."""
         # Layout computation can be read-heavy but writes to _positions
         # Lock ensures position dictionary isn't modified during read by visualizer
@@ -497,13 +503,14 @@ class GraphManager:
     # ==========================================
     # Visualization Methods (via Visualizer)
     # ==========================================
+    @eidosian()
     def visualize(
         self,
-        output_path: Optional[str] = None,
-        height: Optional[str] = None,
-        width: Optional[str] = None,
-        use_3d: Optional[bool] = None,
-        dimensions_filter: Optional[List[RelationshipDimension]] = None,
+        output_path: str | None = None,
+        height: str | None = None,
+        width: str | None = None,
+        use_3d: bool | None = None,
+        dimensions_filter: list[RelationshipDimension] | None = None,
         open_in_browser: bool = False,
     ) -> None:
         """Generate graph visualization. Delegates to GraphVisualizer."""
@@ -513,12 +520,13 @@ class GraphManager:
                 output_path, height, width, use_3d, dimensions_filter, open_in_browser
             )
 
+    @eidosian()
     def visualize_2d(
         self,
-        output_path: Optional[str] = None,
-        height: Optional[str] = None,
-        width: Optional[str] = None,
-        dimensions_filter: Optional[List[RelationshipDimension]] = None,
+        output_path: str | None = None,
+        height: str | None = None,
+        width: str | None = None,
+        dimensions_filter: list[RelationshipDimension] | None = None,
         open_in_browser: bool = False,
     ) -> None:
         """Generate 2D graph visualization. Delegates to GraphVisualizer."""
@@ -527,36 +535,36 @@ class GraphManager:
                 output_path, height, width, dimensions_filter, open_in_browser
             )
 
+    @eidosian()
     def visualize_3d(
         self,
-        output_path: Optional[str] = None,
-        dimensions_filter: Optional[List[RelationshipDimension]] = None,
+        output_path: str | None = None,
+        dimensions_filter: list[RelationshipDimension] | None = None,
         open_in_browser: bool = False,
     ) -> None:
         """Generate 3D graph visualization. Delegates to GraphVisualizer."""
         with self._graph_lock:
-            self.visualizer.visualize_3d(
-                output_path, dimensions_filter, open_in_browser
-            )
+            self.visualizer.visualize_3d(output_path, dimensions_filter, open_in_browser)
 
     # ==========================================
     # IO Methods (via IO)
     # ==========================================
-    def save_to_gexf(self, path: Optional[str] = None) -> None:
+    @eidosian()
+    def save_to_gexf(self, path: str | None = None) -> None:
         """Save graph to GEXF. Delegates to GraphIO."""
         # Reads graph structure, lock ensures consistency
         with self._graph_lock:
             self.io.save_to_gexf(path)
 
-    def load_from_gexf(self, path: Optional[str] = None) -> None:
+    @eidosian()
+    def load_from_gexf(self, path: str | None = None) -> None:
         """Load graph from GEXF. Delegates to GraphIO."""
         # Replaces graph structure, requires exclusive access
         with self._graph_lock:
             self.io.load_from_gexf(path)
 
-    def export_subgraph(
-        self, term: Term, depth: int = 1, output_path: Optional[str] = None
-    ) -> str:
+    @eidosian()
+    def export_subgraph(self, term: Term, depth: int = 1, output_path: str | None = None) -> str:
         """Export subgraph to GEXF. Delegates to GraphIO."""
         # Reads graph structure, lock ensures consistency
         with self._graph_lock:
@@ -565,12 +573,13 @@ class GraphManager:
     # ==========================================
     # Analysis Methods (via Analysis)
     # ==========================================
+    @eidosian()
     def analyze_semantic_clusters(
         self,
         min_community_size: int = 3,
-        weight_attribute: Optional[str] = "weight",
+        weight_attribute: str | None = "weight",
         resolution: float = 1.0,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ) -> ClusterResult:
         """Analyze semantic clusters. Delegates to GraphAnalysis."""
         # Reads graph structure, lock ensures consistency
@@ -579,16 +588,19 @@ class GraphManager:
                 min_community_size, weight_attribute, resolution, random_state
             )
 
+    @eidosian()
     def analyze_multidimensional_relationships(self) -> MultiDimResult:
         """Analyze multidimensional relationships. Delegates to GraphAnalysis."""
         with self._graph_lock:
             return self.analysis.analyze_multidimensional_relationships()
 
+    @eidosian()
     def extract_meta_emotional_patterns(self) -> MetaEmotionalResult:
         """Extract meta-emotional patterns. Delegates to GraphAnalysis."""
         with self._graph_lock:
             return self.analysis.extract_meta_emotional_patterns()
 
+    @eidosian()
     def analyze_emotional_valence_distribution(
         self, dimension: RelationshipDimension = "emotional"
     ) -> ValenceDistResult:
@@ -596,31 +608,30 @@ class GraphManager:
         with self._graph_lock:
             return self.analysis.analyze_emotional_valence_distribution(dimension)
 
+    @eidosian()
     def integrate_emotional_context(
-        self, context_name: str, context_weights: Dict[str, float]
+        self, context_name: str, context_weights: dict[str, float]
     ) -> int:
         """Integrate emotional context. Delegates to GraphAnalysis."""
         # Potentially modifies graph state (_emotional_contexts), lock needed
         with self._graph_lock:
-            return self.analysis.integrate_emotional_context(
-                context_name, context_weights
-            )
+            return self.analysis.integrate_emotional_context(context_name, context_weights)
 
+    @eidosian()
     def analyze_emotional_transitions(
         self, path_length: int = 2, min_transition_strength: float = 0.1
     ) -> TransitionResult:
         """Analyze emotional transitions. Delegates to GraphAnalysis."""
         with self._graph_lock:
-            return self.analysis.analyze_emotional_transitions(
-                path_length, min_transition_strength
-            )
+            return self.analysis.analyze_emotional_transitions(path_length, min_transition_strength)
 
+    @eidosian()
     def get_emotional_subgraph(
         self,
         term: Term,
         depth: int = 1,
-        context: Optional[Union[str, Dict[str, float]]] = None,
-        emotional_types: Optional[List[RelType]] = None,
+        context: str | dict[str, float] | None = None,
+        emotional_types: list[RelType] | None = None,
         min_intensity: float = 0.0,
     ) -> nx.Graph:
         """Get emotional subgraph. Delegates to GraphAnalysis."""
@@ -648,9 +659,7 @@ class GraphManager:
             {
                 "weight": props.get("weight", default_props["weight"]),
                 "color": props.get("color", default_props["color"]),
-                "bidirectional": props.get(
-                    "bidirectional", default_props["bidirectional"]
-                ),
+                "bidirectional": props.get("bidirectional", default_props["bidirectional"]),
             },
         )
 

@@ -2,9 +2,11 @@
 Demonstration of QueueManager functionality.
 """
 
+from word_forge.observability import eidosian
 from word_forge.queue.queue_manager import QueueManager, TaskPriority
 
 
+@eidosian()
 def main() -> None:
     """
     Demonstrate QueueManager functionality with basic operations.
@@ -33,8 +35,8 @@ def main() -> None:
     queue_manager.enqueue("low-priority item", TaskPriority.LOW)
 
     # Try to add a duplicate
-    result = queue_manager.enqueue("normal item 1")
-    print(f"Adding duplicate item: {'Rejected' if not result.unwrap() else 'Added'}")
+    enqueue_result = queue_manager.enqueue("normal item 1")
+    print(f"Adding duplicate item: {'Rejected' if not enqueue_result.unwrap() else 'Added'}")
 
     # Show queue stats
     print(f"\nQueue size: {queue_manager.size}")
@@ -44,9 +46,9 @@ def main() -> None:
     # Dequeue and process items
     print("\nProcessing items in priority order:")
     while not queue_manager.is_empty:
-        result = queue_manager.dequeue()
-        if result.is_success:
-            item = result.unwrap()
+        dequeue_result = queue_manager.dequeue()
+        if dequeue_result.is_success:
+            item = dequeue_result.unwrap()
             print(f"- Processing: {item}")
 
     # Show final stats
