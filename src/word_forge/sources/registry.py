@@ -221,7 +221,7 @@ _SOURCES: Tuple[LexicalSource, ...] = (
         license_url="https://dumps.wikimedia.org/legal.html",
         license_class=LicenseClass.ATTRIBUTION_SHARE_ALIKE,
         commercial_use=CommercialUse.ALLOWED_WITH_TERMS,
-        integration_status=IntegrationStatus.PLANNED,
+        integration_status=IntegrationStatus.OPTIONAL,
         bootstrap_tier=BootstrapTier.SHARE_ALIKE_OPT_IN,
         language_scope="Wiktionary languages represented by each extract",
         data_types=(
@@ -234,7 +234,11 @@ _SOURCES: Tuple[LexicalSource, ...] = (
         ),
         attribution="Preserve Wiktionary attribution and source-page provenance.",
         redistribution="Isolate extracts and adaptations under applicable source terms.",
-        notes="Capture the exact extract's notices; the tool license is not the data license.",
+        notes=(
+            "The governed streaming importer supports JSONL, gzip, and bzip2. "
+            "Capture the exact extract's notices; the tool license is not the "
+            "data license."
+        ),
     ),
     LexicalSource(
         source_id="open-multilingual-wordnet",

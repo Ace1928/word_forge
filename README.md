@@ -182,6 +182,12 @@ word_forge setup-nltk
 word_forge sources list
 word_forge setup-nltk --multilingual --accept-source-licenses
 
+# Stream a governed Kaikki/Wiktionary extract into the normalized lexicon
+word_forge data import-kaikki data/raw-wiktextract-data.jsonl.gz \
+  --source-version 2026-07-06 \
+  --source-url https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz \
+  --accept-source-license --language en --db-path data/word_forge.sqlite
+
 # Quiet mode (suppress non-error output)
 word_forge --quiet start apple
 
@@ -456,11 +462,14 @@ results = vs.search(query_text="happy", k=5)
 | `word_forge emotion annotate` | Run emotion annotation |
 | `word_forge demo full` | Run full demo pipeline |
 | `word_forge setup-nltk` | Download NLTK data |
+| `word_forge sources list` | Inspect lexical source licenses and readiness |
+| `word_forge data import-kaikki FILE` | Import a governed, resumable Kaikki extract |
 
 ## Documentation
 
 - [`docs/overview.md`](docs/overview.md) - Developer guide
 - [`docs/glossary.md`](docs/glossary.md) - Term definitions
+- [`docs/kaikki-import.md`](docs/kaikki-import.md) - Governed lexical import guide
 - [`docs/templates/`](docs/templates/) - Docstring templates
 
 ## Contributing

@@ -9,6 +9,7 @@ import pytest
 from word_forge.sources import (
     BootstrapTier,
     CommercialUse,
+    IntegrationStatus,
     LicenseClass,
     SourceNotFoundError,
     get_source,
@@ -42,11 +43,13 @@ def test_unattended_catalog_excludes_restricted_policy_tiers() -> None:
 
 def test_catalog_preserves_non_uniform_license_boundaries() -> None:
     dbnary = get_source("DBNARY")
+    kaikki = get_source("kaikki-wiktionary")
     unimorph = get_source("unimorph")
     wikidata = get_source("wikidata-lexemes")
 
     assert dbnary.license_class is LicenseClass.ATTRIBUTION_SHARE_ALIKE
     assert not dbnary.unattended_eligible
+    assert kaikki.integration_status is IntegrationStatus.OPTIONAL
     assert unimorph.license_class is LicenseClass.PER_DATASET
     assert unimorph.commercial_use is CommercialUse.PER_DATASET_REVIEW
     assert wikidata.license_class is LicenseClass.PUBLIC_DOMAIN

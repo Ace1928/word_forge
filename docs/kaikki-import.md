@@ -11,7 +11,25 @@ the exact artifact. See [lexical source governance](lexical-sources.md).
 
 ## Safe import sequence
 
-The importer deliberately separates artifact inspection from mutation:
+The CLI hashes the artifact before opening the database and uses a resumable
+sidecar checkpoint by default:
+
+```bash
+word_forge data import-kaikki data/raw-wiktextract-data.jsonl.gz \
+  --source-version 2026-07-06 \
+  --source-url https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz \
+  --expected-sha256 EXACT_64_HEX_DIGEST \
+  --accept-source-license \
+  --language en \
+  --db-path data/word_forge.sqlite
+```
+
+Repeat `--language BCP47` to select more languages. Omit every language option
+to import the whole artifact. Use `--max-entries` for a staged run, `--json`
+for an automation report, `--checkpoint PATH` to relocate the checkpoint, or
+`--no-checkpoint` only when resume support is deliberately unnecessary.
+
+The Python API also separates artifact inspection from mutation:
 
 ```python
 from pathlib import Path
@@ -21,11 +39,14 @@ from word_forge.database.lexical_repository import LexicalRepository
 from word_forge.sources.kaikki import KaikkiImporter, inspect_artifact
 
 database = DBManager("data/word_forge.sqlite")
-artifact = inspect_artifact(Path("data/kaikki-en.jsonl.bz2"))
+artifact = inspect_artifact(
+    Path("data/raw-wiktextract-data.jsonl.gz"),
+    expected_sha256="EXACT_64_HEX_DIGEST",
+)
 importer = KaikkiImporter(
     LexicalRepository(database),
     source_version="2026-07-06",
-    source_url="https://kaikki.org/dictionary/rawdata.html",
+    source_url="https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz",
     accept_source_license=True,
     batch_size=500,
     languages=("en",),
@@ -45,8 +66,12 @@ import is running.
 ## Resuming
 
 After each committed batch, the importer atomically writes a versioned
-checkpoint containing the artifact digest, snapshot ID, next source line, and
-total imported entries. Reusing the checkpoint skips already committed lines.
+checkpoint containing the artifact digest, import-configuration digest,
+snapshot ID, next source line, and total imported entries. The configuration
+digest binds the checkpoint to its database path, source metadata, importer
+format, and language filters. Reusing a checkpoint with different settings is
+rejected before source-snapshot mutation instead of silently skipping records.
+Reusing a matching checkpoint skips already committed lines.
 For compressed inputs this is functionally resumable but seeking still requires
 decompression from the start; plain JSONL is preferable when frequent resumes
 are expected.

@@ -151,6 +151,16 @@ def test_artifact_inspection_hashes_exact_source_bytes(tmp_path: Path) -> None:
     assert identity.path == path.resolve()
 
 
+def test_artifact_inspection_verifies_an_expected_digest(tmp_path: Path) -> None:
+    path = tmp_path / "verified.jsonl"
+    _write_jsonl(path, _records()[:1])
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert inspect_artifact(path, expected_sha256=digest.upper()).sha256 == digest
+    with pytest.raises(KaikkiImportError, match="SHA-256 mismatch"):
+        inspect_artifact(path, expected_sha256="0" * 64)
+
+
 def test_streaming_import_filters_batches_checkpoints_and_resumes(
     tmp_path: Path,
 ) -> None:
@@ -173,8 +183,10 @@ def test_streaming_import_filters_batches_checkpoints_and_resumes(
     assert database.execute_scalar("SELECT COUNT(*) FROM source_snapshots") == 1
     assert database.execute_scalar("SELECT COUNT(*) FROM lexical_relations") >= 5
     checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert checkpoint_data["schema_version"] == 2
     assert checkpoint_data["next_line"] == 4
     assert checkpoint_data["artifact_sha256"] == artifact.sha256
+    assert len(checkpoint_data["configuration_sha256"]) == 64
 
     resumed = importer.import_artifact(artifact, checkpoint_path=checkpoint)
 
@@ -182,6 +194,53 @@ def test_streaming_import_filters_batches_checkpoints_and_resumes(
     assert resumed.lines_read == 0
     assert resumed.write_report.attempted == 0
     assert database.execute_scalar("SELECT COUNT(*) FROM lexical_entries") == 2
+
+
+def test_checkpoint_rejects_changed_filters_before_source_mutation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "filtered.jsonl"
+    checkpoint = tmp_path / "filtered.checkpoint.json"
+    _write_jsonl(path, _records())
+    database = DBManager(tmp_path / "filtered.sqlite")
+    artifact = inspect_artifact(path)
+    _importer(database, languages=("en",), batch_size=1).import_artifact(
+        artifact,
+        checkpoint_path=checkpoint,
+        max_entries=1,
+    )
+    retrieved_at = database.execute_scalar(
+        "SELECT retrieved_at FROM source_snapshots LIMIT 1"
+    )
+
+    with pytest.raises(KaikkiImportError, match="configuration does not match"):
+        _importer(database, languages=("fr",), batch_size=1).import_artifact(
+            artifact,
+            checkpoint_path=checkpoint,
+        )
+
+    assert (
+        database.execute_scalar("SELECT retrieved_at FROM source_snapshots LIMIT 1")
+        == retrieved_at
+    )
+
+
+def test_checkpoint_cannot_skip_entries_in_another_database(tmp_path: Path) -> None:
+    path = tmp_path / "database-bound.jsonl"
+    checkpoint = tmp_path / "database-bound.checkpoint.json"
+    _write_jsonl(path, _records()[:1])
+    artifact = inspect_artifact(path)
+    first_database = DBManager(tmp_path / "first.sqlite")
+    _importer(first_database).import_artifact(artifact, checkpoint_path=checkpoint)
+    second_database = DBManager(tmp_path / "second.sqlite")
+
+    with pytest.raises(KaikkiImportError, match="configuration does not match"):
+        _importer(second_database).import_artifact(
+            artifact,
+            checkpoint_path=checkpoint,
+        )
+
+    assert second_database.execute_scalar("SELECT COUNT(*) FROM source_snapshots") == 0
 
 
 def test_replaying_without_checkpoint_updates_in_place(tmp_path: Path) -> None:

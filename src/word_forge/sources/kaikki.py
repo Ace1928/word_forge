@@ -45,6 +45,8 @@ from word_forge.sources.registry import get_source
 
 _HASH_CHUNK_BYTES = 8 * 1024 * 1024
 _MAX_BATCH_SIZE = 10_000
+_CHECKPOINT_SCHEMA_VERSION = 2
+_IMPORT_FORMAT_VERSION = "kaikki-v1"
 
 _RELATION_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("synonyms", "synonym"),
@@ -79,6 +81,17 @@ class KaikkiLicenseError(KaikkiImportError):
     """Raised until share-alike source terms are explicitly acknowledged."""
 
 
+def _normalize_sha256(value: str, *, field_name: str) -> str:
+    """Validate and normalize one SHA-256 hexadecimal digest."""
+
+    normalized = value.strip().casefold()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(f"{field_name} must contain 64 hexadecimal digits")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactIdentity:
     """Immutable local artifact identity used before any database writes."""
@@ -89,11 +102,7 @@ class ArtifactIdentity:
     modified_ns: int
 
     def __post_init__(self) -> None:
-        normalized_digest = self.sha256.strip().casefold()
-        if len(normalized_digest) != 64 or any(
-            character not in "0123456789abcdef" for character in normalized_digest
-        ):
-            raise ValueError("sha256 must contain 64 hexadecimal digits")
+        normalized_digest = _normalize_sha256(self.sha256, field_name="sha256")
         if self.byte_size < 0 or self.modified_ns < 0:
             raise ValueError("artifact size and modification time must be non-negative")
         object.__setattr__(self, "path", Path(self.path).expanduser().resolve())
@@ -118,14 +127,34 @@ class KaikkiCheckpoint:
 
     schema_version: int
     artifact_sha256: str
+    configuration_sha256: str
     snapshot_id: int
     next_line: int
     imported_entries: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "artifact_sha256",
+            _normalize_sha256(self.artifact_sha256, field_name="artifact_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "configuration_sha256",
+            _normalize_sha256(
+                self.configuration_sha256, field_name="configuration_sha256"
+            ),
+        )
+        if self.snapshot_id <= 0:
+            raise ValueError("snapshot_id must be positive")
+        if self.next_line < 1 or self.imported_entries < 0:
+            raise ValueError("checkpoint counters must be non-negative")
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "schema_version": self.schema_version,
             "artifact_sha256": self.artifact_sha256,
+            "configuration_sha256": self.configuration_sha256,
             "snapshot_id": self.snapshot_id,
             "next_line": self.next_line,
             "imported_entries": self.imported_entries,
@@ -148,9 +177,40 @@ class KaikkiImportReport:
     write_report: LexicalWriteReport
     elapsed_seconds: float
 
+    def to_dict(self) -> Dict[str, object]:
+        """Return a stable, JSON-serializable operational report."""
+
+        writes = self.write_report
+        return {
+            "snapshot_id": self.snapshot_id,
+            "artifact_sha256": self.artifact_sha256,
+            "artifact_bytes": self.artifact_bytes,
+            "first_line": self.first_line,
+            "last_line": self.last_line,
+            "lines_read": self.lines_read,
+            "parsed_entries": self.parsed_entries,
+            "skipped_entries": self.skipped_entries,
+            "batches": self.batches,
+            "write_report": {
+                "attempted": writes.attempted,
+                "inserted": writes.inserted,
+                "updated": writes.updated,
+                "forms": writes.forms,
+                "senses": writes.senses,
+                "glosses": writes.glosses,
+                "examples": writes.examples,
+                "pronunciations": writes.pronunciations,
+                "relations": writes.relations,
+            },
+            "elapsed_seconds": self.elapsed_seconds,
+        }
+
 
 def inspect_artifact(
-    path: Path, *, chunk_bytes: int = _HASH_CHUNK_BYTES
+    path: Path,
+    *,
+    chunk_bytes: int = _HASH_CHUNK_BYTES,
+    expected_sha256: Optional[str] = None,
 ) -> ArtifactIdentity:
     """Hash a local artifact in bounded memory and return its stable identity."""
 
@@ -171,15 +231,26 @@ def inspect_artifact(
                 digest.update(chunk)
     except OSError as exc:
         raise KaikkiImportError(f"Cannot hash source artifact: {exc}") from exc
-    final_stat = source_path.stat()
+    try:
+        final_stat = source_path.stat()
+    except OSError as exc:
+        raise KaikkiImportError(f"Cannot re-inspect source artifact: {exc}") from exc
     if final_stat.st_size != stat.st_size or final_stat.st_mtime_ns != stat.st_mtime_ns:
         raise KaikkiImportError("Source artifact changed while it was being hashed")
-    return ArtifactIdentity(
+    identity = ArtifactIdentity(
         path=source_path,
         sha256=digest.hexdigest(),
         byte_size=stat.st_size,
         modified_ns=stat.st_mtime_ns,
     )
+    if expected_sha256 is not None:
+        expected = _normalize_sha256(expected_sha256, field_name="expected_sha256")
+        if identity.sha256 != expected:
+            raise KaikkiImportError(
+                "Source artifact SHA-256 mismatch: "
+                f"expected {expected}, calculated {identity.sha256}"
+            )
+    return identity
 
 
 class KaikkiImporter:
@@ -202,17 +273,33 @@ class KaikkiImporter:
             )
         if not 1 <= batch_size <= _MAX_BATCH_SIZE:
             raise ValueError(f"batch_size must be between 1 and {_MAX_BATCH_SIZE:,}")
-        if not source_version.strip():
+        normalized_source_version = source_version.strip()
+        normalized_source_url = source_url.strip()
+        if not normalized_source_version:
             raise ValueError("source_version must be non-empty")
-        if not source_url.startswith("https://"):
+        if not normalized_source_url.startswith("https://"):
             raise ValueError("source_url must use HTTPS")
         self.repository = repository
-        self.source_version = source_version.strip()
-        self.source_url = source_url.strip()
+        self.source_version = normalized_source_version
+        self.source_url = normalized_source_url
         self.batch_size = batch_size
         self.languages = frozenset(
             canonicalize_language_tag(language) for language in languages
         )
+        configuration_json = canonical_json(
+            {
+                "database_path": str(
+                    self.repository.database.db_path.expanduser().resolve()
+                ),
+                "format_version": _IMPORT_FORMAT_VERSION,
+                "languages": sorted(self.languages),
+                "source_url": self.source_url,
+                "source_version": self.source_version,
+            }
+        )
+        self.configuration_sha256 = hashlib.sha256(
+            configuration_json.encode("utf-8")
+        ).hexdigest()
 
     def import_artifact(
         self,
@@ -226,6 +313,17 @@ class KaikkiImporter:
         if max_entries is not None and max_entries <= 0:
             raise ValueError("max_entries must be positive when provided")
         artifact.assert_unchanged()
+        checkpoint = _load_checkpoint(checkpoint_path)
+        if checkpoint is not None:
+            if checkpoint.artifact_sha256 != artifact.sha256:
+                raise KaikkiImportError(
+                    "Checkpoint artifact digest does not match the selected file"
+                )
+            if checkpoint.configuration_sha256 != self.configuration_sha256:
+                raise KaikkiImportError(
+                    "Checkpoint import configuration does not match the selected "
+                    "database, source metadata, or language filters"
+                )
         source = get_source("kaikki-wiktionary")
         snapshot = SourceSnapshot(
             source_id=source.source_id,
@@ -247,7 +345,6 @@ class KaikkiImporter:
             ),
         )
         snapshot_id = self.repository.register_snapshot(snapshot)
-        checkpoint = _load_checkpoint(checkpoint_path)
         start_line = 1
         imported_before = 0
         if checkpoint is not None:
@@ -320,8 +417,9 @@ class KaikkiImporter:
                         _save_checkpoint(
                             checkpoint_path,
                             KaikkiCheckpoint(
-                                schema_version=1,
+                                schema_version=_CHECKPOINT_SCHEMA_VERSION,
                                 artifact_sha256=artifact.sha256,
+                                configuration_sha256=self.configuration_sha256,
                                 snapshot_id=snapshot_id,
                                 next_line=line_number + 1,
                                 imported_entries=imported_before + total.attempted,
@@ -336,8 +434,9 @@ class KaikkiImporter:
                 _save_checkpoint(
                     checkpoint_path,
                     KaikkiCheckpoint(
-                        schema_version=1,
+                        schema_version=_CHECKPOINT_SCHEMA_VERSION,
                         artifact_sha256=artifact.sha256,
+                        configuration_sha256=self.configuration_sha256,
                         snapshot_id=snapshot_id,
                         next_line=last_line + 1,
                         imported_entries=imported_before + total.attempted,
@@ -735,18 +834,18 @@ def _load_checkpoint(path: Optional[Path]) -> Optional[KaikkiCheckpoint]:
         checkpoint = KaikkiCheckpoint(
             schema_version=int(raw["schema_version"]),
             artifact_sha256=str(raw["artifact_sha256"]),
+            configuration_sha256=str(raw["configuration_sha256"]),
             snapshot_id=int(raw["snapshot_id"]),
             next_line=int(raw["next_line"]),
             imported_entries=int(raw["imported_entries"]),
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise KaikkiImportError(f"Invalid import checkpoint: {exc}") from exc
-    if checkpoint.schema_version != 1:
+    if checkpoint.schema_version != _CHECKPOINT_SCHEMA_VERSION:
         raise KaikkiImportError(
-            f"Unsupported checkpoint schema {checkpoint.schema_version}"
+            f"Unsupported checkpoint schema {checkpoint.schema_version}; "
+            "restart the import with a new checkpoint"
         )
-    if checkpoint.next_line < 1 or checkpoint.imported_entries < 0:
-        raise KaikkiImportError("Checkpoint counters must be non-negative")
     return checkpoint
 
 

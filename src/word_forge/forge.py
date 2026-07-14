@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, List, Optional
 
 from word_forge.vectorizer.embedding_models import DEFAULT_EMBEDDING_MODEL
@@ -407,6 +408,117 @@ def run_source_catalog(
     return 0
 
 
+def run_kaikki_import(
+    artifact_path: Path,
+    *,
+    source_version: str,
+    source_url: str,
+    accept_source_license: bool,
+    db_path: Optional[Path] = None,
+    checkpoint_path: Optional[Path] = None,
+    disable_checkpoint: bool = False,
+    expected_sha256: Optional[str] = None,
+    batch_size: int = 500,
+    languages: Iterable[str] = (),
+    max_entries: Optional[int] = None,
+    json_output: bool = False,
+) -> int:
+    """Inspect and import one local Kaikki artifact through the public CLI path."""
+
+    from word_forge.database.database_manager import DatabaseError, DBManager
+    from word_forge.database.lexical_repository import LexicalRepository
+    from word_forge.sources.kaikki import (
+        KaikkiImporter,
+        KaikkiImportError,
+        inspect_artifact,
+    )
+
+    if not accept_source_license:
+        LOGGER.error(
+            "Kaikki contains Wiktionary-derived data. Review the exact source "
+            "terms, then pass --accept-source-license."
+        )
+        return 2
+
+    database: Optional[DBManager] = None
+    try:
+        artifact = inspect_artifact(
+            artifact_path,
+            expected_sha256=expected_sha256,
+        )
+        effective_checkpoint = None
+        if not disable_checkpoint:
+            effective_checkpoint = checkpoint_path or artifact.path.with_name(
+                f"{artifact.path.name}.word-forge.checkpoint.json"
+            )
+
+        database = DBManager(db_path=db_path)
+        importer = KaikkiImporter(
+            LexicalRepository(database),
+            source_version=source_version,
+            source_url=source_url,
+            accept_source_license=True,
+            batch_size=batch_size,
+            languages=tuple(languages),
+        )
+        report = importer.import_artifact(
+            artifact,
+            checkpoint_path=effective_checkpoint,
+            max_entries=max_entries,
+        )
+        payload = {
+            "schema_version": 1,
+            "source_id": "kaikki-wiktionary",
+            "database_path": str(database.db_path.expanduser().resolve()),
+            "checkpoint_path": (
+                str(effective_checkpoint.expanduser().resolve())
+                if effective_checkpoint is not None
+                else None
+            ),
+            "report": report.to_dict(),
+        }
+        if json_output:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            writes = report.write_report
+            print(
+                f"Imported {writes.attempted:,} entries "
+                f"({writes.inserted:,} inserted, {writes.updated:,} updated) "
+                f"in {report.elapsed_seconds:.2f}s."
+            )
+            print(
+                f"Read {report.lines_read:,} lines in {report.batches:,} batches; "
+                f"skipped {report.skipped_entries:,}."
+            )
+            print(f"Snapshot: {report.snapshot_id}")
+            print(f"SHA-256: {report.artifact_sha256}")
+            print(f"Database: {payload['database_path']}")
+            if effective_checkpoint is not None:
+                print(f"Checkpoint: {payload['checkpoint_path']}")
+        return 0
+    except ValueError as exc:
+        LOGGER.error("Invalid Kaikki import options: %s", exc)
+        return 2
+    except KaikkiImportError as exc:
+        location = ""
+        if exc.line_number is not None:
+            location = (
+                f" (line {exc.line_number}, committed through "
+                f"{exc.committed_through})"
+            )
+        LOGGER.error("Kaikki import failed%s: %s", location, exc)
+        return 1
+    except DatabaseError as exc:
+        LOGGER.error("Kaikki database operation failed: %s", exc)
+        return 1
+    except KeyboardInterrupt:
+        LOGGER.warning("Kaikki import interrupted; resume with the same checkpoint")
+        return 130
+    finally:
+        if database is not None:
+            database.close()
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
@@ -740,6 +852,84 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Show only core and permissive sources eligible for automation",
     )
 
+    data_parser = subparsers.add_parser(
+        "data", help="Import and manage governed lexical data"
+    )
+    data_sub = data_parser.add_subparsers(dest="data_command")
+    kaikki_parser = data_sub.add_parser(
+        "import-kaikki",
+        help="Stream a local Kaikki/Wiktextract JSONL artifact into SQLite",
+    )
+    kaikki_parser.add_argument(
+        "artifact",
+        type=Path,
+        help="Path to a plain, gzip, or bzip2 JSON Lines artifact",
+    )
+    kaikki_parser.add_argument(
+        "--source-version",
+        required=True,
+        help="Exact upstream release date or immutable source version",
+    )
+    kaikki_parser.add_argument(
+        "--source-url",
+        required=True,
+        help="HTTPS URL from which this exact artifact was obtained",
+    )
+    kaikki_parser.add_argument(
+        "--accept-source-license",
+        action="store_true",
+        help="Acknowledge the artifact's attribution/share-alike source terms",
+    )
+    kaikki_parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override the configured SQLite database path",
+    )
+    checkpoint_group = kaikki_parser.add_mutually_exclusive_group()
+    checkpoint_group.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Checkpoint path (default: a sidecar next to the artifact)",
+    )
+    checkpoint_group.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Disable resumable checkpoint writes",
+    )
+    kaikki_parser.add_argument(
+        "--expected-sha256",
+        default=None,
+        metavar="HEX",
+        help="Reject the artifact unless its exact-byte SHA-256 matches",
+    )
+    kaikki_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=500,
+        help="Entries per atomic database transaction (1-10000; default: 500)",
+    )
+    kaikki_parser.add_argument(
+        "--language",
+        dest="languages",
+        action="append",
+        default=[],
+        metavar="BCP47",
+        help="Import only this language; repeat to select multiple languages",
+    )
+    kaikki_parser.add_argument(
+        "--max-entries",
+        type=int,
+        default=None,
+        help="Stop after this many matching entries (useful for staged imports)",
+    )
+    kaikki_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a stable machine-readable import report",
+    )
+
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -794,6 +984,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             json_output=args.json,
             unattended_only=args.unattended_eligible,
         )
+    elif args.command == "data":
+        if args.data_command == "import-kaikki":
+            exit_code = run_kaikki_import(
+                args.artifact,
+                source_version=args.source_version,
+                source_url=args.source_url,
+                accept_source_license=args.accept_source_license,
+                db_path=args.db_path,
+                checkpoint_path=args.checkpoint,
+                disable_checkpoint=args.no_checkpoint,
+                expected_sha256=args.expected_sha256,
+                batch_size=args.batch_size,
+                languages=args.languages,
+                max_entries=args.max_entries,
+                json_output=args.json,
+            )
+        else:
+            data_parser.print_help()
+            exit_code = 1
     elif args.command == "graph":
         if args.graph_command == "build":
             exit_code = (

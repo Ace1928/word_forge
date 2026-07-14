@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -95,6 +96,106 @@ def test_cli_sources_unattended_filter(capsys: pytest.CaptureFixture[str]) -> No
     assert report["filters"]["unattended_only"] is True
     assert all(source["unattended_eligible"] for source in report["sources"])
     assert "dbnary" not in {source["id"] for source in report["sources"]}
+
+
+def test_cli_kaikki_import_checkpoints_and_resumes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The public CLI performs real normalized writes and resumes safely."""
+
+    from word_forge import forge
+    from word_forge.database.database_manager import DBManager
+
+    records = [
+        {
+            "id": "en-forge-noun",
+            "word": "forge",
+            "lang_code": "en",
+            "pos": "noun",
+            "senses": [{"glosses": ["A workshop containing a furnace."]}],
+        },
+        {
+            "id": "en-forge-verb",
+            "word": "forge",
+            "lang_code": "en",
+            "pos": "verb",
+            "senses": [{"glosses": ["To shape metal by heating and hammering."]}],
+        },
+    ]
+    artifact = tmp_path / "kaikki.jsonl"
+    artifact.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    database_path = tmp_path / "kaikki.sqlite"
+    base_arguments = [
+        "data",
+        "import-kaikki",
+        str(artifact),
+        "--source-version",
+        "2026-07-06",
+        "--source-url",
+        "https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz",
+        "--expected-sha256",
+        digest,
+        "--accept-source-license",
+        "--language",
+        "en",
+        "--batch-size",
+        "1",
+        "--db-path",
+        str(database_path),
+        "--json",
+    ]
+
+    assert forge.main(base_arguments + ["--max-entries", "1"]) == 0
+    first = json.loads(capsys.readouterr().out)
+
+    assert first["report"]["write_report"]["inserted"] == 1
+    checkpoint = Path(first["checkpoint_path"])
+    assert checkpoint == tmp_path / "kaikki.jsonl.word-forge.checkpoint.json"
+    assert checkpoint.exists()
+
+    assert forge.main(base_arguments) == 0
+    resumed = json.loads(capsys.readouterr().out)
+
+    assert resumed["report"]["first_line"] == 2
+    assert resumed["report"]["write_report"]["inserted"] == 1
+    database = DBManager(database_path)
+    try:
+        assert database.execute_scalar("SELECT COUNT(*) FROM lexical_entries") == 2
+        assert database.execute_scalar("SELECT COUNT(*) FROM lexical_senses") == 2
+    finally:
+        database.close()
+
+
+def test_cli_kaikki_import_requires_license_before_creating_database(
+    tmp_path: Path,
+) -> None:
+    from word_forge import forge
+
+    artifact = tmp_path / "kaikki.jsonl"
+    artifact.write_text("{}\n", encoding="utf-8")
+    database_path = tmp_path / "must-not-exist.sqlite"
+
+    assert (
+        forge.main(
+            [
+                "data",
+                "import-kaikki",
+                str(artifact),
+                "--source-version",
+                "2026-07-06",
+                "--source-url",
+                "https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz",
+                "--db-path",
+                str(database_path),
+            ]
+        )
+        == 2
+    )
+    assert not database_path.exists()
 
 
 def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:
