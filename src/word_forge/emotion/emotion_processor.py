@@ -140,40 +140,36 @@ class RecursiveEmotionProcessor:
                 # Return simplified emotion when recursion limit reached
                 return self._create_fallback_concept(term)
 
-            try:
-                # Get word ID from database
-                word_id = self._get_word_id(term)
-                if not word_id:
-                    # Handle unknown words by creating a new entry
-                    word_id = self._create_new_word_entry(term)
+            # Get word ID from database
+            word_id = self._get_word_id(term)
+            if not word_id:
+                # Handle unknown words by creating a new entry
+                word_id = self._create_new_word_entry(term)
 
-                # Get base emotional vector
-                emotion_vector = self._extract_base_emotion(word_id, term)
+            # Get base emotional vector
+            emotion_vector = self._extract_base_emotion(word_id, term)
 
-                # Apply contextual factors if provided
-                if context:
-                    emotion_vector = context.apply_to_vector(emotion_vector)
+            # Apply contextual factors if provided
+            if context:
+                emotion_vector = context.apply_to_vector(emotion_vector)
 
-                # Create the emotional concept
-                concept = EmotionalConcept(
-                    term=term, word_id=word_id, primary_emotion=emotion_vector
-                )
+            # Create the emotional concept
+            concept = EmotionalConcept(
+                term=term, word_id=word_id, primary_emotion=emotion_vector
+            )
 
-                # Add secondary emotions based on relationships
-                self._add_secondary_emotions(concept)
+            # Add secondary emotions based on relationships
+            self._add_secondary_emotions(concept)
 
-                # Add meta-emotions (emotions about emotions)
-                self._add_meta_emotions(concept)
+            # Add meta-emotions (emotions about emotions)
+            self._add_meta_emotions(concept)
 
-                # Add emotional patterns
-                self._add_emotional_patterns(concept)
+            # Add emotional patterns
+            self._add_emotional_patterns(concept)
 
-                # Cache the result
-                self._cache[cache_key] = concept
-                return concept
-
-            finally:
-                self._processing_depth -= 1
+            # Cache the result
+            self._cache[cache_key] = concept
+            return concept
 
     def analyze_relationship(
         self, term1: str, term2: str, relationship_type: str

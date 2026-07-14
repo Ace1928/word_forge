@@ -485,6 +485,7 @@ class TestProcessTerm:
         assert isinstance(concept, EmotionalConcept)
         assert concept.term == "love"
         assert isinstance(concept.primary_emotion, EmotionVector)
+        assert processor._processing_depth == 0
 
     def test_process_term_caches_result(self, tmp_path: Path) -> None:
         """Test process_term caches the result."""
