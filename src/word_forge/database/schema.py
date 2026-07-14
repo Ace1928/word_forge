@@ -14,7 +14,7 @@ from word_forge.parser.linguistics import (
     normalize_term,
 )
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 SQL_CREATE_WORDS_TABLE = """
 CREATE TABLE IF NOT EXISTS words (
@@ -126,6 +126,163 @@ CREATE TABLE IF NOT EXISTS graph_metadata (
 )
 """
 
+SQL_CREATE_SOURCE_SNAPSHOTS_TABLE = """
+CREATE TABLE IF NOT EXISTS source_snapshots (
+    id INTEGER PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    retrieved_at REAL NOT NULL CHECK (retrieved_at >= 0.0),
+    artifact_sha256 TEXT NOT NULL DEFAULT ''
+        CHECK (artifact_sha256 = '' OR length(artifact_sha256) = 64),
+    artifact_bytes INTEGER CHECK (artifact_bytes IS NULL OR artifact_bytes >= 0),
+    license_name TEXT NOT NULL,
+    license_url TEXT NOT NULL,
+    attribution TEXT NOT NULL,
+    importer_version TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    UNIQUE(source_id, source_version, artifact_sha256)
+)
+"""
+
+SQL_CREATE_LEXICAL_ENTRIES_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_entries (
+    id INTEGER PRIMARY KEY,
+    word_id INTEGER NOT NULL,
+    snapshot_id INTEGER NOT NULL,
+    source_entry_id TEXT NOT NULL,
+    lemma TEXT NOT NULL,
+    normalized_lemma TEXT NOT NULL,
+    language TEXT NOT NULL,
+    script TEXT NOT NULL,
+    part_of_speech TEXT NOT NULL DEFAULT '',
+    lexical_category TEXT NOT NULL DEFAULT '',
+    etymology TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    confidence REAL NOT NULL DEFAULT 1.0
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(word_id) REFERENCES words(id) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_id) REFERENCES source_snapshots(id) ON DELETE RESTRICT,
+    UNIQUE(snapshot_id, source_entry_id)
+)
+"""
+
+SQL_CREATE_LEXICAL_FORMS_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_forms (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL,
+    source_form_id TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL CHECK (position >= 0),
+    form TEXT NOT NULL,
+    normalized_form TEXT NOT NULL,
+    language TEXT NOT NULL,
+    script TEXT NOT NULL,
+    features_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY(entry_id) REFERENCES lexical_entries(id) ON DELETE CASCADE,
+    UNIQUE(entry_id, normalized_form, language, features_json)
+)
+"""
+
+SQL_CREATE_LEXICAL_SENSES_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_senses (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL,
+    source_sense_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    concept_id TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    confidence REAL NOT NULL DEFAULT 1.0
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+    FOREIGN KEY(entry_id) REFERENCES lexical_entries(id) ON DELETE CASCADE,
+    UNIQUE(entry_id, source_sense_id)
+)
+"""
+
+SQL_CREATE_LEXICAL_GLOSSES_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_glosses (
+    id INTEGER PRIMARY KEY,
+    sense_id INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    text TEXT NOT NULL,
+    language TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('definition', 'gloss', 'raw')),
+    generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+    FOREIGN KEY(sense_id) REFERENCES lexical_senses(id) ON DELETE CASCADE,
+    UNIQUE(sense_id, position, kind)
+)
+"""
+
+SQL_CREATE_LEXICAL_EXAMPLES_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_examples (
+    id INTEGER PRIMARY KEY,
+    sense_id INTEGER NOT NULL,
+    source_example_id TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL CHECK (position >= 0),
+    text TEXT NOT NULL,
+    language TEXT NOT NULL,
+    translation TEXT NOT NULL DEFAULT '',
+    translation_language TEXT NOT NULL DEFAULT '',
+    reference TEXT NOT NULL DEFAULT '',
+    generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+    FOREIGN KEY(sense_id) REFERENCES lexical_senses(id) ON DELETE CASCADE,
+    UNIQUE(sense_id, text, language)
+)
+"""
+
+SQL_CREATE_LEXICAL_PRONUNCIATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_pronunciations (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL,
+    form_id INTEGER,
+    source_record_id TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL CHECK (position >= 0),
+    notation TEXT NOT NULL,
+    transcription TEXT NOT NULL,
+    language TEXT NOT NULL,
+    dialect TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    audio_url TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+    FOREIGN KEY(entry_id) REFERENCES lexical_entries(id) ON DELETE CASCADE,
+    FOREIGN KEY(form_id) REFERENCES lexical_forms(id) ON DELETE CASCADE,
+    UNIQUE(entry_id, notation, transcription, dialect, source_record_id)
+)
+"""
+
+SQL_CREATE_LEXICAL_RELATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS lexical_relations (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL,
+    sense_id INTEGER,
+    scope_key TEXT NOT NULL,
+    source_record_id TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL CHECK (position >= 0),
+    relationship_type TEXT NOT NULL,
+    target_term TEXT NOT NULL,
+    target_normalized_term TEXT NOT NULL,
+    target_language TEXT NOT NULL,
+    target_source_entry_id TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    FOREIGN KEY(entry_id) REFERENCES lexical_entries(id) ON DELETE CASCADE,
+    FOREIGN KEY(sense_id) REFERENCES lexical_senses(id) ON DELETE CASCADE,
+    UNIQUE(
+        entry_id, scope_key, relationship_type, target_normalized_term,
+        target_language, target_source_entry_id, source_record_id
+    )
+)
+"""
+
 _TABLE_STATEMENTS: Tuple[str, ...] = (
     SQL_CREATE_WORDS_TABLE,
     SQL_CREATE_RELATIONSHIPS_TABLE,
@@ -134,6 +291,14 @@ _TABLE_STATEMENTS: Tuple[str, ...] = (
     SQL_CREATE_PRONUNCIATIONS_TABLE,
     SQL_CREATE_PHONEMES_TABLE,
     SQL_CREATE_GRAPH_METADATA_TABLE,
+    SQL_CREATE_SOURCE_SNAPSHOTS_TABLE,
+    SQL_CREATE_LEXICAL_ENTRIES_TABLE,
+    SQL_CREATE_LEXICAL_FORMS_TABLE,
+    SQL_CREATE_LEXICAL_SENSES_TABLE,
+    SQL_CREATE_LEXICAL_GLOSSES_TABLE,
+    SQL_CREATE_LEXICAL_EXAMPLES_TABLE,
+    SQL_CREATE_LEXICAL_PRONUNCIATIONS_TABLE,
+    SQL_CREATE_LEXICAL_RELATIONS_TABLE,
 )
 
 _INDEX_STATEMENTS: Tuple[str, ...] = (
@@ -146,6 +311,22 @@ _INDEX_STATEMENTS: Tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_emotional_word "
     "ON emotional_relationships(word_id)",
     "CREATE INDEX IF NOT EXISTS idx_pronunciations_word " "ON pronunciations(word_id)",
+    "CREATE INDEX IF NOT EXISTS idx_source_snapshots_source "
+    "ON source_snapshots(source_id, source_version)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_entries_word "
+    "ON lexical_entries(word_id)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_entries_identity "
+    "ON lexical_entries(normalized_lemma, language)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_entries_snapshot "
+    "ON lexical_entries(snapshot_id)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_forms_identity "
+    "ON lexical_forms(normalized_form, language)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_senses_entry "
+    "ON lexical_senses(entry_id, position)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_glosses_text "
+    "ON lexical_glosses(text, language)",
+    "CREATE INDEX IF NOT EXISTS idx_lexical_relations_target "
+    "ON lexical_relations(target_normalized_term, target_language)",
 )
 
 
@@ -185,7 +366,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> MigrationReport:
         )
 
     words_exist = _table_exists(connection, "words")
-    migrated = False
+    migrated = words_exist and previous_version < CURRENT_SCHEMA_VERSION
     merged_collisions = 0
     if words_exist and not _core_schema_is_current(connection):
         merged_collisions = _migrate_core_schema(connection)
@@ -590,6 +771,14 @@ __all__ = [
     "SQL_CREATE_PRONUNCIATIONS_TABLE",
     "SQL_CREATE_RELATIONSHIPS_TABLE",
     "SQL_CREATE_WORDS_TABLE",
+    "SQL_CREATE_LEXICAL_ENTRIES_TABLE",
+    "SQL_CREATE_LEXICAL_EXAMPLES_TABLE",
+    "SQL_CREATE_LEXICAL_FORMS_TABLE",
+    "SQL_CREATE_LEXICAL_GLOSSES_TABLE",
+    "SQL_CREATE_LEXICAL_PRONUNCIATIONS_TABLE",
+    "SQL_CREATE_LEXICAL_RELATIONS_TABLE",
+    "SQL_CREATE_LEXICAL_SENSES_TABLE",
+    "SQL_CREATE_SOURCE_SNAPSHOTS_TABLE",
     "SchemaMigrationError",
     "ensure_schema",
 ]
