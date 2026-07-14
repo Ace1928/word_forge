@@ -5,8 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import pytest
 import numpy as np
+import pytest
 
 # Skip all tests in this module if vector dependencies are unavailable
 _VECTOR_AVAILABLE = (
@@ -21,6 +21,7 @@ pytestmark = pytest.mark.skipif(
 
 from word_forge.configs.config_essentials import StorageType
 from word_forge.vectorizer.vector_store import (
+    DimensionMismatchError,
     InitializationError,
     SearchError,
     VectorStore,
@@ -85,18 +86,50 @@ class TestVectorStoreBehavior:
         assert stored > 0
         assert store.collection.count() > 0
 
-    def test_upsert_normalizes_mismatched_dimension(self) -> None:
+    def test_initialization_rejects_dimension_override_for_other_model(self) -> None:
+        with pytest.raises(DimensionMismatchError, match="does not match"):
+            VectorStore(
+                dimension=1024,
+                storage_type=StorageType.MEMORY,
+                demo_mode=True,
+                model_name=TEST_MODEL,
+            )
+
+    def test_upsert_rejects_mismatched_dimension(self) -> None:
         store = VectorStore(
-            dimension=1024,
+            dimension=384,
             storage_type=StorageType.MEMORY,
             demo_mode=True,
             model_name=TEST_MODEL,
         )
-        small_vec = np.ones(384, dtype=np.float32)
-        store.upsert("abc", small_vec, metadata={"content_type": "word"})
-        assert store.collection.count() == 1
-        stored = store.collection._store["abc"]["embedding"]
-        assert stored.shape[0] == store.dimension
+
+        with pytest.raises(DimensionMismatchError, match="expected 384"):
+            store.upsert(
+                "abc",
+                np.ones(128, dtype=np.float32),
+                metadata={"content_type": "word"},
+            )
+
+    def test_search_preserves_non_numeric_vector_ids(self) -> None:
+        store = VectorStore(
+            dimension=384,
+            storage_type=StorageType.MEMORY,
+            demo_mode=True,
+            model_name=TEST_MODEL,
+        )
+        vector = np.ones(384, dtype=np.float32)
+        store.upsert(
+            "ja-definition",
+            vector,
+            metadata={"content_type": "definition", "language": "ja"},
+            text="再帰的な言語の定義",
+        )
+
+        results = store.search(query_vector=vector, k=1)
+
+        assert len(results) == 1
+        assert results[0]["id"] == "ja-definition"
+        assert results[0]["text"] == "再帰的な言語の定義"
 
 
 class TestVectorStorePersistence:

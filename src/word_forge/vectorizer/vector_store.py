@@ -28,6 +28,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import TypeAlias  # Added TypeAlias
+from typing import cast  # Keep cast for external library interactions
 from typing import (
     Any,
     Dict,
@@ -36,10 +38,8 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
-    TypeAlias,  # Added TypeAlias
     TypedDict,
     Union,
-    cast,  # Keep cast for external library interactions
     overload,
 )
 
@@ -54,6 +54,7 @@ except Exception as import_error:  # pragma: no cover - allow running without ch
 else:
     _VECTOR_IMPORT_ERROR = None
 
+_FAISS_IMPORT_ERROR: Optional[Exception]
 try:  # Optional FAISS dependency for fallback persistence
     import faiss  # type: ignore
 except (
@@ -68,8 +69,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from word_forge.config import config
+from word_forge.configs.config_essentials import StorageType
 from word_forge.database.database_manager import DatabaseError, DBManager, WordEntryDict
 from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.vectorizer.embedding_models import (
+    collection_name_for_model,
+    format_embedding_text,
+)
 from word_forge.vectorizer.model_utils import get_embedding_dimension
 
 # Type definitions for clarity and constraint
@@ -130,13 +136,13 @@ class SearchResultDict(TypedDict):
     relevant metadata and context.
 
     Attributes:
-        id: int - Unique identifier of the matching item
+    id: VectorID - Unique identifier of the matching item
         distance: float - Semantic distance from query (lower is better)
         metadata: Optional[VectorMetadata] - Associated metadata for the match
         text: Optional[str] - Raw text content if available
     """
 
-    id: int
+    id: VectorID
     distance: float
     metadata: Optional[VectorMetadata]
     text: Optional[str]
@@ -191,6 +197,11 @@ class ChromaCollection(Protocol):
         """Return the number of items in the collection."""
         ...
 
+    @property
+    def metadata(self) -> Optional[Dict[str, Any]]:
+        """Return collection metadata when supported by the backend."""
+        ...
+
     def upsert(
         self,
         ids: List[str],
@@ -237,10 +248,6 @@ class ChromaClient(Protocol):
     def persist(self) -> None:
         """Persist the database to disk."""
         ...
-
-
-# Using StorageType from centralized config
-StorageType = config.vectorizer.storage_type.__class__
 
 
 class VectorStoreError(DatabaseError):
@@ -317,9 +324,6 @@ class ContentProcessingError(VectorStoreError):
     pass
 
 
-SQLITE_DB_FILENAME = "vector_store.sqlite3"
-
-
 class SQLiteFAISSCollection:
     """Lightweight SQLite + FAISS collection used when Chroma is unavailable."""
 
@@ -355,8 +359,12 @@ class SQLiteFAISSCollection:
         metadatas: Optional[List[Dict[str, Any]]] = None,
         documents: Optional[List[str]] = None,
     ) -> None:
-        metadata_list = metadatas or [None] * len(ids)
-        documents_list = documents or [None] * len(ids)
+        metadata_list: List[Optional[Dict[str, Any]]] = (
+            list(metadatas) if metadatas is not None else [None] * len(ids)
+        )
+        documents_list: List[Optional[str]] = (
+            list(documents) if documents is not None else [None] * len(ids)
+        )
 
         with self._lock:
             for idx, vec_id in enumerate(ids):
@@ -483,7 +491,8 @@ class SQLiteFAISSCollection:
         if not payload:
             return None
         try:
-            return json.loads(payload)
+            decoded = json.loads(payload)
+            return decoded if isinstance(decoded, dict) else None
         except json.JSONDecodeError:
             return None
 
@@ -521,8 +530,12 @@ class InMemoryCollection:
         metadatas: Optional[List[Dict[str, Any]]] = None,
         documents: Optional[List[str]] = None,
     ) -> None:
-        metadata_list = metadatas or [None] * len(ids)
-        documents_list = documents or [None] * len(ids)
+        metadata_list: List[Optional[Dict[str, Any]]] = (
+            list(metadatas) if metadatas is not None else [None] * len(ids)
+        )
+        documents_list: List[Optional[str]] = (
+            list(documents) if documents is not None else [None] * len(ids)
+        )
         for idx, vec_id in enumerate(ids):
             vector = np.asarray(embeddings[idx], dtype=np.float32)
             if vector.shape[0] != self.dimension:
@@ -642,12 +655,12 @@ class VectorStore:
     - Conversation messages
     - Emotional valence and arousal
 
-    Uses the advanced Multilingual-E5-large-instruct model to create contextually rich
-    embeddings with instruction-based formatting for optimal retrieval performance.
+    Uses a portable multilingual E5 model by default and applies each supported
+    model's documented query/document formatting contract.
 
     Attributes:
         model: SentenceTransformer model for generating embeddings
-        dimension: Vector dimension size (typically 1024 for E5 models)
+        dimension: Vector dimension size (384 for the portable default)
         model_name: Name of the embedding model being used
         client: Backend-specific client for vector storage operations
         collection: Backend collection storing the vectors
@@ -663,6 +676,7 @@ class VectorStore:
     dimension: int
     model: SentenceTransformer
     model_name: str
+    collection_name: str
     client: Union[ChromaClient, SQLiteFAISSCollection, InMemoryCollection]
     collection: Union[ChromaCollection, SQLiteFAISSCollection, InMemoryCollection]
     index_path: Path
@@ -697,7 +711,8 @@ class VectorStore:
             model_name: Optional embedding model to use. Defaults to config.
             index_path: Optional path for vector storage. Defaults to config.
             storage_type: Optional storage type (memory or disk). Defaults to config.
-            collection_name: Optional name for the vector collection. Defaults to config or 'word_forge_vectors'.
+            collection_name: Optional collection name. By default, derive an
+                isolated name from the complete model identifier.
             db_manager: Optional database manager for content lookup.
             emotion_manager: Optional emotion manager for sentiment analysis.
             demo_mode: Explicit flag to allow ephemeral in-memory demo storage.
@@ -722,7 +737,12 @@ class VectorStore:
         self.storage_type = storage_type or config.vectorizer.storage_type
         self.db_manager = db_manager
         self.emotion_manager = emotion_manager
-        self.model_name = model_name or config.vectorizer.model_name
+        self.model_name = (model_name or config.vectorizer.model_name).strip()
+        self.collection_name = (
+            collection_name
+            or (config.vectorizer.collection_name if model_name is None else None)
+            or collection_name_for_model(self.model_name)
+        )
 
         self.demo_mode = bool(demo_mode)
         if self.storage_type == StorageType.MEMORY and not self.demo_mode:
@@ -750,28 +770,41 @@ class VectorStore:
                 f"Failed to load embedding model '{self.model_name}': {str(e)}"
             ) from e
 
-        # Determine the vector dimension
+        # Determine and strictly validate the vector dimension. Padding or
+        # truncating embeddings from a different model destroys their geometry.
         try:
-            if dimension is not None:
-                self.dimension = dimension
-            elif (
+            model_dimension = get_embedding_dimension(self.model)
+            if model_dimension is None:
+                raise ModelLoadError(
+                    f"Could not infer valid dimension from model '{self.model_name}'"
+                )
+
+            configured_dimension = dimension
+            if configured_dimension is None and (
                 hasattr(config.vectorizer, "dimension")
                 and config.vectorizer.dimension is not None
                 and config.vectorizer.dimension > 0
             ):
-                self.dimension = config.vectorizer.dimension
-            else:
-                # Infer dimension from the loaded model
-                model_dimension = get_embedding_dimension(self.model)
-                if model_dimension is None:
-                    raise ModelLoadError(
-                        f"Could not infer valid dimension from model '{self.model_name}'"
-                    )
-                self.dimension = model_dimension
-                self.logger.info(
-                    f"Inferred dimension {self.dimension} from model '{self.model_name}'"
-                )
+                configured_dimension = config.vectorizer.dimension
 
+            if (
+                configured_dimension is not None
+                and configured_dimension != model_dimension
+            ):
+                raise DimensionMismatchError(
+                    f"Configured dimension {configured_dimension} does not match "
+                    f"model '{self.model_name}' dimension {model_dimension}. "
+                    "Remove the override or rebuild with the matching model."
+                )
+            self.dimension = model_dimension
+            self.logger.info(
+                "Using dimension %s from model '%s'",
+                self.dimension,
+                self.model_name,
+            )
+
+        except DimensionMismatchError:
+            raise
         except Exception as e:
             raise ModelLoadError(
                 f"Failed to determine vector dimension: {str(e)}"
@@ -790,10 +823,7 @@ class VectorStore:
             if chromadb is not None:
                 try:
                     self.client = self._create_client()
-                    collection_name = collection_name or (
-                        config.vectorizer.collection_name or "word_forge_vectors"
-                    )
-                    self.collection = self._initialize_collection(collection_name)
+                    self.collection = self._initialize_collection(self.collection_name)
                     self.backend_name = "chromadb"
                     chroma_ready = True
                 except Exception as e:
@@ -801,7 +831,7 @@ class VectorStore:
 
             if not chroma_ready:
                 try:
-                    sqlite_path = self.index_path / SQLITE_DB_FILENAME
+                    sqlite_path = self.index_path / f"{self.collection_name}.sqlite3"
                     self.collection = SQLiteFAISSCollection(sqlite_path, self.dimension)
                     self.client = self.collection
                     self.backend_name = "sqlite-faiss"
@@ -829,7 +859,8 @@ class VectorStore:
         self.logger.info(
             f"VectorStore initialized: model={self.model_name}, "
             f"dimension={self.dimension}, storage={self.storage_type.name.lower()}, "
-            f"backend={self.backend_name}, path={self.index_path}, demo_mode={self.demo_mode}"
+            f"collection={self.collection_name}, backend={self.backend_name}, "
+            f"path={self.index_path}, demo_mode={self.demo_mode}"
         )
 
     def _create_client(self) -> ChromaClient:
@@ -873,9 +904,23 @@ class VectorStore:
                 "dimension": self.dimension,
                 "model": self.model_name,
             }
-            collection = self.client.get_or_create_collection(
+            client = cast(ChromaClient, self.client)
+            collection = client.get_or_create_collection(
                 collection_name, metadata=metadata
             )
+            existing_metadata = getattr(collection, "metadata", None) or {}
+            existing_model = existing_metadata.get("model")
+            existing_dimension = existing_metadata.get("dimension")
+            if existing_model not in (None, self.model_name):
+                raise InitializationError(
+                    f"Collection '{collection_name}' was created for model "
+                    f"'{existing_model}', not '{self.model_name}'."
+                )
+            if existing_dimension not in (None, self.dimension):
+                raise DimensionMismatchError(
+                    f"Collection '{collection_name}' has dimension "
+                    f"{existing_dimension}, expected {self.dimension}."
+                )
             self.logger.info(
                 f"Connected to collection '{collection_name}' with {collection.count()} vectors"
             )
@@ -912,11 +957,7 @@ class VectorStore:
         self, vector: NDArray[np.float32], context: str
     ) -> NDArray[np.float32]:
         """
-        Coerce an embedding to the configured dimension by padding or truncating.
-
-        When upstream models change or cached indices expect a different shape,
-        resize the vector and re-normalize it to avoid runtime failures while
-        keeping cosine similarity meaningful.
+        Validate and unit-normalize an embedding without changing its dimension.
 
         Args:
             vector: Incoming embedding
@@ -925,43 +966,18 @@ class VectorStore:
         Returns:
             NDArray[np.float32]: Dimensionally aligned and normalized vector
         """
-        # Handle both numpy arrays and plain lists/sequences
-        if hasattr(vector, "shape"):
-            length = vector.shape[0] if len(vector.shape) > 0 else 0
-        else:
-            length = len(vector)
-            # Convert to numpy array if not already
-            vector = np.asarray(vector, dtype=np.float32)
-
-        if length == self.dimension:
-            return vector
-
-        if length == 0:
+        normalized = np.asarray(vector, dtype=np.float32)
+        if normalized.ndim != 1:
             raise DimensionMismatchError(
-                f"{context} is empty; expected {self.dimension}"
+                f"{context} must be one-dimensional; got shape {normalized.shape}"
             )
-
-        if length > self.dimension:
-            coerced = vector[: self.dimension]
-            self.logger.debug(
-                "%s truncated from dimension %s to %s", context, length, self.dimension
-            )
-        else:
-            pad_width = self.dimension - length
-            coerced = np.pad(vector, (0, pad_width), mode="constant")
-            self.logger.debug(
-                "%s padded from dimension %s to %s with zeros",
-                context,
-                length,
-                self.dimension,
-            )
-
-        # Renormalize to keep cosine similarity stable
-        norm = np.linalg.norm(coerced)
-        if norm > 0:
-            coerced = coerced / norm
-
-        return coerced.astype(np.float32)
+        self._validate_vector_dimension(normalized, context)
+        if not np.isfinite(normalized).all():
+            raise DimensionMismatchError(f"{context} contains non-finite values")
+        norm = float(np.linalg.norm(normalized))
+        if norm <= 0:
+            raise DimensionMismatchError(f"{context} has zero magnitude")
+        return (normalized / norm).astype(np.float32)
 
     def format_with_instruction(
         self, text: str, template_key: str = "search", is_query: bool = True
@@ -981,29 +997,16 @@ class VectorStore:
         Returns:
             Formatted text ready for embedding
         """
-        # Don't format if no templates available
-        if not self.instruction_templates:
-            return text
-        # Get template or use default
-        # Get template or use default
         template: Optional[InstructionTemplate] = self.instruction_templates.get(
             template_key, self.instruction_templates.get("default", None)
         )
-
-        # Return unformatted text if template is None
-        if template is None:
-            return text
-
-        # Format using appropriate template parts
-        task = template.get("task", "")
-        prefix = template.get("query_prefix" if is_query else "document_prefix", "")
-
-        if task and prefix:
-            return f"{task}\n{prefix}{text}"
-        elif prefix:
-            return f"{prefix}{text}"
-        else:
-            return text
+        task = template.get("task") if template is not None else None
+        return format_embedding_text(
+            self.model_name,
+            text,
+            is_query=is_query,
+            task=task,
+        )
 
     def embed_text(
         self,
@@ -1052,15 +1055,10 @@ class VectorStore:
             # Ensure correct type
             vector = vector.astype(np.float32)
 
-            # Normalize and validate dimensions
-            vector = self._normalize_vector_dimension(
-                vector,
-                context=f"Embedding for '{text[:30]}{'...' if len(text) > 30 else ''}'",
-            )
-            self._validate_vector_dimension(
-                vector,
-                context=f"Embedding for '{text[:30]}{'...' if len(text) > 30 else ''}'",
-            )
+            context = f"Embedding for '{text[:30]}{'...' if len(text) > 30 else ''}'"
+            self._validate_vector_dimension(vector, context=context)
+            if normalize:
+                vector = self._normalize_vector_dimension(vector, context=context)
 
             return vector
 
@@ -1167,10 +1165,19 @@ class VectorStore:
         term = entry["term"]
         definition = entry["definition"]
 
-        # Handle usage_examples that could be either string or list
-        usage_examples = entry.get("usage_examples", "")
-        usage_examples = "; ".join(usage_examples)
-        examples = self._parse_usage_examples(usage_examples)
+        raw_examples: object = entry.get("usage_examples", [])
+        if isinstance(raw_examples, str):
+            examples = self._parse_usage_examples(raw_examples)
+        elif isinstance(raw_examples, list):
+            examples = [
+                example.strip()
+                for example in raw_examples
+                if isinstance(example, str) and example.strip()
+            ]
+        else:
+            raise ContentProcessingError(
+                "usage_examples must be a string or list of strings"
+            )
 
         language = entry.get("language", "en")
 
@@ -1179,7 +1186,12 @@ class VectorStore:
 
         try:
             # 1. Process the word term itself
-            word_embedding = self.embed_text(term, template_key="term", normalize=True)
+            word_embedding = self.embed_text(
+                term,
+                template_key="term",
+                is_query=False,
+                normalize=True,
+            )
 
             # Combine standard metadata with emotion data
             emotion_info = self._get_emotion_info(int(word_id))
@@ -1694,41 +1706,41 @@ class VectorStore:
             List[Optional[str]], query_results.get("documents", [[None] * len(ids)])[0]
         )
 
-        # Convert similarities to distances if needed
-        if distances and min(distances) >= 0 and max(distances) <= 1:
+        # FAISS backends return cosine similarity while Chroma returns distance.
+        if distances and self.backend_name in {"memory-demo", "sqlite-faiss"}:
             distances = self._convert_similarities_to_distances(distances)
 
         # Build result list
         for i, result_id in enumerate(ids):
-            try:
-                # Extract the original numeric ID if possible
-                original_id = (
-                    int(result_id.split("_")[1]) if "_" in result_id else int(result_id)
-                )
+            metadata = (
+                cast(Optional[VectorMetadata], metadatas[i])
+                if i < len(metadatas)
+                else None
+            )
+            document = documents[i] if i < len(documents) else None
+            distance = distances[i] if i < len(distances) else 1.0
 
-                # Get metadata and text
-                # Cast metadata to the expected type
-                metadata = (
-                    cast(Optional[VectorMetadata], metadatas[i])
-                    if i < len(metadatas)
-                    else None
+            original_id: VectorID = result_id
+            metadata_id = metadata.get("original_id") if metadata else None
+            if isinstance(metadata_id, (int, str)):
+                original_id = metadata_id
+            else:
+                conventional_id = (
+                    result_id.split("_", 1)[1] if "_" in result_id else result_id
                 )
-                document = documents[i] if i < len(documents) else None
+                try:
+                    original_id = int(conventional_id)
+                except ValueError:
+                    original_id = result_id
 
-                # Calculate distance (handle any missing values)
-                distance = distances[i] if i < len(distances) else 1.0
-
-                # Add to results
-                results.append(
-                    SearchResultDict(
-                        id=original_id,
-                        distance=distance,
-                        metadata=metadata,
-                        text=document,
-                    )
+            results.append(
+                SearchResultDict(
+                    id=original_id,
+                    distance=distance,
+                    metadata=metadata,
+                    text=document,
                 )
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Error processing search result {result_id}: {e}")
+            )
 
         return results
 

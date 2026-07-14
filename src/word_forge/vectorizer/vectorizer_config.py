@@ -40,6 +40,10 @@ from word_forge.configs.config_essentials import (
     VectorOptimizationLevel,
     VectorSearchStrategy,
 )
+from word_forge.vectorizer.embedding_models import (
+    DEFAULT_EMBEDDING_MODEL,
+    collection_name_for_model,
+)
 
 log_dir = LOGS_ROOT / "vectorizer"
 
@@ -79,7 +83,7 @@ class VectorizerConfig:
 
         # Get embedding model information
         model_name = config.vectorizer.model_name
-        dimension = config.vectorizer.dimension or 768  # Default if not specified
+        dimension = config.vectorizer.dimension or 384  # Portable default
 
         # Get vector index path
         index_path = config.vectorizer.get_index_path()
@@ -89,7 +93,7 @@ class VectorizerConfig:
     """
 
     # Vector embedding model configuration
-    model_name: str = "intfloat/multilingual-e5-large-instruct"
+    model_name: str = DEFAULT_EMBEDDING_MODEL
     model_type: VectorModelType = VectorModelType.TRANSFORMER
     dimension: Optional[int] = None  # None = use model's default dimension
     enable_compression: bool = False
@@ -133,18 +137,18 @@ class VectorizerConfig:
         default_factory=lambda: {
             "search": {
                 "task": "Given a web search query, retrieve relevant passages that answer the query",
-                "query_prefix": "Instruct: {task}\nQuery: ",
-                "document_prefix": None,
+                "query_prefix": "query: ",
+                "document_prefix": "passage: ",
             },
             "definition": {
                 "task": "Find the definition that best matches this term",
-                "query_prefix": "Instruct: {task}\nQuery: ",
-                "document_prefix": None,
+                "query_prefix": "query: ",
+                "document_prefix": "passage: ",
             },
             "similarity": {
                 "task": "Measure semantic similarity between these text passages",
-                "query_prefix": "Instruct: {task}\nQuery: ",
-                "document_prefix": None,
+                "query_prefix": "query: ",
+                "document_prefix": "passage: ",
             },
         }
     )
@@ -197,10 +201,7 @@ class VectorizerConfig:
         if self.collection_name:
             return self.collection_name
 
-        # Derive from model name by extracting last component and sanitizing
-        model_parts = self.model_name.split("/")
-        derived_name = model_parts[-1].replace("-", "_").lower()
-        return f"collection_{derived_name}"
+        return collection_name_for_model(self.model_name)
 
     @cached_property
     def effective_dimension(self) -> Optional[int]:

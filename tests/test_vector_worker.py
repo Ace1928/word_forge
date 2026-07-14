@@ -49,6 +49,9 @@ def test_vector_worker_processes_updates(tmp_path: Path) -> None:
     )
     worker = VectorWorker(db, store, TEST_MODEL)
 
+    assert getattr(worker.embedder, "vector_store", None) is store
+    assert getattr(worker.embedder, "model_name", None) == TEST_MODEL
+
     words = worker._get_all_words()
     worker._process_words(words)
     worker.last_processed = time.time()

@@ -148,7 +148,10 @@ word_forge graph build --timeout 180
 # Generate visualization (requires the visualization extra)
 word_forge graph visualize --3d --open-browser
 
-# Index vectors (requires the vector extra)
+# Index vectors with the portable multilingual default (requires the vector extra)
+word_forge vector index
+
+# Or select one model explicitly; each model gets an isolated collection
 word_forge vector index --embedder sentence-transformers/all-MiniLM-L6-v2
 
 # Search for similar terms
@@ -272,9 +275,10 @@ Word Forge uses a centralized configuration system with environment variable ove
 |---------------------|-------------|---------|
 | `WORDFORGE_DB_PATH` | Database file path | `data/word_forge.sqlite` |
 | `WORDFORGE_LOG_LEVEL` | Logging level | `INFO` |
-| `WORDFORGE_VECTOR_MODEL` | Embedding model name | `sentence-transformers/all-MiniLM-L6-v2` |
+| `WORD_FORGE_VECTOR_MODEL` | Embedding model name | `intfloat/multilingual-e5-small` |
 | `WORD_FORGE_ENABLE_MODEL` | Enable optional generative enrichment | `false` |
 | `WORD_FORGE_MODEL_PROFILE` | Local language-model profile | `portable` |
+| `WORD_FORGE_GRAPH_REFRESH_INTERVAL` | Background graph refresh interval in seconds | `5.0` |
 
 Configuration can also be modified programmatically:
 
@@ -337,7 +341,7 @@ For systems with limited RAM:
 
 1. Use a smaller embedding model:
    ```bash
-   export WORDFORGE_VECTOR_MODEL="sentence-transformers/all-MiniLM-L6-v2"  # ~80MB
+   export WORD_FORGE_VECTOR_MODEL="sentence-transformers/all-MiniLM-L6-v2"
    ```
 
 2. Reduce batch sizes in configuration:

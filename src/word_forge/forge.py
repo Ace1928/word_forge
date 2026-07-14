@@ -28,6 +28,8 @@ import sys
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, List, Optional
 
+from word_forge.vectorizer.embedding_models import DEFAULT_EMBEDDING_MODEL
+
 if TYPE_CHECKING:  # pragma: no cover - imported for typing only
     from word_forge.database.database_manager import DBManager
     from word_forge.graph.graph_manager import GraphManager
@@ -189,7 +191,6 @@ def start(
             vector_worker = VectorWorker(
                 db=db_manager,
                 vector_store=vector_store,
-                embedder=vector_model or "sentence-transformers/all-MiniLM-L6-v2",
             )
         except VectorStoreError as exc:
             vector_required = enable_vector is True or vector_model is not None
@@ -477,8 +478,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     vector_index.add_argument(
         "--embedder",
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Sentence transformer model name (HuggingFace model path)",
+        default=None,
+        help=(
+            "Sentence transformer model name (default: configured model, "
+            f"initially {DEFAULT_EMBEDDING_MODEL})"
+        ),
     )
     vector_index.add_argument(
         "--timeout",
@@ -908,7 +912,7 @@ def run_graph_visualization(
 def run_vector_index(
     *,
     db_manager: Optional["DBManager"] = None,
-    embedder: str = "sentence-transformers/all-MiniLM-L6-v2",
+    embedder: Optional[str] = None,
     poll_interval: float = 0.25,
     timeout: float = 120.0,
 ) -> bool:
@@ -928,7 +932,6 @@ def run_vector_index(
     worker = VectorWorker(
         db=db,
         vector_store=vector_store,
-        embedder=embedder,
         poll_interval=poll_interval,
         daemon=False,
         logger=LOGGER,

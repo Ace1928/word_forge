@@ -30,14 +30,13 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Protocol, TypedDict, Union, cast, final
 
 import numpy as np
-
-try:  # Optional heavy dependency
-    import torch
-except Exception:  # pragma: no cover - allow missing torch
-    torch = None  # type: ignore
 from numpy.typing import NDArray
 
 from word_forge.database.database_manager import DBManager
+from word_forge.vectorizer.embedding_models import (
+    DEFAULT_EMBEDDING_MODEL,
+    format_embedding_text,
+)
 from word_forge.vectorizer.model_utils import get_embedding_dimension
 from word_forge.vectorizer.vector_store import VectorStore
 
@@ -285,6 +284,34 @@ class VectorWorkerInterface(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class _VectorStoreEmbedder:
+    """Adapt the store-owned model to the worker's legacy embedder protocol."""
+
+    vector_store: VectorStore
+
+    @property
+    def dimension(self) -> int:
+        """Return the store model's authoritative embedding dimension."""
+
+        return self.vector_store.dimension
+
+    @property
+    def model_name(self) -> str:
+        """Return the store-owned model identifier."""
+
+        return self.vector_store.model_name
+
+    def embed(self, text: str) -> NDArray[np.float32]:
+        """Embed a lexical document through the store's single model instance."""
+
+        return self.vector_store.embed_text(
+            text,
+            template_key="definition",
+            is_query=False,
+        )
+
+
 @final
 class VectorWorker(threading.Thread):
     """
@@ -307,7 +334,7 @@ class VectorWorker(threading.Thread):
         self,
         db: DBManager,
         vector_store: VectorStore,
-        embedder: Union[Embedder, str],  # Accept either embedder or model name
+        embedder: Optional[Union[Embedder, str]] = None,
         poll_interval: Optional[float] = None,
         daemon: bool = True,
         logger: Optional[logging.Logger] = None,
@@ -318,7 +345,8 @@ class VectorWorker(threading.Thread):
         Args:
             db: Database manager providing access to word data
             vector_store: Vector store for saving embeddings
-            embedder: Text embedding generator or model name string
+            embedder: Optional custom generator or model identifier. A matching
+                model identifier reuses the model already owned by ``vector_store``.
             poll_interval: Time in seconds between database polling cycles (defaults to 10.0)
             daemon: Whether to run as a daemon thread
             logger: Optional logger for error reporting
@@ -327,24 +355,41 @@ class VectorWorker(threading.Thread):
         self.db = db
         self.vector_store = vector_store
 
-        # Convert string model name to embedder if needed
-        if isinstance(embedder, str):
-            try:
-                self.embedder = TransformerEmbedder(model_name=embedder)
-                if logger:
-                    logger.info(
-                        f"Created TransformerEmbedder with model '{embedder}' "
-                        f"(dimension={self.embedder.dimension})"
-                    )
-            except EmbeddingError:
-                # Re-raise EmbeddingError as-is since it already has detailed info
-                raise
-            except Exception as exc:
+        if embedder is None or isinstance(embedder, str):
+            requested_model = embedder or vector_store.model_name
+            if requested_model.strip().casefold() != vector_store.model_name.casefold():
                 raise EmbeddingError(
-                    f"Unexpected error initializing embedder with model '{embedder}': {exc}"
-                ) from exc
+                    f"Worker model '{requested_model}' does not match VectorStore model "
+                    f"'{vector_store.model_name}'. Construct one VectorStore with the "
+                    "requested model so indexing uses a single embedding space."
+                )
+            self.embedder: Embedder = _VectorStoreEmbedder(vector_store)
         else:
             self.embedder = embedder
+            embedder_dimension = getattr(embedder, "dimension", None)
+            if (
+                isinstance(embedder_dimension, int)
+                and embedder_dimension != vector_store.dimension
+            ):
+                raise EmbeddingError(
+                    f"Custom embedder dimension {embedder_dimension} does not match "
+                    f"VectorStore dimension {vector_store.dimension}."
+                )
+            custom_model = getattr(embedder, "model_name", None)
+            if (
+                isinstance(custom_model, str)
+                and custom_model.strip().casefold()
+                != vector_store.model_name.casefold()
+            ):
+                raise EmbeddingError(
+                    f"Custom embedder model '{custom_model}' does not match "
+                    f"VectorStore model '{vector_store.model_name}'."
+                )
+            if custom_model is None and not vector_store.demo_mode:
+                raise EmbeddingError(
+                    "Custom embedders without a model identity are limited to "
+                    "explicit demo-mode stores."
+                )
 
         self.poll_interval = poll_interval or 10.0
 
@@ -409,9 +454,9 @@ class VectorWorker(threading.Thread):
     def _warn_about_demo_configuration(self) -> None:
         """Log warnings when the worker is running in demo or non-deterministic mode."""
 
-        if not isinstance(self.embedder, TransformerEmbedder):
+        if isinstance(self.embedder, SimpleEmbedder):
             self.logger.warning(
-                "VectorWorker is using %s; deterministic TransformerEmbedder is required for reproducible persistence.",
+                "VectorWorker is using %s; its vectors are not reproducible.",
                 type(self.embedder).__name__,
             )
 
@@ -505,8 +550,8 @@ class VectorWorker(threading.Thread):
         Process a batch of words into vector embeddings.
 
         Generates embeddings for each word and stores them in the vector store.
-        Uses the VectorStore's embed_text method when available to ensure
-        consistent dimensions, otherwise falls back to the worker's embedder.
+        The normal path delegates to the model already owned by ``VectorStore``
+        so indexing never allocates a duplicate transformer or mixes spaces.
 
         Args:
             words: List of words to process
@@ -516,21 +561,7 @@ class VectorWorker(threading.Thread):
             text = self._prepare_embedding_text(word)
 
             try:
-                # Generate embedding - prefer VectorStore's method for consistency
-                if hasattr(self.vector_store, "embed_text"):
-                    try:
-                        # Use "definition" template for word processing (documents, not queries)
-                        vector = self.vector_store.embed_text(
-                            text, template_key="definition", is_query=False
-                        )
-                    except Exception as embed_err:
-                        # Fall back to worker's embedder if VectorStore embedding fails
-                        self.logger.debug(
-                            f"VectorStore embed_text failed, using worker embedder: {embed_err}"
-                        )
-                        vector = self.embedder.embed(text)
-                else:
-                    vector = self.embedder.embed(text)
+                vector = self.embedder.embed(text)
 
                 # Store embedding with metadata for better retrieval
                 metadata = {
@@ -649,7 +680,7 @@ class TransformerEmbedder:
         model_name: Name of the model being used
     """
 
-    def __init__(self, model_name: str = "intfloat/multilingual-e5-large-instruct"):
+    def __init__(self, model_name: str = DEFAULT_EMBEDDING_MODEL):
         """
         Initialize with a pretrained transformer model.
 
@@ -697,6 +728,7 @@ class TransformerEmbedder:
                     "  2. Check spelling and capitalization\n"
                     "  3. Verify the model exists at https://huggingface.co/models\n\n"
                     "Popular embedding models:\n"
+                    "  - intfloat/multilingual-e5-small (default multilingual, 384 dim)\n"
                     "  - sentence-transformers/all-MiniLM-L6-v2 (fast, 384 dim)\n"
                     "  - sentence-transformers/all-mpnet-base-v2 (balanced, 768 dim)\n"
                     "  - intfloat/multilingual-e5-large-instruct (multilingual, 1024 dim)"
@@ -760,24 +792,18 @@ class TransformerEmbedder:
             raise EmbeddingError("Cannot embed empty text")
 
         try:
-            # Format with task instruction for retrieval optimization
-            task = (
-                "Given a definition and examples, retrieve related terms and concepts"
+            formatted_text = format_embedding_text(
+                self.model_name,
+                text,
+                is_query=False,
             )
-            formatted_text = f"Instruct: {task}\nQuery: {text}"
 
             # Generate embedding and return as numpy array
             embedding = self.model.encode(  # type: ignore
-                sentences=formatted_text,  # Use the formatted text directly as sentences
-                batch_size=10,  # Batch text optimization
+                sentences=formatted_text,
                 convert_to_numpy=True,
-                normalize_embeddings=True,  # Pre-normalize for cosine similarity
-                show_progress_bar=True,  # Show Progress
-                output_value="sentence_embedding",  # Ensure correct output
-                precision="float32",  # Use float32 for consistency
-                device=(
-                    "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
-                ),
+                normalize_embeddings=True,
+                show_progress_bar=False,
             )
             return cast(NDArray[np.float32], embedding)
         except Exception as e:
