@@ -32,6 +32,28 @@ def test_cli_setup_nltk_command() -> None:
     assert forge.main(["setup-nltk"]) == 0
 
 
+def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:
+    """The lightweight core pipeline must run without vector backends."""
+    from word_forge import forge
+
+    ensure_nltk_data()
+    result = forge.main(
+        [
+            "start",
+            "wordforgesmokenonword",
+            "--minutes",
+            "0.001",
+            "--workers",
+            "1",
+            "--db-path",
+            str(tmp_path / "cli_core_start.db"),
+            "--no-vector",
+        ]
+    )
+
+    assert result == 0
+
+
 @pytest.mark.skipif(
     not _VECTOR_AVAILABLE,
     reason="Vector dependencies (chromadb, sentence-transformers) not installed",
@@ -53,6 +75,7 @@ def test_cli_start_command(tmp_path: Path) -> None:
             str(tmp_path / "cli_start.db"),
             "--vector-model",
             TEST_MODEL,
+            "--vector",
             "--llm-model",
             LLM_MODEL,
         ]

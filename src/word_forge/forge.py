@@ -88,6 +88,7 @@ def start(
     db_path: Optional[str] = None,
     vector_model: Optional[str] = None,
     llm_model: Optional[str] = None,
+    enable_vector: Optional[bool] = None,
 ) -> None:
     """Launch the Word Forge processing pipeline.
 
@@ -106,6 +107,9 @@ def start(
         and the vector worker embedder.
     llm_model:
         Optional override for the language model used to generate example sentences.
+    enable_vector:
+        ``True`` requires vector indexing, ``False`` disables it, and ``None``
+        enables it when the optional vector dependencies are available.
     """
 
     from word_forge.database.database_manager import DBManager
@@ -119,7 +123,7 @@ def start(
     from word_forge.queue.worker_manager import WorkerManager
     from word_forge.graph.graph_manager import GraphManager
     from word_forge.graph.graph_worker import GraphWorker
-    from word_forge.vectorizer.vector_store import VectorStore
+    from word_forge.vectorizer.vector_store import VectorStore, VectorStoreError
     from word_forge.vectorizer.vector_worker import VectorWorker
     from word_forge.configs.config_essentials import measure_execution
 
@@ -143,17 +147,30 @@ def start(
     graph_manager = GraphManager(db_manager=db_manager)
     graph_worker = GraphWorker(graph_manager=graph_manager)
 
-    vector_store = VectorStore(db_manager=db_manager, model_name=vector_model)
-    vector_worker = VectorWorker(
-        db=db_manager,
-        vector_store=vector_store,
-        embedder=vector_model or "sentence-transformers/all-MiniLM-L6-v2",
-    )
+    vector_worker: Optional[VectorWorker] = None
+    if enable_vector is not False:
+        try:
+            vector_store = VectorStore(db_manager=db_manager, model_name=vector_model)
+            vector_worker = VectorWorker(
+                db=db_manager,
+                vector_store=vector_store,
+                embedder=vector_model or "sentence-transformers/all-MiniLM-L6-v2",
+            )
+        except VectorStoreError as exc:
+            vector_required = enable_vector is True or vector_model is not None
+            if vector_required:
+                raise
+            LOGGER.info(
+                "Vector indexing unavailable; continuing with lexical and graph "
+                "workers (%s)",
+                exc,
+            )
 
     manager = WorkerManager(logger=LOGGER)
     manager.register(worker_pool)
     manager.register(graph_worker)
-    manager.register(vector_worker)
+    if vector_worker is not None:
+        manager.register(vector_worker)
 
     seeds = (
         list(seed_words)
@@ -290,6 +307,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=str,
         default=None,
         help="Override the default sentence-transformer model for vector storage/indexing",
+    )
+    start_parser.add_argument(
+        "--vector",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable vector indexing (default: enable when available)",
     )
     start_parser.add_argument(
         "--llm-model",
@@ -518,6 +541,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             db_path=args.db_path,
             vector_model=args.vector_model,
             llm_model=args.llm_model,
+            enable_vector=args.vector,
         )
     elif args.command == "graph":
         if args.graph_command == "build":
