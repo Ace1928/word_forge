@@ -350,6 +350,38 @@ def run_model_catalog(action: str = "list", json_output: bool = False) -> int:
     return 0
 
 
+def run_source_catalog(
+    *, json_output: bool = False, unattended_only: bool = False
+) -> int:
+    """Render the governed lexical-source catalog."""
+
+    from word_forge.sources import source_catalog_report
+
+    report = source_catalog_report(unattended_only=unattended_only)
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    sources = report["sources"]
+    if not isinstance(sources, list):  # pragma: no cover - internal invariant
+        raise TypeError("Lexical source catalog must contain a source list")
+    print("SOURCE                         STATUS       BOOTSTRAP             LICENSE")
+    for item in sources:
+        if not isinstance(item, dict):  # pragma: no cover - internal invariant
+            raise TypeError("Lexical source entries must be mappings")
+        license_data = item.get("license", {})
+        if not isinstance(license_data, dict):  # pragma: no cover
+            raise TypeError("Lexical source license metadata must be a mapping")
+        print(
+            f"{str(item['id']):<30} "
+            f"{str(item['integration_status']):<12} "
+            f"{str(item['bootstrap_tier']):<21} "
+            f"{str(license_data.get('name', 'unknown'))}"
+        )
+    print(f"\n{report['notice']}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
@@ -645,6 +677,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Emit machine-readable profile and runtime details",
     )
 
+    sources_parser = subparsers.add_parser(
+        "sources", help="Inspect lexical source licenses and importer readiness"
+    )
+    sources_parser.add_argument(
+        "sources_action",
+        nargs="?",
+        choices=["list"],
+        default="list",
+        help="List registered lexical data sources",
+    )
+    sources_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the versioned machine-readable source catalog",
+    )
+    sources_parser.add_argument(
+        "--unattended-eligible",
+        action="store_true",
+        help="Show only core and permissive sources eligible for automation",
+    )
+
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -693,6 +746,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             exit_code = 2
     elif args.command == "models":
         exit_code = run_model_catalog(args.models_action, args.json)
+    elif args.command == "sources":
+        exit_code = run_source_catalog(
+            json_output=args.json,
+            unattended_only=args.unattended_eligible,
+        )
     elif args.command == "graph":
         if args.graph_command == "build":
             exit_code = (

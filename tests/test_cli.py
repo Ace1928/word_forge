@@ -63,6 +63,34 @@ def test_cli_models_json_command(capsys: pytest.CaptureFixture[str]) -> None:
     }
 
 
+def test_cli_sources_json_command(capsys: pytest.CaptureFixture[str]) -> None:
+    """Lexical source policy is discoverable without downloading data."""
+    from word_forge import forge
+
+    assert forge.main(["sources", "list", "--json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["schema_version"] == 1
+    assert report["count"] >= 10
+    assert {source["id"] for source in report["sources"]} >= {
+        "cmudict",
+        "panlex",
+        "wikidata-lexemes",
+    }
+
+
+def test_cli_sources_unattended_filter(capsys: pytest.CaptureFixture[str]) -> None:
+    """Automation excludes share-alike and per-dataset sources by default."""
+    from word_forge import forge
+
+    assert forge.main(["sources", "list", "--json", "--unattended-eligible"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["filters"]["unattended_only"] is True
+    assert all(source["unattended_eligible"] for source in report["sources"])
+    assert "dbnary" not in {source["id"] for source in report["sources"]}
+
+
 def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:
     """The lightweight core pipeline must run without vector backends."""
     from word_forge import forge
