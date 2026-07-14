@@ -16,7 +16,7 @@
 - `word_forge vector index --embedder sentence-transformers/all-MiniLM-L6-v2`: build vector indices.
 
 ## Coding Style & Naming Conventions
-- Python 3.8+ with type hints; follow the stricter `mypy` settings in `pyproject.toml`.
+- Python 3.10+ with type hints; follow the stricter `mypy` settings in `pyproject.toml`.
 - Format with `black` and sort imports with `isort` (`profile = "black"`).
 - Use descriptive class names (e.g., `GraphManager`, `QueueWorker`) and snake_case for functions.
 

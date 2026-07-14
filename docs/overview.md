@@ -165,7 +165,7 @@ source venv/bin/activate  # Linux/Mac
 # or: venv\Scripts\activate  # Windows
 
 # Install with development dependencies
-pip install -e .[dev]
+python -m pip install -e ".[dev]"
 
 # Install pre-commit hooks
 pre-commit install

@@ -5,27 +5,39 @@
 The following packages are required only for development and testing. They are
 not needed for running Word Forge in production environments.
 
-The main `requirements.txt` lists runtime packages such as `networkx` and
-`numpy` that are needed for graph and vector features.
+The `dev` project extra is the single source of truth for development tools.
+`requirements.txt` installs the package in editable mode with that extra, while
+`requirements-all.txt` additionally installs every optional runtime feature.
 
 ```text
 black
+build
 isort
 mypy
+pre-commit
 pytest
 pytest-cov
+ruff
 ```
 
 Each tool serves a distinct purpose:
 
 - **black** – Enforces a consistent code style across the project.
+- **build** – Produces isolated source and wheel distributions.
 - **isort** – Automatically sorts imports to reduce merge conflicts.
 - **mypy** – Provides optional static type checking.
+- **pre-commit** – Runs repository checks before a commit is created.
 - **pytest** and **pytest-cov** – Run tests and measure code coverage.
+- **ruff** – Performs fast static linting.
 
-Install them with `pip` using the `--requirement` option if desired:
+Install the lightweight development environment:
 
 ```bash
-pip install -r requirements.txt  # runtime dependencies
-pip install black isort mypy pytest pytest-cov  # development only
+python -m pip install -r requirements.txt
+```
+
+Install all optional integrations as well:
+
+```bash
+python -m pip install -r requirements-all.txt
 ```

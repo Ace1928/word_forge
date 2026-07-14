@@ -1,7 +1,7 @@
 # Word Forge
 
 [![CI](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Ace1928/word_forge/actions/workflows/ci.yml)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
@@ -41,18 +41,18 @@ Word Forge is a modular lexical processing and enrichment toolkit that builds a 
 
 ## Installation
 
-Word Forge targets **Python 3.8 or newer**.
+Word Forge targets **Python 3.10 or newer**.
 
 ### Basic Installation
 
 ```bash
-# Clone and install locally
+# Clone and install the lightweight core
 git clone https://github.com/Ace1928/word_forge.git
 cd word_forge
-pip install -e .
+python -m pip install -e .
 
 # Or install directly from Git
-pip install git+https://github.com/Ace1928/word_forge.git
+python -m pip install git+https://github.com/Ace1928/word_forge.git
 ```
 
 ### Development Installation
@@ -60,7 +60,7 @@ pip install git+https://github.com/Ace1928/word_forge.git
 Install with development tools (formatter, linter, tests):
 
 ```bash
-pip install -e .[dev]
+python -m pip install -r requirements.txt
 ```
 
 ### Optional Feature Extras
@@ -69,11 +69,22 @@ Install feature bundles based on your needs:
 
 | Extra | Command | Includes |
 |-------|---------|----------|
-| `vector` | `pip install -e .[vector]` | sentence-transformers, ChromaDB, FAISS |
-| `visualization` | `pip install -e .[visualization]` | Pyvis, Plotly |
-| `dev` | `pip install -e .[dev]` | black, ruff, pytest, mypy, pre-commit |
+| `emotion` | `python -m pip install -e ".[emotion]"` | TextBlob sentiment analysis |
+| `lexical` | `python -m pip install -e ".[lexical]"` | RDFLib import/export |
+| `llm` | `python -m pip install -e ".[llm]"` | Torch and Transformers |
+| `nlp` | `python -m pip install -e ".[nlp]"` | spaCy processing |
+| `vector` | `python -m pip install -e ".[vector]"` | sentence-transformers, ChromaDB, FAISS |
+| `visualization` | `python -m pip install -e ".[visualization]"` | PyVis and Plotly |
+| `audio` | `python -m pip install -e ".[audio]"` | Whisper and FFmpeg bindings |
+| `all` | `python -m pip install -e ".[all]"` | Every runtime feature |
+| `dev` | `python -m pip install -e ".[dev]"` | build, test, lint, and type-check tools |
 
-**Note**: The `word_forge` CLI relies on the `vector` extra for semantic search operations.
+For a complete development environment, use
+`python -m pip install -r requirements-all.txt`.
+
+**Note**: Semantic indexing/search and the combined `start` pipeline require the
+`vector` extra. The database, lexical, queue, conversation, emotion fallback,
+and graph APIs work with the lightweight core installation.
 
 ## Quick Start
 
@@ -117,10 +128,10 @@ word_forge start apple --db-path /tmp/word_forge.sqlite \
 # Build the semantic graph
 word_forge graph build --timeout 180
 
-# Generate visualization (requires visualization extra)
+# Generate visualization (requires the visualization extra)
 word_forge graph visualize --3d --open-browser
 
-# Index vectors
+# Index vectors (requires the vector extra)
 word_forge vector index --embedder sentence-transformers/all-MiniLM-L6-v2
 
 # Search for similar terms
@@ -314,7 +325,7 @@ For systems with limited RAM:
 These heavy dependencies are optional. Install them explicitly:
 
 ```bash
-pip install -e .[vector]
+python -m pip install -e ".[vector]"
 ```
 
 #### SQLite Database Locked
@@ -330,7 +341,7 @@ If you see "database is locked" errors:
 CI uses a lightweight test configuration. For full tests locally:
 
 ```bash
-pip install -e .[dev]
+python -m pip install -e ".[dev]"
 pytest
 ```
 
