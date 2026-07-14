@@ -51,7 +51,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import (
@@ -145,7 +145,7 @@ EnvMapping: TypeAlias = Dict[str, Tuple[str, EnvVarType]]
 ComponentName: TypeAlias = str
 
 # Type alias for a registry mapping component names to instances
-ComponentRegistry: TypeAlias = Dict[ComponentName, "ConfigComponent"]
+ComponentRegistry: TypeAlias = Dict[ComponentName, "ConfigComponentInfo"]
 
 # Type alias for a dictionary representing a configuration section
 ConfigDict: TypeAlias = Dict[str, ConfigValue]
@@ -834,6 +834,10 @@ class SQLitePragmas(TypedDict, total=False):
 class SQLTemplates(TypedDict, total=False):
     """SQL query templates for graph operations."""
 
+    create_words_table: str
+    create_relationships_table: str
+    create_word_id_index: str
+    create_unique_relationship_index: str
     check_words_table: str
     check_relationships_table: str
     fetch_all_words: str
@@ -1079,7 +1083,7 @@ class ConfigComponentInfo:
     """
 
     name: str
-    class_type: Type[ConfigComponent]
+    class_type: Type[object]
     dependencies: Set[str] = field(default_factory=set)
 
 
@@ -1488,27 +1492,12 @@ def serialize_dataclass(obj: Any) -> Dict[str, Any]:
         >>> serialize_dataclass(settings)
         {'name': 'test', 'color': 'red'}
     """
-    result: Dict[str, Any] = {}
-    for key, value in asdict(obj).items():
-        if isinstance(value, Enum):
-            # Serialize enum as its value
-            result[key] = value.value
-        elif isinstance(value, tuple):
-            # Handle named tuples
-            try:
-                # Cast to Any to safely check for NamedTuple attributes
-                tuple_value = cast(Any, value)
-                if hasattr(tuple_value, "_fields") and callable(
-                    getattr(tuple_value, "_asdict", None)
-                ):
-                    result[key] = tuple_value._asdict()
-                else:
-                    result[key] = value
-            except (AttributeError, TypeError):
-                result[key] = value
-        else:
-            result[key] = value
-    return result
+    serialized = serialize_config(obj)
+    if not isinstance(serialized, dict):
+        raise TypeError(
+            f"Expected dataclass serialization to produce a mapping: {obj!r}"
+        )
+    return cast(Dict[str, Any], serialized)
 
 
 def serialize_config(obj: Any) -> ConfigValue:
@@ -1534,34 +1523,30 @@ def serialize_config(obj: Any) -> ConfigValue:
         >>> serialize_config(Config())
         {'name': 'test', 'values': [1, 2, 3]}
     """
-    if hasattr(obj, "__dict__"):
-        # Use ConfigDict for the dictionary type hint
-        d: ConfigDict = {}
-        for key, value in obj.__dict__.items():
-            if not key.startswith("_"):
-                d[key] = serialize_config(value)
-        return d
-    elif isinstance(obj, (list, tuple)):
-        # Return JsonList type
+    if isinstance(obj, Enum):
+        return serialize_config(obj.value)
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, (int, float, str, bool)) or obj is None:
+        return cast(JsonPrimitive, obj)
+    if isinstance(obj, dict):
+        return {
+            str(key.value if isinstance(key, Enum) else key): serialize_config(value)
+            for key, value in cast(Dict[Any, Any], obj).items()
+        }
+    if isinstance(obj, (set, frozenset)):
+        ordered_items = sorted(cast(Sequence[Any], list(obj)), key=repr)
+        return cast(JsonList, [serialize_config(item) for item in ordered_items])
+    if isinstance(obj, (list, tuple)):
         return cast(
             JsonList, [serialize_config(item) for item in cast(Sequence[Any], obj)]
         )
-    elif isinstance(obj, dict):
-        # Return JsonDict type
-        return {
-            str(key): serialize_config(value)
-            for key, value in cast(Dict[Any, Any], obj).items()
-        }
-    elif isinstance(obj, Enum):
-        # Return the enum's value, which should be a JsonPrimitive
-        return cast(JsonPrimitive, obj.value)
-    elif isinstance(obj, Path):
-        # Return string representation of Path
-        return str(obj)
-    elif isinstance(obj, (int, float, str, bool)) or obj is None:
-        # Return JsonPrimitive directly
-        return cast(JsonPrimitive, obj)
-    # Fallback: convert other types to string
+    if hasattr(obj, "__dict__"):
+        serialized_object: ConfigDict = {}
+        for key, value in obj.__dict__.items():
+            if not key.startswith("_"):
+                serialized_object[key] = serialize_config(value)
+        return serialized_object
     return str(obj)
 
 

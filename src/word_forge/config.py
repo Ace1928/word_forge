@@ -34,9 +34,10 @@ Design Principles:
 
 import json
 import os
+import tempfile
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import fields, replace
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -47,11 +48,14 @@ from typing import (
     Dict,
     Final,
     List,
+    Mapping,
     Optional,
     Set,
     Tuple,
     Type,
     TypeVar,
+    cast,
+    get_type_hints,
 )
 
 # Import all essential configuration types
@@ -101,6 +105,13 @@ from word_forge.configs.config_essentials import (
     VectorSearchStrategy,
     serialize_config,
     serialize_dataclass,
+)
+from word_forge.configs.config_io import (
+    ConfigurationFileError,
+    coerce_configuration_value,
+    load_configuration_document,
+    merge_configuration_value,
+    parse_environment_value,
 )
 
 # ... standard imports from the original file ...
@@ -311,6 +322,7 @@ class Config:
         self._last_refresh_time = time.time()
         self._hot_reload_enabled = False
         self._hot_reload_interval = 30.0  # seconds
+        self._hot_reload_thread: Optional[threading.Thread] = None
         self._runtime_adaptive_mode = RuntimeAdaptiveMode.PASSIVE
         self._error_counts: Dict[ComponentName, int] = {
             name: 0 for name in self._component_registry
@@ -319,23 +331,22 @@ class Config:
         # Track which components have been accessed
         self._accessed_components: Set[ComponentName] = set()
 
+        # Record defaults before applying higher-priority sources.
+        self._initialize_value_sources()
+
         # Apply environment variable overrides
         self._load_from_env()
 
         # Ensure data directories exist
         self._ensure_directories()
 
-        # Initialize default value sources
-        self._initialize_value_sources()
-
     def _initialize_value_sources(self) -> None:
         """Initialize source tracking for all configuration values."""
         for component_name, component in self._get_config_objects():
-            for attr_name in dir(component):
-                # Skip private attributes and methods
-                if attr_name.startswith("_") or callable(getattr(component, attr_name)):
+            for field_info in fields(cast(Any, component)):
+                attr_name = field_info.name
+                if attr_name.startswith("_"):
                     continue
-
                 # Record default values
                 self._value_sources[(component_name, attr_name)] = ConfigSource(
                     ConfigSourceType.DEFAULT,
@@ -361,8 +372,16 @@ class Config:
 
             for env_var, (attr_name, value_type) in env_vars.items():
                 if env_var in os.environ:
+                    # Each frozen-component update replaces the dataclass. Fetch
+                    # the latest instance so multiple variables for one component
+                    # compose instead of the last one discarding earlier values.
+                    current_config_obj = getattr(self, component_name)
                     self._set_from_env(
-                        env_var, component_name, config_obj, attr_name, value_type
+                        env_var,
+                        component_name,
+                        current_config_obj,
+                        attr_name,
+                        value_type,
                     )
 
     def _get_config_objects(self) -> List[Tuple[ComponentName, ConfigComponent]]:
@@ -401,50 +420,96 @@ class Config:
             EnvVarError: If the environment variable has an invalid format,
                 can't be converted to the target type, or attribute doesn't exist
         """
-        value = os.environ[env_var]
+        current_source = self._value_sources.get((component_name, attr_name))
+        if (
+            current_source
+            and current_source.type.value > ConfigSourceType.ENVIRONMENT.value
+        ):
+            return
 
+        raw_value = os.environ[env_var]
         try:
-            if value_type is bool:
-                # Convert string to boolean with explicit true values
-                typed_value: Any = value.lower() in ("true", "yes", "1", "y")
-            elif value_type and issubclass(value_type, Enum):
-                # Convert string to Enum value
-                typed_value = value_type(value)
-            else:
-                # General type conversion
-                typed_value = value_type(value)
-
-            # Ensure attribute exists before setting
-            if not hasattr(config_obj, attr_name):
-                raise EnvVarError(
-                    f"Configuration attribute '{attr_name}' not found in {config_obj.__class__.__name__}"
-                )
-
-            # Get the old value for change notification
-            old_value = getattr(config_obj, attr_name)
-
-            # Set the new value
-            with self._config_lock:
-                setattr(config_obj, attr_name, typed_value)
-
-                # Record the source
-                self._value_sources[(component_name, attr_name)] = ConfigSource(
-                    ConfigSourceType.ENVIRONMENT,
-                    f"Environment variable: {env_var}",
-                )
-
-                # Clear related cache entries
-                self._invalidate_cache(component_name, attr_name)
-
-            # Notify observers
-            self._notify_observers(component_name, attr_name, old_value, typed_value)
-
-        except (ValueError, TypeError) as e:
-            raise EnvVarError(f"Invalid value '{value}' for {env_var}: {str(e)}") from e
-        except AttributeError as e:
+            parsed_value = parse_environment_value(raw_value, value_type, env_var)
+            updated, typed_value = self._updated_component(
+                component_name, config_obj, attr_name, parsed_value
+            )
+        except (ConfigurationFileError, TypeError, ValueError) as exc:
             raise EnvVarError(
-                f"Failed to set '{attr_name}' from {env_var}: {str(e)}"
-            ) from e
+                f"Invalid value {raw_value!r} for {env_var}: {exc}"
+            ) from exc
+
+        old_value = getattr(config_obj, attr_name)
+        with self._config_lock:
+            setattr(self, component_name, updated)
+            self._value_sources[(component_name, attr_name)] = ConfigSource(
+                ConfigSourceType.ENVIRONMENT,
+                f"Environment variable: {env_var}",
+            )
+            self._invalidate_cache(component_name, attr_name)
+        self._notify_observers(component_name, attr_name, old_value, typed_value)
+
+    @staticmethod
+    def _updated_component(
+        component_name: ComponentName,
+        component: object,
+        attr_name: str,
+        supplied_value: object,
+    ) -> Tuple[object, object]:
+        """Create a component copy containing one validated typed field update.
+
+        Args:
+            component_name: Registered component name.
+            component: Current or staged dataclass instance.
+            attr_name: Field to update.
+            supplied_value: Parsed but not necessarily typed value.
+
+        Returns:
+            Updated component and its coerced field value.
+
+        Raises:
+            ConfigurationFileError: If the field is unknown or has an invalid type.
+        """
+        configurable_fields = {
+            field_info.name
+            for field_info in fields(cast(Any, component))
+            if field_info.init and not field_info.name.startswith("_")
+        }
+        if attr_name not in configurable_fields:
+            raise ConfigurationFileError(
+                f"Unknown configuration field '{component_name}.{attr_name}'"
+            )
+
+        current_value = getattr(component, attr_name)
+        merged_value = merge_configuration_value(current_value, supplied_value)
+        expected_type = get_type_hints(type(component)).get(attr_name, object)
+        typed_value = coerce_configuration_value(
+            merged_value, expected_type, f"{component_name}.{attr_name}"
+        )
+        try:
+            updated = replace(cast(Any, component), **{attr_name: typed_value})
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationFileError(
+                f"Invalid configuration field '{component_name}.{attr_name}': {exc}"
+            ) from exc
+        return updated, typed_value
+
+    @staticmethod
+    def _component_validation_error(component: object) -> Optional[str]:
+        """Return a component validation error without leaking validator styles."""
+        validate_method = getattr(component, "validate", None)
+        if not callable(validate_method):
+            return None
+        try:
+            result = validate_method()
+        except ConfigError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"Unexpected error during validation: {exc}"
+
+        if getattr(result, "is_failure", False):
+            error = getattr(result, "error", None)
+            return str(getattr(error, "message", error or "validation failed"))
+        return None
 
     def _ensure_directories(self) -> None:
         """
@@ -603,23 +668,12 @@ class Config:
             if should_skip:
                 continue
 
-            # Validate the component
-            validate_method = getattr(component, "validate", None)
-            if validate_method and callable(validate_method):
-                try:
-                    validate_method()
-                    results[component_name] = []
-                except ConfigError as e:
-                    results[component_name] = [str(e)]
-                    # Increment error count for potential self-healing
-                    self._error_counts[component_name] += 1
-                except Exception as e:
-                    results[component_name] = [
-                        f"Unexpected error during validation: {str(e)}"
-                    ]
-                    self._error_counts[component_name] += 1
-            else:
-                results[component_name] = []
+            validation_error = self._component_validation_error(component)
+            results[component_name] = (
+                [validation_error] if validation_error is not None else []
+            )
+            if validation_error is not None:
+                self._error_counts[component_name] += 1
 
         return results
 
@@ -671,18 +725,20 @@ class Config:
             serialized values that can be converted to JSON
         """
         return {
-            "database": serialize_dataclass(self.database),
-            "vectorizer": serialize_dataclass(self.vectorizer),
-            "parser": asdict(self.parser),
-            "emotion": serialize_dataclass(self.emotion),
-            "graph": serialize_dataclass(self.graph),
-            "queue": asdict(self.queue),
-            "conversation": asdict(self.conversation),
-            "logging": asdict(self.logging),
+            "database": serialize_config(self.database),
+            "vectorizer": serialize_config(self.vectorizer),
+            "parser": serialize_config(self.parser),
+            "emotion": serialize_config(self.emotion),
+            "graph": serialize_config(self.graph),
+            "queue": serialize_config(self.queue),
+            "conversation": serialize_config(self.conversation),
+            "logging": serialize_config(self.logging),
             "meta": {
                 "version": ".".join(str(v) for v in self.version),
                 "generated_at": time.time(),
-                "accessed_components": list(self._accessed_components),
+                "accessed_components": cast(
+                    ConfigValue, sorted(self._accessed_components)
+                ),
             },
         }
 
@@ -698,7 +754,9 @@ class Config:
         """
         config_dict = serialize_config(self)
         indent = 2 if pretty else None
-        return json.dumps(config_dict, indent=indent)
+        return json.dumps(
+            config_dict, ensure_ascii=False, indent=indent, sort_keys=True
+        )
 
     def export_to_file(self, path: PathLike) -> None:
         """
@@ -710,8 +768,135 @@ class Config:
         Raises:
             IOError: If file writing fails due to permissions or disk space
         """
-        with open(path, "w") as f:
-            f.write(self.export_json(pretty=True))
+        target = Path(path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(self.export_json(pretty=True))
+                temporary_file.write("\n")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, target)
+        except OSError:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _read_config_mapping(path: Path) -> Mapping[str, Any]:
+        """Read a bounded JSON or YAML configuration document."""
+        return load_configuration_document(path)
+
+    def _has_higher_priority_source(
+        self, component_name: ComponentName, attr_name: str
+    ) -> bool:
+        """Return whether an environment/runtime value must beat a file value."""
+        source = self._value_sources.get((component_name, attr_name))
+        return source is not None and source.type.value > ConfigSourceType.FILE.value
+
+    def load_from_file(self, path: PathLike) -> None:
+        """Load JSON or YAML settings atomically.
+
+        Unknown components and fields are rejected to surface misspellings.
+        Runtime and environment overrides retain their documented precedence.
+        Dataclass instances are prepared before any live state is changed, so a
+        malformed document cannot leave a partially updated configuration.
+
+        Args:
+            path: JSON, YAML, or YML configuration file.
+
+        Raises:
+            ConfigError: If the file is invalid or contains unsupported settings.
+        """
+        config_path = Path(path).expanduser()
+        document = self._read_config_mapping(config_path)
+        allowed_top_level = set(self._component_registry) | {"meta"}
+        unknown_components = sorted(set(document) - allowed_top_level)
+        if unknown_components:
+            raise ConfigError(
+                "Unknown configuration component(s): " + ", ".join(unknown_components)
+            )
+
+        replacements: Dict[ComponentName, object] = {}
+        changes: List[Tuple[ComponentName, str, object, object]] = []
+        for raw_name, raw_settings in document.items():
+            if raw_name == "meta":
+                continue
+            component_name = raw_name
+            if not isinstance(raw_settings, Mapping):
+                raise ConfigError(
+                    f"Configuration component '{component_name}' must be an object"
+                )
+
+            component = getattr(self, component_name)
+            known_fields = {
+                field_info.name
+                for field_info in fields(component)
+                if field_info.init and not field_info.name.startswith("_")
+            }
+            unknown_fields = sorted(set(raw_settings) - known_fields)
+            if unknown_fields:
+                raise ConfigError(
+                    f"Unknown setting(s) for {component_name}: "
+                    + ", ".join(unknown_fields)
+                )
+
+            candidate = component
+            for attr_name, raw_value in raw_settings.items():
+                if self._has_higher_priority_source(component_name, attr_name):
+                    continue
+                old_value = getattr(candidate, attr_name)
+                candidate, new_value = self._updated_component(
+                    component_name, candidate, attr_name, raw_value
+                )
+                changes.append(
+                    (
+                        component_name,
+                        attr_name,
+                        old_value,
+                        new_value,
+                    )
+                )
+            validation_error = self._component_validation_error(candidate)
+            if validation_error is not None:
+                raise ConfigurationFileError(
+                    f"Invalid '{component_name}' configuration: {validation_error}"
+                )
+            replacements[component_name] = candidate
+
+        original_components = {
+            component_name: getattr(self, component_name)
+            for component_name in replacements
+        }
+        original_sources = self._value_sources.copy()
+        with self._config_lock:
+            try:
+                for component_name, component in replacements.items():
+                    setattr(self, component_name, component)
+                for component_name, attr_name, _old, _new in changes:
+                    self._value_sources[(component_name, attr_name)] = ConfigSource(
+                        ConfigSourceType.FILE, str(config_path.resolve())
+                    )
+                    self._invalidate_cache(component_name, attr_name)
+                self._ensure_directories()
+            except Exception:
+                for component_name, component in original_components.items():
+                    setattr(self, component_name, component)
+                self._value_sources = original_sources
+                self.clear_caches()
+                raise
+
+        for component_name, attr_name, old_value, new_value in changes:
+            self._notify_observers(component_name, attr_name, old_value, new_value)
 
     def register_observer(self, observer: ConfigObserver) -> None:
         """
@@ -788,6 +973,10 @@ class Config:
             # Remove matching cache entries
             for key in keys_to_remove:
                 self._value_cache.pop(key, None)
+
+            # functools.lru_cache does not expose per-key invalidation. Clearing
+            # this small cache guarantees runtime and hot-reload reads are fresh.
+            self.get_cached_value.cache_clear()
 
     def get_value_with_source(
         self, component_name: ComponentName, attr_name: str
@@ -900,14 +1089,24 @@ class Config:
 
         old_value = getattr(component, attr_name)
 
-        # Set the new value
+        try:
+            updated, normalized_value = self._updated_component(
+                component_name, component, attr_name, value
+            )
+        except ConfigurationFileError as exc:
+            raise TypeError(
+                f"Cannot set {component_name}.{attr_name} to {value!r}: {exc}"
+            ) from exc
+
+        validation_error = self._component_validation_error(updated)
+        if validation_error is not None:
+            raise TypeError(
+                f"Cannot set {component_name}.{attr_name} to {value!r}: "
+                f"{validation_error}"
+            )
+
         with self._config_lock:
-            try:
-                setattr(component, attr_name, value)
-            except (TypeError, ValueError) as e:
-                raise TypeError(
-                    f"Cannot set {component_name}.{attr_name} to {value!r}: {str(e)}"
-                ) from e
+            setattr(self, component_name, updated)
 
             # Record the source
             self._value_sources[(component_name, attr_name)] = ConfigSource(
@@ -919,7 +1118,7 @@ class Config:
             self._invalidate_cache(component_name, attr_name)
 
         # Notify observers
-        self._notify_observers(component_name, attr_name, old_value, value)
+        self._notify_observers(component_name, attr_name, old_value, normalized_value)
 
     def enable_hot_reload(self, interval: float = 30.0) -> None:
         """
@@ -935,10 +1134,7 @@ class Config:
         self._hot_reload_interval = interval
 
         # Start the monitoring thread if not already running
-        if (
-            not hasattr(self, "_hot_reload_thread")
-            or not self._hot_reload_thread.is_alive()
-        ):
+        if self._hot_reload_thread is None or not self._hot_reload_thread.is_alive():
             self._hot_reload_thread = threading.Thread(
                 target=self._hot_reload_monitor,
                 daemon=True,
@@ -1029,8 +1225,7 @@ class Config:
             )
 
     def apply_profile(self, profile_name: str) -> None:
-        """
-        Apply a predefined configuration profile.
+        """Atomically apply a predefined configuration profile.
 
         Profiles define sets of configuration values optimized for
         specific use cases or environments.
@@ -1040,36 +1235,61 @@ class Config:
 
         Raises:
             ValueError: If the profile doesn't exist
+            TypeError: If a profile violates a component contract.
         """
-        # Define profiles - in a real implementation, these would be
-        # loaded from files or a database
-        from typing import Any, Dict
-
-        profiles: Dict[str, Dict[str, Dict[str, Any]]] = {
+        profiles: Dict[str, Dict[str, Dict[str, object]]] = {
             "development": {
                 "database": {"db_path": ":memory:"},
-                "logging": {"level": "DEBUG", "show_sql": True},
+                "logging": {"level": "DEBUG"},
                 "vectorizer": {"storage_type": "memory"},
             },
             "production": {
-                "database": {"db_path": "data/production.db"},
-                "logging": {"level": "WARNING", "show_sql": False},
+                "database": {"db_path": str(DATA_ROOT / "production.sqlite")},
+                "logging": {"level": "WARNING"},
                 "vectorizer": {"storage_type": "disk"},
             },
             "testing": {
                 "database": {"db_path": ":memory:"},
                 "logging": {"level": "ERROR"},
-                "vectorizer": {"model_name": "test-mini"},
+                "parser": {"enable_model": False},
+                "vectorizer": {"batch_size": 4, "storage_type": "memory"},
             },
             "high_performance": {
-                "vectorizer": {"batch_size": 64, "optimization_level": "high"},
-                "queue": {"max_workers": 8},
-                "database": {"pragmas": {"synchronous": 0, "journal_mode": "memory"}},
+                "database": {
+                    "pragmas": {
+                        "cache_size": "-64000",
+                        "journal_mode": "WAL",
+                        "synchronous": "NORMAL",
+                    }
+                },
+                "queue": {
+                    "batch_size": 200,
+                    "lru_cache_size": 1024,
+                    "throttle_seconds": 0.0,
+                },
+                "vectorizer": {
+                    "batch_size": 64,
+                    "optimization_level": "speed",
+                    "reserved_memory_mb": 1024,
+                },
             },
             "low_memory": {
-                "vectorizer": {"batch_size": 8},
-                "queue": {"max_workers": 2},
-                "parser": {"preload_resources": False},
+                "graph": {
+                    "high_quality_rendering": False,
+                    "limit_edge_count": 600,
+                    "limit_node_count": 300,
+                },
+                "parser": {"enable_model": False},
+                "queue": {
+                    "batch_size": 10,
+                    "lru_cache_size": 32,
+                    "max_queue_size": 1000,
+                },
+                "vectorizer": {
+                    "batch_size": 4,
+                    "enable_compression": True,
+                    "reserved_memory_mb": 128,
+                },
             },
         }
 
@@ -1079,20 +1299,49 @@ class Config:
                 f"Available profiles: {', '.join(profiles.keys())}"
             )
 
-        # Apply the profile settings
-        profile = profiles[profile_name]
-        for component_name, settings in profile.items():
-            component = self.get_component(component_name)
-            if component is None:
-                continue
-
+        replacements: Dict[ComponentName, object] = {}
+        changes: List[Tuple[ComponentName, str, object, object]] = []
+        for component_name, settings in profiles[profile_name].items():
+            component = getattr(self, component_name)
+            candidate = component
             for attr_name, value in settings.items():
-                # Skip if attribute doesn't exist
-                if not hasattr(component, attr_name):
-                    continue
+                old_value = getattr(candidate, attr_name, None)
+                candidate, typed_value = self._updated_component(
+                    component_name, candidate, attr_name, value
+                )
+                changes.append((component_name, attr_name, old_value, typed_value))
+            validation_error = self._component_validation_error(candidate)
+            if validation_error is not None:
+                raise TypeError(
+                    f"Invalid '{profile_name}' profile for {component_name}: "
+                    f"{validation_error}"
+                )
+            replacements[component_name] = candidate
 
-                # Apply the setting
-                self.set_runtime_value(component_name, attr_name, value)
+        original_components = {
+            component_name: getattr(self, component_name)
+            for component_name in replacements
+        }
+        original_sources = self._value_sources.copy()
+        with self._config_lock:
+            try:
+                for component_name, component in replacements.items():
+                    setattr(self, component_name, component)
+                for component_name, attr_name, _, _ in changes:
+                    self._value_sources[(component_name, attr_name)] = ConfigSource(
+                        ConfigSourceType.RUNTIME, f"Profile: {profile_name}"
+                    )
+                    self._invalidate_cache(component_name, attr_name)
+                self._ensure_directories()
+            except Exception:
+                for component_name, component in original_components.items():
+                    setattr(self, component_name, component)
+                self._value_sources = original_sources
+                self.clear_caches()
+                raise
+
+        for component_name, attr_name, old_value, new_value in changes:
+            self._notify_observers(component_name, attr_name, old_value, new_value)
 
         import logging
 
@@ -1132,16 +1381,10 @@ class Config:
             ),
         }
 
-        # Get validation status if available
-        validate_method = getattr(component, "validate", None)
-        if validate_method and callable(validate_method):
-            try:
-                validate_method()
-                info["validation"] = "valid"
-            except Exception as e:
-                info["validation"] = f"invalid: {str(e)}"
-        else:
-            info["validation"] = "not implemented"
+        validation_error = self._component_validation_error(component)
+        info["validation"] = (
+            "valid" if validation_error is None else f"invalid: {validation_error}"
+        )
 
         return info
 

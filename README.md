@@ -279,6 +279,15 @@ print(config.vectorizer.model_name)
 config.export_to_file("config.json")
 ```
 
+The CLI accepts JSON and YAML configuration files directly:
+
+```bash
+word_forge --config config.yaml doctor
+```
+
+File settings are validated before they are applied. Environment variables and
+explicit runtime overrides take precedence over file values.
+
 ## NLTK Data
 
 Word Forge uses NLTK for WordNet and other linguistic resources. Data is downloaded automatically on first use, or can be pre-downloaded:
