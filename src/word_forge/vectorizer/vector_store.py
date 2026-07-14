@@ -70,6 +70,7 @@ from numpy.typing import NDArray
 from word_forge.config import config
 from word_forge.database.database_manager import DatabaseError, DBManager, WordEntryDict
 from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.vectorizer.model_utils import get_embedding_dimension
 
 # Type definitions for clarity and constraint
 VectorID: TypeAlias = Union[
@@ -761,12 +762,8 @@ class VectorStore:
                 self.dimension = config.vectorizer.dimension
             else:
                 # Infer dimension from the loaded model
-                model_dimension = self.model.get_sentence_embedding_dimension()  # type: ignore
-                if (
-                    model_dimension is None
-                    or not isinstance(model_dimension, int)
-                    or model_dimension <= 0
-                ):
+                model_dimension = get_embedding_dimension(self.model)
+                if model_dimension is None:
                     raise ModelLoadError(
                         f"Could not infer valid dimension from model '{self.model_name}'"
                     )

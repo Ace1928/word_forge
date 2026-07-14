@@ -38,6 +38,7 @@ except Exception:  # pragma: no cover - allow missing torch
 from numpy.typing import NDArray
 
 from word_forge.database.database_manager import DBManager
+from word_forge.vectorizer.model_utils import get_embedding_dimension
 from word_forge.vectorizer.vector_store import VectorStore
 
 
@@ -729,8 +730,8 @@ class TransformerEmbedder:
 
         # Get the actual dimension from the loaded model
         try:
-            model_dim = self.model.get_sentence_embedding_dimension()  # type: ignore
-            if model_dim is None or not isinstance(model_dim, int) or model_dim <= 0:
+            model_dim = get_embedding_dimension(self.model)
+            if model_dim is None:
                 raise EmbeddingError(
                     f"Model '{model_name}' returned invalid dimension: {model_dim}"
                 )
