@@ -38,6 +38,13 @@ def _create_processor(
 class TestRecursiveEmotionProcessorInit:
     """Tests for RecursiveEmotionProcessor initialization."""
 
+    def test_default_manager_does_not_load_unused_llm(self, tmp_path: Path) -> None:
+        """The default zero-weight LLM must not allocate a model."""
+        _, emotion_manager = _create_dependencies(tmp_path)
+
+        assert emotion_manager.llm_weight == 0.0
+        assert emotion_manager.llm_interface is None
+
     def test_init_with_managers(self, tmp_path: Path) -> None:
         """Test initialization with DBManager and EmotionManager."""
         db_manager, emotion_manager = _create_dependencies(tmp_path)

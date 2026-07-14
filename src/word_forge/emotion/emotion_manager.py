@@ -153,11 +153,6 @@ class EmotionManager:
         # Add metrics for runtime optimization
         self.metrics = EmotionDetectionMetrics()
 
-        self._create_tables()
-
-        # Initialize sentiment analyzers and LLM if available
-        self._init_analysis_tools()
-
         # Access emotion constraints from centralized config instance
         self.VALENCE_RANGE = self.config.valence_range
         self.AROUSAL_RANGE = self.config.arousal_range
@@ -168,6 +163,11 @@ class EmotionManager:
         self.vader_weight = self.config.vader_weight
         self.textblob_weight = self.config.textblob_weight
         self.llm_weight = getattr(self.config, "llm_weight", 0.0)
+
+        self._create_tables()
+
+        # Initialize only analyzers that can contribute to the configured result.
+        self._init_analysis_tools()
 
         # Initialize recursive emotion processor lazily
         self._recursive_processor = None
@@ -206,7 +206,7 @@ class EmotionManager:
 
         # Initialize LLM if available
         try:
-            if LLM_AVAILABLE:
+            if LLM_AVAILABLE and self.llm_weight > 0.0:
                 self.llm_interface = ModelState()
                 if self.llm_interface.initialize():
                     logger.info(
