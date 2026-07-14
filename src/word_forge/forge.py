@@ -93,6 +93,7 @@ def start(
     llm_model: Optional[str] = None,
     llm_profile: Optional[str] = None,
     enable_vector: Optional[bool] = None,
+    language: Optional[str] = None,
 ) -> None:
     """Launch the Word Forge processing pipeline.
 
@@ -117,12 +118,15 @@ def start(
     enable_vector:
         ``True`` requires vector indexing, ``False`` disables it, and ``None``
         enables it when the optional vector dependencies are available.
+    language:
+        BCP 47 language tag applied to seeds and same-language discoveries.
     """
 
     from word_forge.configs.config_essentials import measure_execution
     from word_forge.database.database_manager import DBManager
     from word_forge.graph.graph_manager import GraphManager
     from word_forge.graph.graph_worker import GraphWorker
+    from word_forge.parser.linguistics import canonicalize_language_tag
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager
     from word_forge.queue.queue_worker import (
@@ -133,12 +137,22 @@ def start(
     from word_forge.queue.worker_manager import WorkerManager
 
     _setup_logging()
-    LOGGER.info("Starting Word Forge")
+    from word_forge.config import config
+
+    selected_language = canonicalize_language_tag(
+        language or config.parser.default_language
+    )
+    seeds = list(seed_words) if seed_words is not None else []
+    if not seeds:
+        if selected_language.split("-", 1)[0] != "en":
+            raise ValueError(
+                "Explicit seed words are required when --language is not English"
+            )
+        seeds = ["language", "knowledge", "system"]
+    LOGGER.info("Starting Word Forge for language %s", selected_language)
 
     requested_profile = llm_profile
     if llm_model is None and requested_profile is None:
-        from word_forge.config import config
-
         if config.parser.enable_model and config.parser.model_name is None:
             requested_profile = config.parser.model_profile
 
@@ -171,6 +185,7 @@ def start(
         queue_manager=queue_manager,
         model_name=llm_model,
         model_profile=llm_profile,
+        language=selected_language,
     )
     processor = WordProcessor(
         db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER
@@ -208,15 +223,12 @@ def start(
     if vector_worker is not None:
         manager.register(vector_worker)
 
-    seeds = (
-        list(seed_words)
-        if seed_words is not None
-        else ["language", "knowledge", "system"]
-    )
     for term in seeds:
         queue_manager.enqueue(term)
 
-    with measure_execution("forge.start", {"workers": worker_count}) as metrics:
+    with measure_execution(
+        "forge.start", {"workers": worker_count, "language": selected_language}
+    ) as metrics:
         manager.start_all()
         LOGGER.info(
             "Workers started in %.1fms",
@@ -280,14 +292,27 @@ def start(
         LOGGER.info("Word Forge stopped")
 
 
-def run_setup_nltk() -> int:
+def run_setup_nltk(
+    *, include_multilingual: bool = False, accept_source_licenses: bool = False
+) -> int:
     """Ensure all required NLTK corpora are installed locally."""
 
     _setup_logging()
     LOGGER.info("Checking NLTK dependencies")
-    from word_forge.utils.nltk_utils import ensure_nltk_data
+    from word_forge.utils.nltk_utils import (
+        LexicalDataLicenseError,
+        ensure_nltk_data,
+    )
 
-    downloaded = ensure_nltk_data(logger=LOGGER)
+    try:
+        downloaded = ensure_nltk_data(
+            logger=LOGGER,
+            include_multilingual=include_multilingual,
+            accept_source_licenses=accept_source_licenses,
+        )
+    except LexicalDataLicenseError as exc:
+        LOGGER.error("Unable to install multilingual lexical data: %s", exc)
+        return 2
     if downloaded:
         LOGGER.info("Downloaded NLTK corpora: %s", ", ".join(downloaded))
     else:
@@ -434,6 +459,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=str,
         default=None,
         help="Override the default SQLite database path",
+    )
+    start_parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        metavar="BCP47",
+        help="Language tag for seeds and recursive expansion (default: en)",
     )
     start_parser.add_argument(
         "--vector-model",
@@ -642,9 +674,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Seconds to wait for each worker-driven stage",
     )
 
-    subparsers.add_parser(
+    setup_nltk_parser = subparsers.add_parser(
         "setup-nltk",
         help="Download the NLTK corpora required by Word Forge",
+    )
+    setup_nltk_parser.add_argument(
+        "--multilingual",
+        action="store_true",
+        help="Also install Open Multilingual Wordnet component datasets",
+    )
+    setup_nltk_parser.add_argument(
+        "--accept-source-licenses",
+        action="store_true",
+        help="Acknowledge responsibility for optional dataset license terms",
     )
 
     doctor_parser = subparsers.add_parser(
@@ -740,8 +782,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 llm_model=args.llm_model,
                 llm_profile=args.llm_profile,
                 enable_vector=args.vector,
+                language=args.language,
             )
-        except ModelProfileError as exc:
+        except (ModelProfileError, ValueError) as exc:
             LOGGER.error("Unable to start Word Forge: %s", exc)
             exit_code = 2
     elif args.command == "models":
@@ -844,7 +887,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             demo_parser.print_help()
             exit_code = 1
     elif args.command == "setup-nltk":
-        exit_code = run_setup_nltk()
+        exit_code = run_setup_nltk(
+            include_multilingual=args.multilingual,
+            accept_source_licenses=args.accept_source_licenses,
+        )
     elif args.command == "doctor":
         import json
 

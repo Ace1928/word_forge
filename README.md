@@ -133,6 +133,9 @@ word_forge models recommend
 # Start the processing pipeline with seed words
 word_forge start apple banana --minutes 5 --workers 4
 
+# Preserve multilingual identity throughout ingestion and graph storage
+word_forge start chat langue --language fr-FR --minutes 5 --no-vector
+
 # Use custom database, vector, and LLM models (useful for isolating runs)
 word_forge start apple --db-path /tmp/word_forge.sqlite \
   --vector-model sentence-transformers/all-MiniLM-L6-v2 \
@@ -175,6 +178,10 @@ word_forge demo full --3d --open-browser
 # Setup NLTK data
 word_forge setup-nltk
 
+# Optional: review source terms, then install multilingual WordNet data
+word_forge sources list
+word_forge setup-nltk --multilingual --accept-source-licenses
+
 # Quiet mode (suppress non-error output)
 word_forge --quiet start apple
 
@@ -182,7 +189,8 @@ word_forge --quiet start apple
 word_forge --verbose start apple
 ```
 
-Note: The first run may download NLTK corpora and sentence-transformer models.
+Note: The first run may download core NLTK corpora and sentence-transformer
+models. License-gated multilingual datasets are never downloaded implicitly.
 
 ### Demo Scripts
 
@@ -311,6 +319,12 @@ word_forge setup-nltk
 ```
 
 Required corpora: WordNet, Punkt, stopwords, VADER lexicon.
+
+Open Multilingual Wordnet is optional because its component wordnets have
+individual licenses. Inspect `word_forge sources list`, then opt in with
+`word_forge setup-nltk --multilingual --accept-source-licenses`. The default
+ingestion language is `en`; set `--language BCP47` or
+`WORD_FORGE_LANGUAGE=BCP47` for another language.
 
 ## Troubleshooting
 

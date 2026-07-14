@@ -7,6 +7,8 @@ from typing import List, NamedTuple, Optional
 
 import nltk  # type: ignore[import-untyped]
 
+from word_forge.parser.wordnet_languages import MULTILINGUAL_WORDNET_PACKAGE
+
 
 class _NLTKResource(NamedTuple):
     """Description of an NLTK package and the path used to locate it."""
@@ -17,9 +19,8 @@ class _NLTKResource(NamedTuple):
 
 
 # Resources required across the codebase
-_NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
+_CORE_NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
     _NLTKResource("wordnet", "corpora/wordnet", "WordNet lexical database"),
-    _NLTKResource("omw-1.4", "corpora/omw-1.4", "Open Multilingual WordNet"),
     _NLTKResource(
         "cmudict",
         "corpora/cmudict",
@@ -58,7 +59,19 @@ _NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
     ),
 )
 
+_MULTILINGUAL_NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
+    _NLTKResource(
+        MULTILINGUAL_WORDNET_PACKAGE,
+        f"corpora/{MULTILINGUAL_WORDNET_PACKAGE}",
+        "Open Multilingual Wordnet component datasets",
+    ),
+)
+
 _initialized = False
+
+
+class LexicalDataLicenseError(RuntimeError):
+    """Raised when optional lexical data is requested without acknowledgement."""
 
 
 def _resource_available(resource: _NLTKResource) -> bool:
@@ -72,17 +85,37 @@ def _resource_available(resource: _NLTKResource) -> bool:
     return False
 
 
-def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
-    """Ensure that required NLTK data packages are available."""
+def ensure_nltk_data(
+    logger: Optional[logging.Logger] = None,
+    *,
+    include_multilingual: bool = False,
+    accept_source_licenses: bool = False,
+) -> List[str]:
+    """Ensure selected NLTK data packages are available.
+
+    Open Multilingual Wordnet aggregates independently licensed wordnets and
+    is therefore never downloaded by the unattended core path. Callers must
+    explicitly request it and acknowledge responsibility for the component
+    terms shipped in the selected snapshot.
+    """
+
+    if include_multilingual and not accept_source_licenses:
+        raise LexicalDataLicenseError(
+            "Open Multilingual Wordnet has per-component licenses. Review "
+            "`word_forge sources list`, then pass accept_source_licenses=True "
+            "or use --accept-source-licenses."
+        )
 
     global _initialized
-    if _initialized and not get_missing_nltk_resources():
+    if _initialized and not get_missing_nltk_resources(
+        include_multilingual=include_multilingual
+    ):
         if logger:
             logger.info("NLTK resources already initialized; nothing to download.")
         return []
 
     downloaded: List[str] = []
-    for resource in _NLTK_RESOURCES:
+    for resource in _selected_resources(include_multilingual):
         if not _resource_available(resource):
             nltk.download(resource.package, quiet=True)  # type: ignore
             downloaded.append(resource.package)
@@ -107,13 +140,26 @@ def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
     return downloaded
 
 
-def get_missing_nltk_resources() -> List[str]:
-    """Return package names for required NLTK resources not installed locally."""
+def get_missing_nltk_resources(*, include_multilingual: bool = False) -> List[str]:
+    """Return package names for selected NLTK resources not installed locally."""
+
     missing: List[str] = []
-    for resource in _NLTK_RESOURCES:
+    for resource in _selected_resources(include_multilingual):
         if not _resource_available(resource):
             missing.append(resource.package)
     return missing
 
 
-__all__ = ["ensure_nltk_data", "get_missing_nltk_resources"]
+def _selected_resources(include_multilingual: bool) -> tuple[_NLTKResource, ...]:
+    """Return core resources plus explicitly selected optional datasets."""
+
+    if include_multilingual:
+        return _CORE_NLTK_RESOURCES + _MULTILINGUAL_NLTK_RESOURCES
+    return _CORE_NLTK_RESOURCES
+
+
+__all__ = [
+    "LexicalDataLicenseError",
+    "ensure_nltk_data",
+    "get_missing_nltk_resources",
+]

@@ -53,7 +53,10 @@ metadata shipped with the exact downloaded snapshot are authoritative.
   must evaluate them individually.
 - [Open Multilingual Wordnet](https://omwn.org/) aggregates independently
   licensed wordnets. Importers must preserve each component's license and
-  citation rather than applying one inferred license to the aggregate.
+  citation rather than applying one inferred license to the aggregate. Word
+  Forge can query an installed NLTK OMW 2.0 snapshot, but its installer requires
+  both `--multilingual` and `--accept-source-licenses`; it is excluded from
+  unattended bootstrap.
 - [Epitran](https://github.com/dmort27/epitran) provides MIT-licensed,
   language-and-script-specific orthography-to-IPA mappings.
 - [eSpeak NG](https://github.com/espeak-ng/espeak-ng) offers compact phoneme

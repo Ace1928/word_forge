@@ -372,7 +372,9 @@ class WordProcessor(QueueProcessor[str]):
             # Get information about any relationships
             with contextlib.suppress(Exception):
                 # Use get_word_entry to safely handle missing terms
-                entry = self.db_manager.get_word_entry(term)
+                entry = self.db_manager.get_word_entry(
+                    term, language=self.parser_refiner.language
+                )
                 if entry:
                     # Extract relationships and pass as Dict[str, Any]
                     relationships = entry.get("relationships", [])

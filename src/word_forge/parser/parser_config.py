@@ -49,6 +49,7 @@ class ParserConfig:
         enable_model: Whether to use language models for examples
         model_name: Optional custom Hugging Face model identifier
         model_profile: Named resource profile used when no custom model is set
+        default_language: BCP 47 tag used by ingestion unless explicitly overridden
         resource_paths: Paths to various lexical resources, relative to data_dir
         ENV_VARS: Mapping of environment variables to config attributes
 
@@ -76,6 +77,9 @@ class ParserConfig:
     # Portable is ungated; the model is still only loaded when enable_model=True.
     model_profile: str = "portable"
 
+    # Language identity is explicit throughout persistence and graph construction.
+    default_language: str = "en"
+
     # Resource paths relative to data_dir
     resource_paths: Dict[str, str] = field(
         default_factory=lambda: {
@@ -93,6 +97,7 @@ class ParserConfig:
         "WORD_FORGE_ENABLE_MODEL": ("enable_model", bool),
         "WORD_FORGE_PARSER_MODEL": ("model_name", str),
         "WORD_FORGE_MODEL_PROFILE": ("model_profile", str),
+        "WORD_FORGE_LANGUAGE": ("default_language", str),
     }
 
     @cached_property
@@ -181,6 +186,7 @@ class ParserConfig:
             enable_model=True,  # Force enable when specifying a model
             model_name=model_name,
             model_profile=self.model_profile,
+            default_language=self.default_language,
             resource_paths=self.resource_paths.copy(),
         )
 

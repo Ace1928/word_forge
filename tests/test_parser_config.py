@@ -23,6 +23,7 @@ class TestParserConfigInitialization:
         assert config.enable_model is False
         assert config.model_name is None
         assert config.model_profile == "portable"
+        assert config.default_language == "en"
         assert isinstance(config.resource_paths, dict)
         assert "openthesaurus" in config.resource_paths
         assert "thesaurus" in config.resource_paths
@@ -125,6 +126,7 @@ class TestEnvironmentVariables:
         assert "WORD_FORGE_ENABLE_MODEL" in ParserConfig.ENV_VARS
         assert "WORD_FORGE_PARSER_MODEL" in ParserConfig.ENV_VARS
         assert "WORD_FORGE_MODEL_PROFILE" in ParserConfig.ENV_VARS
+        assert "WORD_FORGE_LANGUAGE" in ParserConfig.ENV_VARS
 
     def test_env_var_mapping_structure(self):
         """Test that ENV_VARS mappings have correct structure."""

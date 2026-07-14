@@ -33,6 +33,12 @@ def test_cli_setup_nltk_command() -> None:
     assert forge.main(["setup-nltk"]) == 0
 
 
+def test_cli_multilingual_setup_requires_license_acknowledgement() -> None:
+    from word_forge import forge
+
+    assert forge.main(["setup-nltk", "--multilingual"]) == 2
+
+
 def test_cli_doctor_json_command(capsys: pytest.CaptureFixture[str]) -> None:
     from word_forge import forge
 
@@ -111,6 +117,40 @@ def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:
     )
 
     assert result == 0
+
+
+def test_cli_start_persists_requested_language(tmp_path: Path) -> None:
+    """Language identity reaches SQLite even without optional OMW data."""
+    from word_forge import forge
+    from word_forge.database.database_manager import DBManager
+
+    ensure_nltk_data()
+    db_path = tmp_path / "cli_french_start.db"
+    result = forge.main(
+        [
+            "start",
+            "motforgenonexistent",
+            "--language",
+            "fr-FR",
+            "--minutes",
+            "0.001",
+            "--workers",
+            "1",
+            "--db-path",
+            str(db_path),
+            "--no-vector",
+        ]
+    )
+
+    assert result == 0
+    database = DBManager(db_path=db_path)
+    try:
+        assert (
+            database.get_word_entry("motforgenonexistent", "fr-FR")["language"]
+            == "fr-FR"
+        )
+    finally:
+        database.close()
 
 
 @pytest.mark.skipif(

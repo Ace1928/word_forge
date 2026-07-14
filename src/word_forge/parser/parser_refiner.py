@@ -29,9 +29,11 @@ from __future__ import annotations
 import logging  # Import logging
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
+from threading import Lock
 from typing import TYPE_CHECKING, Dict, FrozenSet, List, Optional, Set, Tuple, cast
 
 import nltk  # type: ignore
@@ -44,6 +46,12 @@ from nltk.stem import WordNetLemmatizer  # type: ignore
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.database_manager import DBManager
 from word_forge.parser.lexical_functions import create_lexical_dataset
+from word_forge.parser.linguistics import (
+    canonicalize_language_tag,
+    lookup_pronunciations,
+    normalize_term,
+    segment_graphemes,
+)
 from word_forge.queue.queue_manager import QueueManager
 from word_forge.utils.nltk_utils import ensure_nltk_data
 
@@ -371,7 +379,7 @@ class TermExtractor:
         """
         ensure_nltk_data()
         semantic_terms: Set[str] = set()
-        term_sample = list(base_terms)[:75]
+        term_sample = sorted(base_terms, key=normalize_term)[:75]
 
         def _process_lemma(lemma: WordNetLemma) -> None:
             """Extract and normalize a lemma name, adding to results if valid."""
@@ -416,7 +424,7 @@ class TermExtractor:
                 continue
 
         # Limit returned set to prevent overwhelming downstream processing
-        return set(list(semantic_terms)[:200])
+        return set(sorted(semantic_terms, key=normalize_term)[:200])
 
     def _filter_terms(
         self,
@@ -470,7 +478,10 @@ class TermExtractor:
             scored_terms.append((term, score))
 
         # Sort by score (higher is better)
-        sorted_terms = sorted(scored_terms, key=lambda x: x[1], reverse=True)
+        sorted_terms = sorted(
+            scored_terms,
+            key=lambda item: (-item[1], normalize_term(item[0])),
+        )
 
         # Split into two categories: priority and standard
         priority_terms = [term for term, _ in sorted_terms if " " in term][:100]
@@ -495,7 +506,8 @@ class ParserRefiner:
         model_name: Optional[str] = None,
         model_profile: Optional[str] = None,
         llm_state: Optional[ModelState] = None,
-    ):
+        language: Optional[str] = None,
+    ) -> None:
         """
         Initialize the ParserRefiner with database and queue managers.
 
@@ -506,7 +518,10 @@ class ParserRefiner:
             model_name: Optional custom Hugging Face model identifier
             model_profile: Named model profile, including ``auto`` and ``off``
             llm_state: Preconfigured model state, primarily for embedded use
+            language: BCP 47 language for this ingestion queue
         """
+        from word_forge.config import config
+
         self.db_manager = db_manager or DBManager()
         self.queue_manager = (
             queue_manager if queue_manager is not None else QueueManager[str]()
@@ -514,6 +529,11 @@ class ParserRefiner:
         self.resources = LexicalResources(data_dir)
         self.term_extractor = TermExtractor()
         self.stats = ProcessingStatistics()
+        self.language = canonicalize_language_tag(
+            language or config.parser.default_language
+        )
+        self._reported_source_warnings: Set[str] = set()
+        self._warning_lock = Lock()
 
         self.llm_state = llm_state
         selected_model: Optional[str] = None
@@ -525,7 +545,6 @@ class ParserRefiner:
             selected_profile = resolve_model_profile(model_profile)
             selected_model = selected_profile.model_id
         elif self.llm_state is None:
-            from word_forge.config import config
             from word_forge.parser.model_profiles import resolve_model_profile
 
             if config.parser.enable_model:
@@ -554,23 +573,25 @@ class ParserRefiner:
         Returns:
             Boolean indicating whether processing was successful
         """
-        term_lower = term.strip().lower()
-        if not term_lower:
+        if not isinstance(term, str) or not term.strip():
             return False
+        display_term = unicodedata.normalize("NFC", term.strip())
 
         try:
             self.stats.increment_processed()
 
             # Retrieve comprehensive lexical data
             dataset = create_lexical_dataset(
-                term_lower,
+                display_term,
                 openthesaurus_path=self.resources.get_path("openthesaurus"),
                 odict_path=self.resources.get_path("odict"),
                 dbnary_path=self.resources.get_path("dbnary"),
                 opendict_path=self.resources.get_path("opendict"),
                 thesaurus_path=self.resources.get_path("thesaurus"),
                 model_state=self.llm_state,
+                language=self.language,
             )
+            self._report_source_warnings(dataset.get("source_warnings", []))
 
             # Extract and consolidate word information
             definitions = self._extract_all_definitions(dataset)
@@ -579,11 +600,27 @@ class ParserRefiner:
             usage_examples = self._extract_usage_examples(dataset)
 
             # Store in database
-            self.db_manager.insert_or_update_word(
-                term=term_lower,
+            has_lexical_data = bool(
+                definitions
+                or part_of_speech
+                or usage_examples
+                or dataset.get("wordnet_data")
+                or dataset.get("dbnary_data")
+                or dataset.get("openthesaurus_synonyms")
+                or dataset.get("thesaurus_synonyms")
+            )
+            word_id = self.db_manager.insert_or_update_word(
+                term=display_term,
                 definition=full_definition,
                 part_of_speech=part_of_speech,
                 usage_examples=usage_examples,
+                language=self.language,
+                source=self._primary_source(dataset),
+                is_stub=not has_lexical_data,
+            )
+            self.db_manager.replace_graphemes(word_id, segment_graphemes(display_term))
+            self.db_manager.replace_pronunciations(
+                word_id, lookup_pronunciations(display_term, self.language)
             )
 
             # Relationship persistence and discovery may run in parallel, but
@@ -591,13 +628,21 @@ class ParserRefiner:
             # Returning earlier lets callers stop the queue while these tasks
             # are still trying to enqueue newly discovered terms.
             relationship_future = self._executor.submit(
-                self._process_relationships, term_lower, dataset
+                self._process_relationships, display_term, dataset
             )
-            discovery_future = self._executor.submit(
-                self._discover_new_terms, term_lower, full_definition, usage_examples
+            discovery_future = (
+                self._executor.submit(
+                    self._discover_new_terms,
+                    display_term,
+                    full_definition,
+                    usage_examples,
+                )
+                if self.language.split("-", 1)[0] == "en"
+                else None
             )
             relationship_future.result()
-            discovery_future.result()
+            if discovery_future is not None:
+                discovery_future.result()
 
             self.stats.increment_successful()
             return True
@@ -605,9 +650,44 @@ class ParserRefiner:
         except Exception as e:
             self.stats.increment_error()
             logger.error(
-                f"Error processing word '{term_lower}': {str(e)}", exc_info=True
+                "Error processing word '%s' (%s): %s",
+                display_term,
+                self.language,
+                str(e),
+                exc_info=True,
             )
             return False
+
+    def _report_source_warnings(self, warnings: List[str]) -> None:
+        """Log each optional-source warning once per parser instance."""
+
+        with self._warning_lock:
+            for warning in warnings:
+                if warning in self._reported_source_warnings:
+                    continue
+                self._reported_source_warnings.add(warning)
+                logger.warning("Lexical source unavailable: %s", warning)
+
+    def _primary_source(self, dataset: LexicalDataset) -> str:
+        """Return the highest-priority source that contributed lexical data."""
+
+        wordnet_data = dataset.get("wordnet_data", [])
+        if wordnet_data:
+            return str(wordnet_data[0].get("source") or "princeton-wordnet")
+        if dataset.get("dbnary_data"):
+            return "dbnary"
+        if dataset.get("odict_data", {}).get("definition") not in {"", "Not Found"}:
+            return "local-odict"
+        if dataset.get("opendict_data", {}).get("definition") not in {
+            "",
+            "Not Found",
+        }:
+            return "local-opendict"
+        if dataset.get("openthesaurus_synonyms"):
+            return "local-openthesaurus"
+        if dataset.get("thesaurus_synonyms"):
+            return "local-thesaurus"
+        return "user-seed"
 
     def _extract_all_definitions(self, dataset: LexicalDataset) -> List[str]:
         """
@@ -619,16 +699,30 @@ class ParserRefiner:
         Returns:
             List of unique definitions from all sources
         """
-        combined_definitions: Set[str] = set()
+        combined_definitions: List[str] = []
+        seen_definitions: Set[str] = set()
+
+        def append_definition(value: object) -> None:
+            """Append a non-placeholder definition once, preserving source order."""
+
+            if not isinstance(value, str):
+                return
+            definition = value.strip()
+            if (
+                not definition
+                or definition == "Not Found"
+                or definition in seen_definitions
+            ):
+                return
+            seen_definitions.add(definition)
+            combined_definitions.append(definition)
 
         # WordNet definitions
         # Use .get with default empty list
         for wn_data in dataset.get("wordnet_data", []):
             # Ensure wn_data is a dict before accessing keys
             if isinstance(wn_data, dict):
-                defn = wn_data.get("definition", "")
-                if defn and isinstance(defn, str):  # Check type
-                    combined_definitions.add(defn)
+                append_definition(wn_data.get("definition", ""))
 
         # ODict / OpenDictData
         odict_data = dataset.get("odict_data", {})
@@ -636,8 +730,7 @@ class ParserRefiner:
         odict_def: Optional[str] = (
             odict_data.get("definition", "") if isinstance(odict_data, dict) else None
         )
-        if odict_def and odict_def != "Not Found":
-            combined_definitions.add(odict_def)
+        append_definition(odict_def)
 
         opendict_data = dataset.get("opendict_data", {})
         # Add type check for opendict_data
@@ -646,19 +739,16 @@ class ParserRefiner:
             if isinstance(opendict_data, dict)
             else None
         )
-        if open_dict_def and open_dict_def != "Not Found":
-            combined_definitions.add(open_dict_def)
+        append_definition(open_dict_def)
 
         # Dbnary definitions
         # Use .get with default empty list
         for item in dataset.get("dbnary_data", []):
             # Ensure item is a dict before accessing keys
             if isinstance(item, dict):
-                defn = item.get("definition", "")
-                if defn and isinstance(defn, str):  # Check type
-                    combined_definitions.add(defn)
+                append_definition(item.get("definition", ""))
 
-        return list(combined_definitions)
+        return combined_definitions
 
     def _extract_part_of_speech(self, dataset: LexicalDataset) -> str:
         """
@@ -692,20 +782,40 @@ class ParserRefiner:
         Returns:
             List of unique usage examples from all sources
         """
-        usage_examples: Set[str] = set()
+        usage_examples: List[str] = []
+        seen_examples: Set[str] = set()
+        target_primary = dataset["language"].split("-", 1)[0]
+
+        def append_example(value: object) -> None:
+            """Append one non-placeholder example in stable source order."""
+
+            if not isinstance(value, str):
+                return
+            example = value.strip()
+            if (
+                not example
+                or "No example available" in example
+                or example in seen_examples
+            ):
+                return
+            seen_examples.add(example)
+            usage_examples.append(example)
 
         # WordNet examples
         for wn_data in dataset.get("wordnet_data", []):  # Use .get
+            if (
+                wn_data.get("examples_language", "en").split("-", 1)[0]
+                != target_primary
+            ):
+                continue
             for ex in wn_data.get("examples", []):
-                if ex:
-                    usage_examples.add(ex)
+                append_example(ex)
 
         # Add auto-generated example sentence
         auto_ex = dataset.get("example_sentence", "")  # Use .get
-        if auto_ex and "No example available" not in auto_ex:
-            usage_examples.add(auto_ex)
+        append_example(auto_ex)
 
-        return list(usage_examples)
+        return usage_examples
 
     def _process_relationships(self, term: str, dataset: LexicalDataset) -> None:
         """
@@ -715,62 +825,85 @@ class ParserRefiner:
             term: The base term
             dataset: Comprehensive lexical dataset for the term
         """
-        relationship_cache: Dict[Tuple[str, str, str], bool] = {}
-        discovered_terms: Set[str] = set()
+        relationship_cache: Set[Tuple[str, str, str, str]] = set()
+        discovered_terms: Dict[str, str] = {}
+        base_language = dataset["language"]
+
+        def record_relationship(
+            related_term: object,
+            relationship_type: str,
+            source: str,
+            related_language: str = base_language,
+        ) -> None:
+            """Persist one normalized assertion and queue same-language targets."""
+
+            if not isinstance(related_term, str) or not related_term.strip():
+                return
+            display_related = unicodedata.normalize("NFC", related_term.strip())
+            try:
+                canonical_related_language = canonicalize_language_tag(related_language)
+            except ValueError:
+                logger.warning(
+                    "Skipping %s relationship with invalid language %r",
+                    source,
+                    related_language,
+                )
+                return
+            normalized_related = normalize_term(display_related)
+            if (
+                normalized_related == normalize_term(term)
+                and canonical_related_language == base_language
+            ):
+                return
+            relationship_key = (
+                normalized_related,
+                canonical_related_language,
+                relationship_type,
+                source,
+            )
+            if relationship_key in relationship_cache:
+                return
+            self.db_manager.insert_relationship(
+                term,
+                display_related,
+                relationship_type,
+                base_language=base_language,
+                related_language=canonical_related_language,
+                source=source,
+            )
+            relationship_cache.add(relationship_key)
+            if canonical_related_language == base_language:
+                discovered_terms.setdefault(normalized_related, display_related)
 
         # Process WordNet relationships
         for wn_data in dataset.get("wordnet_data", []):
             for syn in wn_data.get("synonyms", []):
-                syn_lower = syn.lower()
-                if syn_lower != term:
-                    rel_key = (term, syn_lower, "synonym")
-                    if rel_key not in relationship_cache:
-                        self.db_manager.insert_relationship(term, syn_lower, "synonym")
-                        relationship_cache[rel_key] = True
-                        discovered_terms.add(syn_lower)
+                record_relationship(syn, "synonym", wn_data["source"])
             for ant in wn_data.get("antonyms", []):
-                ant_lower = ant.lower()
-                rel_key = (term, ant_lower, "antonym")
-                if rel_key not in relationship_cache:
-                    self.db_manager.insert_relationship(term, ant_lower, "antonym")
-                    relationship_cache[rel_key] = True
-                    discovered_terms.add(ant_lower)
+                record_relationship(ant, "antonym", wn_data["source"])
 
         # OpenThesaurus synonyms
         for s in dataset.get("openthesaurus_synonyms", []):
-            s_lower = s.lower()
-            if s_lower != term:
-                rel_key = (term, s_lower, "synonym")
-                if rel_key not in relationship_cache:
-                    self.db_manager.insert_relationship(term, s_lower, "synonym")
-                    relationship_cache[rel_key] = True
-                    discovered_terms.add(s_lower)
+            record_relationship(s, "synonym", "local-openthesaurus")
 
         # Thesaurus synonyms
         for s in dataset.get("thesaurus_synonyms", []):
-            s_lower = s.lower()
-            if s_lower != term:
-                rel_key = (term, s_lower, "synonym")
-                if rel_key not in relationship_cache:
-                    self.db_manager.insert_relationship(term, s_lower, "synonym")
-                    relationship_cache[rel_key] = True
-                    discovered_terms.add(s_lower)
+            record_relationship(s, "synonym", "local-thesaurus")
 
         # Translations from DBnary
         for item in dataset.get("dbnary_data", []):
             translation = item.get("translation", "")
-            if translation:
-                trans_lower = translation.lower()
-                rel_key = (term, trans_lower, "translation")
-                if rel_key not in relationship_cache:
-                    self.db_manager.insert_relationship(
-                        term, trans_lower, "translation"
-                    )
-                    relationship_cache[rel_key] = True
-                    discovered_terms.add(trans_lower)
+            translation_language = item.get("translation_language", "")
+            if translation and translation_language:
+                record_relationship(
+                    translation,
+                    "translation",
+                    "dbnary",
+                    translation_language,
+                )
 
         # Batch enqueue all discovered terms
-        for discovered_term in discovered_terms:
+        for discovered_term in sorted(discovered_terms.values(), key=normalize_term):
             self.queue_manager.enqueue(discovered_term)
 
     def _discover_new_terms(
@@ -790,12 +923,12 @@ class ParserRefiner:
 
         # Enqueue priority terms first (multiword expressions and specialized terms)
         for new_term in priority_terms:
-            if new_term != term.lower():
+            if normalize_term(new_term) != normalize_term(term):
                 self.queue_manager.enqueue(new_term)
 
         # Then enqueue other discovered terms
         for new_term in standard_terms:
-            if new_term != term.lower():
+            if normalize_term(new_term) != normalize_term(term):
                 self.queue_manager.enqueue(new_term)
 
     def get_stats(self) -> Dict[str, int]:

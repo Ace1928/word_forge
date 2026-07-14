@@ -20,6 +20,7 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Tuple,
     Union,
 )
 
@@ -48,6 +49,11 @@ from word_forge.configs.config_essentials import (
     ResourceParsingError,
     T,
     WordnetEntry,
+)
+from word_forge.parser.linguistics import canonicalize_language_tag
+from word_forge.parser.wordnet_languages import (
+    WordNetLanguageError,
+    resolve_wordnet_language,
 )
 from word_forge.utils.nltk_utils import ensure_nltk_data
 
@@ -169,29 +175,39 @@ def read_jsonl_file(
 # ============================================================================
 #                            WORDNET FUNCTIONS
 # ============================================================================
-@functools.lru_cache(maxsize=1024)
-def get_synsets(word: str) -> List[Synset]:
-    """Retrieve synsets from WordNet for a given word with efficient caching."""
+def get_synsets(word: str, language: str = "en") -> List[Synset]:
+    """Retrieve synsets using an explicit BCP 47 lexical language."""
+
     ensure_nltk_data()
-    return wn.synsets(word)  # type: ignore
+    resolved = resolve_wordnet_language(language)
+    return list(_get_synsets_cached(word, resolved.nltk_code))
 
 
-def get_wordnet_data(word: str) -> List[WordnetEntry]:
+@functools.lru_cache(maxsize=4096)
+def _get_synsets_cached(word: str, nltk_language: str) -> Tuple[Synset, ...]:
+    """Cache immutable NLTK lookup results by term and ISO 639-3 code."""
+
+    return tuple(wn.synsets(word, lang=nltk_language))  # type: ignore[no-any-return]
+
+
+def get_wordnet_data(word: str, language: str = "en") -> List[WordnetEntry]:
     """
     Extract comprehensive linguistic data from WordNet for a given word.
 
     Args:
         word: Word to retrieve data for
+        language: BCP 47 language tag for the lemma lookup
 
     Returns:
         List of structured entries containing definitions, examples, synonyms, antonyms,
         and part-of-speech information
     """
     results: List[WordnetEntry] = []
-    synsets: List[Synset] = get_synsets(word)
+    resolved = resolve_wordnet_language(language)
+    synsets: List[Synset] = get_synsets(word, resolved.bcp47)
 
     for synset in synsets:
-        lemmas: List[Lemma] = synset.lemmas() or []
+        lemmas: List[Lemma] = synset.lemmas(lang=resolved.nltk_code) or []
         synonyms: List[str] = []
         for lemma in lemmas:
             name = lemma.name()
@@ -203,6 +219,8 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
         for lemma in lemmas:
             lemma_antonyms: List[Lemma] = lemma.antonyms()
             for antonym in lemma_antonyms:
+                if antonym.lang() != resolved.nltk_code:
+                    continue
                 antonym_name = antonym.name()
                 if isinstance(antonym_name, str):
                     antonym_name = antonym_name.replace("_", " ")
@@ -228,8 +246,13 @@ def get_wordnet_data(word: str) -> List[WordnetEntry]:
         results.append(
             WordnetEntry(
                 word=word,
+                language=resolved.bcp47,
+                source=resolved.source_id,
+                synset_id=str(synset.name()),
                 definition=definition,
+                definition_language="en",
                 examples=examples,
+                examples_language="en",
                 synonyms=synonyms,
                 antonyms=antonyms,
                 part_of_speech=pos,
@@ -299,13 +322,16 @@ def get_odict_data(word: str, odict_path: str) -> DictionaryEntry:
     return default_entry
 
 
-def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
+def get_dbnary_data(
+    word: str, dbnary_path: str, language: str = "en"
+) -> List[DbnaryEntry]:
     """
     Extract linguistic data from DBnary RDF for a given word.
 
     Args:
         word: Word to retrieve data for
         dbnary_path: Path to the DBnary TTL file
+        language: BCP 47 language of the written form
 
     Returns:
         List of entries containing definitions and translations
@@ -320,22 +346,27 @@ def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
         return []
 
     try:
+        canonical_language = canonicalize_language_tag(language)
         graph = Graph()
         graph.parse(dbnary_path, format="ttl")
 
-        sparql_query = f"""
+        sparql_query = """
         PREFIX ontolex: <http://www.w3.org/ns/lemon/ontolex#>
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
         SELECT ?definition ?translation
-        WHERE {{
-          ?entry ontolex:canonicalForm/ontolex:writtenRep "{word}"@en .
-          OPTIONAL {{ ?entry ontolex:definition/rdfs:label ?definition . }}
-          OPTIONAL {{ ?entry ontolex:translation/rdfs:label ?translation . }}
-        }}
+        WHERE {
+          ?entry ontolex:canonicalForm/ontolex:writtenRep ?written .
+          FILTER (?written = ?lookup)
+          OPTIONAL { ?entry ontolex:definition/rdfs:label ?definition . }
+          OPTIONAL { ?entry ontolex:translation/rdfs:label ?translation . }
+        }
         """
 
-        results = graph.query(sparql_query)
+        results = graph.query(
+            sparql_query,
+            initBindings={"lookup": RdfLiteral(word, lang=canonical_language)},
+        )
         output: List[DbnaryEntry] = []
 
         for row in results:
@@ -361,7 +392,20 @@ def get_dbnary_data(word: str, dbnary_path: str) -> List[DbnaryEntry]:
 
             if definition or translation:
                 output.append(
-                    DbnaryEntry(definition=definition, translation=translation)
+                    DbnaryEntry(
+                        definition=definition,
+                        definition_language=(
+                            str(definition_node.language or "")
+                            if isinstance(definition_node, RdfLiteral)
+                            else ""
+                        ),
+                        translation=translation,
+                        translation_language=(
+                            str(translation_node.language or "")
+                            if isinstance(translation_node, RdfLiteral)
+                            else ""
+                        ),
+                    )
                 )
 
         return output
@@ -435,6 +479,7 @@ def generate_example_usage(
     antonyms: List[str],
     pos: str,
     model_state: ModelState,
+    language: str = "en",
 ) -> str:
     """
     Generate an example sentence for a word using a language model.
@@ -457,12 +502,14 @@ def generate_example_usage(
         f"Definition: {definition}\n"
         f"Synonyms: {', '.join(synonyms[:5])}\n"
         f"Antonyms: {', '.join(antonyms[:3])}\n"
+        f"Language: {canonicalize_language_tag(language)}\n"
         f"Task: Generate a single concise example sentence using the word '{word}'.\n"
         f"Example Sentence: "
     )
 
     # Use the provided model state for generation
-    full_text = model_state.generate_text(prompt)
+    generated_text = model_state.generate_text(prompt)
+    full_text = str(generated_text) if generated_text else ""
 
     if not full_text:
         return f"Could not generate example for '{word}'."
@@ -500,6 +547,7 @@ def create_lexical_dataset(
     opendict_path: str = "data/opendict.json",
     thesaurus_path: str = "data/thesaurus.jsonl",
     model_state: Optional[ModelState] = None,
+    language: str = "en",
 ) -> LexicalDataset:
     """
     Create a comprehensive dataset of lexical information for a word.
@@ -512,21 +560,30 @@ def create_lexical_dataset(
         opendict_path: Path to OpenDict data
         thesaurus_path: Path to Thesaurus data
         model_state: Optional :class:`ModelState` used to generate example sentences
+        language: BCP 47 language tag for the lexical item
 
     Returns:
         Dictionary containing comprehensive lexical data from all sources
     """
-    wordnet_data = get_wordnet_data(word)
+    canonical_language = canonicalize_language_tag(language)
+    source_warnings: List[str] = []
+    try:
+        wordnet_data = get_wordnet_data(word, canonical_language)
+    except WordNetLanguageError as exc:
+        wordnet_data = []
+        source_warnings.append(str(exc))
 
     dataset: LexicalDataset = {
         "word": word,
+        "language": canonical_language,
         "wordnet_data": wordnet_data,
         "openthesaurus_synonyms": get_openthesaurus_data(word, openthesaurus_path),
         "odict_data": get_odict_data(word, odict_path),
-        "dbnary_data": get_dbnary_data(word, dbnary_path),
+        "dbnary_data": get_dbnary_data(word, dbnary_path, canonical_language),
         "opendict_data": get_opendictdata(word, opendict_path),
         "thesaurus_synonyms": get_thesaurus_data(word, thesaurus_path),
         "example_sentence": "",
+        "source_warnings": source_warnings,
     }
 
     # Prefer source-authored examples. Generative enrichment only fills a gap,
@@ -538,6 +595,8 @@ def create_lexical_dataset(
                 for entry in wordnet_data
                 for example in entry.get("examples", [])
                 if example.strip()
+                and entry.get("examples_language", "en").split("-", 1)[0]
+                == canonical_language.split("-", 1)[0]
             ),
             "",
         )
@@ -552,6 +611,7 @@ def create_lexical_dataset(
                 antonyms=first_entry.get("antonyms", []),
                 pos=first_entry.get("part_of_speech", ""),
                 model_state=model_state,
+                language=canonical_language,
             )
 
     return dataset

@@ -166,7 +166,7 @@ _SOURCES: Tuple[LexicalSource, ...] = (
         license_url="https://creativecommons.org/licenses/by-sa/3.0/",
         license_class=LicenseClass.ATTRIBUTION_SHARE_ALIKE,
         commercial_use=CommercialUse.ALLOWED_WITH_TERMS,
-        integration_status=IntegrationStatus.PLANNED,
+        integration_status=IntegrationStatus.OPTIONAL,
         bootstrap_tier=BootstrapTier.SHARE_ALIKE_OPT_IN,
         language_scope="Multiple Wiktionary language editions",
         data_types=(
@@ -244,13 +244,16 @@ _SOURCES: Tuple[LexicalSource, ...] = (
         license_url="https://globalwordnet.github.io/resources/wordnets-in-the-world",
         license_class=LicenseClass.PER_DATASET,
         commercial_use=CommercialUse.PER_DATASET_REVIEW,
-        integration_status=IntegrationStatus.PLANNED,
+        integration_status=IntegrationStatus.OPTIONAL,
         bootstrap_tier=BootstrapTier.PER_DATASET_REVIEW,
         language_scope="Multiple independently licensed wordnets",
         data_types=("synsets", "senses", "semantic relations", "cross-lingual links"),
         attribution="Cite each originating wordnet and the aggregation when applicable.",
         redistribution="Enforce the license declared by every selected component.",
-        notes="Never infer one blanket license from the aggregate's open-access label.",
+        notes=(
+            "NLTK OMW 2.0 is installed only after explicit license acknowledgement; "
+            "never infer one blanket license for its component wordnets."
+        ),
     ),
     LexicalSource(
         source_id="panlex",

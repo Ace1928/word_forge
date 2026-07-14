@@ -16,6 +16,29 @@ Lexical identity uses a Unicode NFKC, case-folded lookup key while retaining the
 original display spelling. Language remains part of identity because the same
 spelling can represent unrelated words in different languages.
 
+Ingestion accepts the language at the CLI boundary and carries it through word,
+relationship, vector, grapheme, and pronunciation records:
+
+```bash
+word_forge start chat langue --language fr-FR --no-vector
+```
+
+English Princeton WordNet is a core source. NLTK's Open Multilingual Wordnet
+adapter uses ISO 639-3 identifiers internally, so Word Forge maps supported BCP
+47 primary tags explicitly and retains the original canonical tag in storage.
+OMW component wordnets have non-uniform licenses and are never fetched by the
+unattended core bootstrap. After reviewing `word_forge sources list`, install
+the optional snapshot explicitly:
+
+```bash
+word_forge setup-nltk --multilingual --accept-source-licenses
+```
+
+If a language has no installed lexical source, ingestion still persists the
+seed, script, and graphemes as a stub and reports an actionable source warning.
+It does not relabel English definitions or queue English NLP discoveries as the
+requested language.
+
 ## Graphemes
 
 `segment_graphemes()` implements Unicode extended grapheme-cluster boundaries

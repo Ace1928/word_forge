@@ -1,12 +1,18 @@
+import importlib.util
 from pathlib import Path
+
+import pytest
 
 from word_forge.parser.lexical_functions import (
     create_lexical_dataset,
     file_exists,
+    get_dbnary_data,
     read_json_file,
     read_jsonl_file,
     safe_open,
 )
+
+_RDFLIB_AVAILABLE = importlib.util.find_spec("rdflib") is not None
 
 
 def test_file_exists(tmp_path: Path) -> None:
@@ -77,3 +83,34 @@ def test_lexical_dataset_leaves_missing_example_empty_without_model(
 
     assert dataset["wordnet_data"]
     assert dataset["example_sentence"] == ""
+
+
+@pytest.mark.skipif(not _RDFLIB_AVAILABLE, reason="DBnary RDF extra is not installed")
+def test_dbnary_lookup_preserves_definition_and_translation_languages(
+    tmp_path: Path,
+) -> None:
+    rdf_path = tmp_path / "dbnary.ttl"
+    rdf_path.write_text(
+        """
+        @prefix ontolex: <http://www.w3.org/ns/lemon/ontolex#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <https://example.test/> .
+
+        ex:entry
+            ontolex:canonicalForm [ ontolex:writtenRep "chat"@fr ] ;
+            ontolex:definition [ rdfs:label "animal félin"@fr ] ;
+            ontolex:translation [ rdfs:label "cat"@en ] .
+        """,
+        encoding="utf-8",
+    )
+
+    entries = get_dbnary_data("chat", str(rdf_path), "fr")
+
+    assert entries == [
+        {
+            "definition": "animal félin",
+            "definition_language": "fr",
+            "translation": "cat",
+            "translation_language": "en",
+        }
+    ]

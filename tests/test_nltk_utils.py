@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import nltk
+import pytest
 
-from word_forge.utils.nltk_utils import ensure_nltk_data
+from word_forge.utils.nltk_utils import LexicalDataLicenseError, ensure_nltk_data
 
 
 def test_ensure_nltk_data_runs() -> None:
@@ -22,3 +23,8 @@ def test_ensure_nltk_data_supports_parser_operations() -> None:
     assert len(sentences) == 2
     assert tagged
     assert len(chunked) > 0
+
+
+def test_multilingual_download_requires_explicit_license_acknowledgement() -> None:
+    with pytest.raises(LexicalDataLicenseError, match="per-component licenses"):
+        ensure_nltk_data(include_multilingual=True)

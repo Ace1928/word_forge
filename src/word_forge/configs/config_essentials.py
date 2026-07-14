@@ -887,8 +887,13 @@ class WordnetEntry(TypedDict):
     """
 
     word: str
+    language: str
+    source: str
+    synset_id: str
     definition: str
+    definition_language: str
     examples: List[str]
+    examples_language: str
     synonyms: List[str]
     antonyms: List[str]
     part_of_speech: str
@@ -921,7 +926,9 @@ class DbnaryEntry(TypedDict):
     """
 
     definition: str
+    definition_language: str
     translation: str
+    translation_language: str
 
 
 class LexicalDataset(TypedDict):
@@ -943,6 +950,7 @@ class LexicalDataset(TypedDict):
     """
 
     word: str
+    language: str
     wordnet_data: List[WordnetEntry]
     openthesaurus_synonyms: List[str]
     odict_data: DictionaryEntry
@@ -950,6 +958,7 @@ class LexicalDataset(TypedDict):
     opendict_data: DictionaryEntry
     thesaurus_synonyms: List[str]
     example_sentence: str
+    source_warnings: List[str]
 
 
 class WordTupleDict(TypedDict):
