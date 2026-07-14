@@ -8,26 +8,27 @@ formatting.
 import pytest
 
 from word_forge.exceptions import (
-    WordForgeError,
+    AmbiguousTermError,
     DatabaseError,
-    GraphError,
     GraphAnalysisError,
+    GraphConnectionError,
+    GraphDataError,
+    GraphDimensionError,
+    GraphError,
     GraphExportError,
     GraphImportError,
-    GraphUpdateError,
-    GraphQueryError,
-    GraphConnectionError,
-    GraphTraversalError,
-    GraphStorageError,
-    GraphSerializationError,
     GraphIOError,
     GraphLayoutError,
-    QueueError,
-    ParserError,
-    NodeNotFoundError,
-    GraphDataError,
+    GraphQueryError,
+    GraphSerializationError,
+    GraphStorageError,
+    GraphTraversalError,
+    GraphUpdateError,
     GraphVisualizationError,
-    GraphDimensionError,
+    NodeNotFoundError,
+    ParserError,
+    QueueError,
+    WordForgeError,
 )
 
 
@@ -130,6 +131,7 @@ class TestGraphErrorSubclasses:
             GraphDataError,
             GraphVisualizationError,
             GraphDimensionError,
+            AmbiguousTermError,
         ],
     )
     def test_inherits_from_graph_error(self, error_class):
@@ -157,6 +159,7 @@ class TestGraphErrorSubclasses:
             GraphDataError,
             GraphVisualizationError,
             GraphDimensionError,
+            AmbiguousTermError,
         ],
     )
     def test_can_be_raised_and_caught_as_graph_error(self, error_class):
@@ -227,6 +230,13 @@ class TestSpecificGraphErrors:
         """Test NodeNotFoundError for missing node scenarios."""
         error = NodeNotFoundError("Node 'test' not found in graph")
         assert "test" in str(error)
+        assert isinstance(error, GraphError)
+
+    def test_ambiguous_term_error(self):
+        """Test AmbiguousTermError for language-dependent homographs."""
+        error = AmbiguousTermError("Term 'chat' exists in en and fr")
+        assert "chat" in str(error)
+        assert error.error_code == "WF-GR-017"
         assert isinstance(error, GraphError)
 
     def test_graph_data_error(self):

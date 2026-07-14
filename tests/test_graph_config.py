@@ -222,7 +222,12 @@ class TestTypedDicts:
 
     def test_word_tuple_dict(self):
         """Test WordTupleDict structure."""
-        word: WordTupleDict = {"id": 1, "term": "test"}
+        word: WordTupleDict = {
+            "id": 1,
+            "term": "test",
+            "language": "en",
+            "script": "Latn",
+        }
         assert word["id"] == 1
         assert word["term"] == "test"
 
@@ -231,7 +236,10 @@ class TestTypedDicts:
         rel: RelationshipTupleDict = {
             "word_id": 1,
             "related_term": "related",
+            "related_language": "en",
             "relationship_type": "synonym",
+            "source": "test",
+            "confidence": 1.0,
             "dimension": "lexical",
             "valence": 0.5,
             "arousal": 0.3,

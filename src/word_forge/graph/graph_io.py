@@ -29,7 +29,9 @@ import networkx as nx
 
 # Import necessary components
 from word_forge.exceptions import GraphIOError, NodeNotFoundError
+from word_forge.graph.graph_assertions import decode_edge_assertions
 from word_forge.graph.graph_config import Term
+from word_forge.parser.linguistics import canonicalize_language_tag
 
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
@@ -167,7 +169,7 @@ class GraphIO:
 
         try:
             # Load the graph using NetworkX
-            loaded_graph = nx.read_gexf(str(load_path))
+            loaded_graph = nx.read_gexf(str(load_path), node_type=int)
 
             # Replace the manager's graph
             self.manager.g = loaded_graph
@@ -176,7 +178,7 @@ class GraphIO:
             )
 
             # Rebuild internal mappings and potentially positions
-            self.manager._term_to_id.clear()
+            self.manager._clear_node_indexes()
             self.manager._positions.clear()
             self.manager._relationship_counts.clear()
 
@@ -190,7 +192,14 @@ class GraphIO:
                 )
 
                 if term:
-                    self.manager._term_to_id[str(term).lower()] = current_node_id
+                    language = str(data.get("language", "en"))
+                    normalized = str(data.get("normalized_term") or "") or None
+                    self.manager._index_node(
+                        current_node_id,
+                        str(term),
+                        language,
+                        normalized,
+                    )
                 else:
                     self.logger.warning(
                         f"Node '{current_node_id}' loaded from GEXF is missing 'term' attribute."
@@ -221,10 +230,13 @@ class GraphIO:
 
             # Recalculate relationship counts
             for u, v, data in loaded_graph.edges(data=True):
-                rel_type = data.get("relationship")
-                if rel_type:
-                    self.manager._relationship_counts[rel_type] = (
-                        self.manager._relationship_counts.get(rel_type, 0) + 1
+                for assertion in decode_edge_assertions(
+                    data,
+                    default_source_id=u,
+                    default_target_id=v,
+                ):
+                    self.manager._relationship_counts.update(
+                        [assertion["relationship"]]
                     )
 
             # If positions weren't loaded from GEXF, compute layout
@@ -248,13 +260,18 @@ class GraphIO:
             self.logger.debug(f"Traceback: {traceback.format_exc()}", exc_info=True)
             # Clear graph state on load failure to avoid inconsistent state
             self.manager.g.clear()
-            self.manager._term_to_id.clear()
+            self.manager._clear_node_indexes()
             self.manager._positions.clear()
             self.manager._relationship_counts.clear()
             raise GraphIOError(f"Error reading GEXF file: {e}", e) from e
 
     def export_subgraph(
-        self, term: Term, depth: int = 1, output_path: Optional[str] = None
+        self,
+        term: Term,
+        depth: int = 1,
+        output_path: Optional[str] = None,
+        *,
+        language: Optional[str] = None,
     ) -> str:
         """
         Extract and save a subgraph centered around a specific term.
@@ -269,6 +286,7 @@ class GraphIO:
                    to include in the subgraph. Defaults to 1.
             output_path: The file path to save the subgraph GEXF file. If None,
                          a default path is generated based on the term.
+            language: Optional BCP 47 language tag used to disambiguate the term.
 
         Returns:
             str: The absolute path where the subgraph GEXF file was saved.
@@ -284,7 +302,7 @@ class GraphIO:
         self.logger.info(f"Exporting subgraph for term '{term}' with depth {depth}.")
 
         # Find the starting node ID using the manager's query capability
-        start_node_id = self.manager.query.get_node_id(term)
+        start_node_id = self.manager.query.get_node_id(term, language=language)
         if start_node_id is None:
             raise NodeNotFoundError(f"Term '{term}' not found in the graph.")
 
@@ -314,7 +332,12 @@ class GraphIO:
         else:
             # Generate a default path in the configured export directory
             safe_term_name = "".join(c if c.isalnum() else "_" for c in term)
-            filename = f"subgraph_{safe_term_name}_depth{depth}.gexf"
+            language_suffix = (
+                f"_{canonicalize_language_tag(language).replace('-', '_')}"
+                if language is not None
+                else ""
+            )
+            filename = f"subgraph_{safe_term_name}{language_suffix}_depth{depth}.gexf"
             save_path = self._config.get_export_path / filename
 
         # Ensure the target directory exists

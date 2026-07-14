@@ -41,16 +41,27 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union, cast
+from typing import (
+    Any,
+    DefaultDict,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    cast,
+)
 
 import networkx as nx
 
 # Core components
 from word_forge.config import config
 from word_forge.database.database_manager import DBManager
-from word_forge.exceptions import NodeNotFoundError
+from word_forge.exceptions import GraphDataError, NodeNotFoundError
 from word_forge.graph.graph_analysis import (
     ClusterResult,
     GraphAnalysis,
@@ -59,12 +70,19 @@ from word_forge.graph.graph_analysis import (
     TransitionResult,
     ValenceDistResult,
 )
-from word_forge.graph.graph_builder import GraphBuilder, GraphUpdateMetrics
+from word_forge.graph.graph_builder import (
+    AssertionMutation,
+    GraphBuilder,
+    GraphUpdateMetrics,
+)
+from word_forge.graph.graph_config import (
+    PositionDict,  # Ensure PositionDict is imported
+)
 from word_forge.graph.graph_config import (
     GraphConfig,
     GraphInfoDict,
     LayoutAlgorithm,
-    PositionDict,  # Ensure PositionDict is imported
+    LexicalIdentity,
     RelationshipDimension,
     RelType,
     Term,
@@ -74,10 +92,29 @@ from word_forge.graph.graph_io import GraphIO
 from word_forge.graph.graph_layout import GraphLayout
 from word_forge.graph.graph_query import GraphQuery
 from word_forge.graph.graph_visualizer import GraphVisualizer
+from word_forge.parser.linguistics import (
+    canonicalize_language_tag,
+    infer_script,
+    normalize_term,
+)
 
 # Make relationship_properties accessible if needed internally
 from word_forge.relationships import RELATIONSHIP_TYPES as relationship_properties
 from word_forge.relationships import RelationshipProperties
+
+_NODE_IDENTITY_ATTRIBUTES = frozenset({"id", "language", "normalized_term", "term"})
+_EDGE_ASSERTION_ATTRIBUTES = frozenset(
+    {
+        "assertion_count",
+        "assertions_json",
+        "dimension",
+        "dimensions",
+        "relationship",
+        "relationship_types",
+        "related_language",
+        "sources",
+    }
+)
 
 
 class GraphManager:
@@ -125,7 +162,11 @@ class GraphManager:
         # --- Core Graph State ---
         self.g: Union[nx.Graph, nx.DiGraph] = graph_type()
         self.dimensions: int = dimensions
-        self._term_to_id: Dict[str, WordId] = {}  # term (lowercase) -> node_id mapping
+        self._identity_to_id: Dict[LexicalIdentity, WordId] = {}
+        self._term_to_ids: DefaultDict[str, Set[WordId]] = defaultdict(set)
+        # Compatibility index containing only spellings that are unambiguous
+        # across the currently loaded languages.
+        self._term_to_id: Dict[str, WordId] = {}
         self._positions: PositionDict = {}  # node_id -> position tuple mapping
         self._relationship_counts: Counter[RelType] = Counter()
         self._emotional_contexts: Dict[str, Dict[str, float]] = {}  # Stored contexts
@@ -180,6 +221,107 @@ class GraphManager:
         with self._graph_lock:
             # Return a copy to prevent external modification
             return self._positions.copy()
+
+    def _clear_node_indexes(self) -> None:
+        """Clear every derived lexical node index together."""
+
+        self._identity_to_id.clear()
+        self._term_to_ids.clear()
+        self._term_to_id.clear()
+
+    def _index_node(
+        self,
+        word_id: WordId,
+        term: str,
+        language: str,
+        normalized_term: Optional[str] = None,
+    ) -> None:
+        """Register a graph node under its normalized term and language."""
+
+        canonical_language = canonicalize_language_tag(language)
+        normalized = normalize_term(term)
+        if (
+            normalized_term is not None
+            and normalize_term(normalized_term) != normalized
+        ):
+            raise GraphDataError(
+                f"Node {word_id} normalized term does not match its display term"
+            )
+        identity = (normalized, canonical_language)
+        existing_id = self._identity_to_id.get(identity)
+        if existing_id is not None and existing_id != word_id:
+            raise GraphDataError(
+                f"Duplicate graph identity {term!r} ({canonical_language}) for "
+                f"node IDs {existing_id} and {word_id}"
+            )
+        self._identity_to_id[identity] = word_id
+        if word_id in self.g:
+            self.g.nodes[word_id]["language"] = canonical_language
+            self.g.nodes[word_id]["normalized_term"] = normalized
+        matching_ids = self._term_to_ids[normalized]
+        matching_ids.add(word_id)
+        if len(matching_ids) == 1:
+            self._term_to_id[normalized] = word_id
+        else:
+            self._term_to_id.pop(normalized, None)
+        self._refresh_display_labels(normalized)
+
+    def _refresh_display_labels(self, normalized_term: str) -> None:
+        """Disambiguate labels only when one spelling spans languages."""
+
+        node_ids = self._term_to_ids.get(normalized_term, set())
+        ambiguous = len(node_ids) > 1
+        for node_id in node_ids:
+            if node_id not in self.g:
+                continue
+            attributes = self.g.nodes[node_id]
+            term = str(attributes.get("term", node_id))
+            language = str(attributes.get("language", "und"))
+            attributes["label"] = f"{term} [{language}]" if ambiguous else term
+
+    @staticmethod
+    def _merge_node_attributes(
+        attributes: Optional[Dict[str, Any]],
+        *,
+        word_id: WordId,
+        term: str,
+        normalized_term: str,
+        language: str,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Merge custom metadata without allowing lexical identity drift."""
+
+        merged = dict(defaults or {})
+        if attributes:
+            conflicting = {
+                "id": word_id,
+                "language": language,
+                "normalized_term": normalized_term,
+                "term": term,
+            }
+            for name in _NODE_IDENTITY_ATTRIBUTES.intersection(attributes):
+                supplied = attributes[name]
+                expected = conflicting[name]
+                if name == "language":
+                    matches = canonicalize_language_tag(str(supplied)) == expected
+                elif name == "normalized_term":
+                    matches = normalize_term(str(supplied)) == expected
+                else:
+                    matches = supplied == expected
+                if not matches:
+                    raise ValueError(
+                        f"attributes.{name} cannot change an existing lexical identity"
+                    )
+            merged.update(attributes)
+        merged.update(
+            {
+                "id": word_id,
+                "language": language,
+                "normalized_term": normalized_term,
+                "term": term,
+            }
+        )
+        return merged
 
     # ==========================================
     # Graph Building & Modification Methods (via Builder)
@@ -248,7 +390,11 @@ class GraphManager:
         return self.builder.verify_database_tables()
 
     def add_word_node(
-        self, term: Term, attributes: Optional[Dict[str, Any]] = None
+        self,
+        term: Term,
+        attributes: Optional[Dict[str, Any]] = None,
+        *,
+        language: str = "en",
     ) -> WordId:
         """
         Add a single word node to the graph if it doesn't exist.
@@ -269,13 +415,24 @@ class GraphManager:
         if not term or not isinstance(term, str):
             raise ValueError("Term must be a non-empty string.")
 
-        term_lower = term.lower()
+        canonical_language = canonicalize_language_tag(language)
+        normalized = normalize_term(term)
+        identity = (normalized, canonical_language)
         with self._graph_lock:
-            existing_id = self._term_to_id.get(term_lower)
+            existing_id = self._identity_to_id.get(identity)
             if existing_id is not None:
                 # Node exists, potentially update attributes
                 if attributes:
-                    nx.set_node_attributes(self.g, {existing_id: attributes})
+                    current = self.g.nodes[existing_id]
+                    merged_attributes = self._merge_node_attributes(
+                        attributes,
+                        word_id=existing_id,
+                        term=str(current.get("term", term)),
+                        normalized_term=normalized,
+                        language=canonical_language,
+                        defaults=dict(current),
+                    )
+                    nx.set_node_attributes(self.g, {existing_id: merged_attributes})
                     self.logger.debug(
                         f"Updated attributes for existing node '{term}' (ID: {existing_id})."
                     )
@@ -283,18 +440,31 @@ class GraphManager:
             else:
                 # Node doesn't exist, create new ID and add
                 # Simple ID strategy: max_id + 1 (ensure graph isn't empty)
-                if self.g:
-                    nodes = list(self.g.nodes())
-                    new_id = max(nodes) + 1 if nodes else 1
-                else:
-                    new_id = 1
+                integer_nodes = [
+                    node for node in self.g.nodes() if isinstance(node, int)
+                ]
+                new_id = max(integer_nodes, default=0) + 1
 
-                node_attrs = {"term": term, "id": new_id}
-                if attributes:
-                    node_attrs.update(attributes)
+                default_attributes = {
+                    "term": term,
+                    "normalized_term": normalized,
+                    "language": canonical_language,
+                    "script": infer_script(term),
+                    "source": "graph-api",
+                    "is_stub": False,
+                    "id": new_id,
+                }
+                node_attrs = self._merge_node_attributes(
+                    attributes,
+                    word_id=new_id,
+                    term=term,
+                    normalized_term=normalized,
+                    language=canonical_language,
+                    defaults=default_attributes,
+                )
 
                 self.g.add_node(new_id, **node_attrs)
-                self._term_to_id[term_lower] = new_id
+                self._index_node(new_id, term, canonical_language, normalized)
                 self.logger.info(f"Added new node '{term}' with ID {new_id}.")
 
                 # Trigger incremental layout update for the new node
@@ -311,6 +481,8 @@ class GraphManager:
         weight: Optional[float] = None,
         color: Optional[str] = None,
         bidirectional: Optional[bool] = None,
+        source_language: Optional[str] = None,
+        target_language: Optional[str] = None,
         **kwargs: Any,
     ) -> bool:
         """
@@ -348,7 +520,9 @@ class GraphManager:
         with self._graph_lock:
             # --- Resolve Source Node ---
             if isinstance(source_term_or_id, str):
-                source_id = self.query.get_node_id(source_term_or_id)
+                source_id = self.query.get_node_id(
+                    source_term_or_id, language=source_language
+                )
                 if source_id is None:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Source term '{source_term_or_id}' not found, adding implicitly.")
@@ -365,7 +539,9 @@ class GraphManager:
 
             # --- Resolve Target Node ---
             if isinstance(target_term_or_id, str):
-                target_id = self.query.get_node_id(target_term_or_id)
+                target_id = self.query.get_node_id(
+                    target_term_or_id, language=target_language
+                )
                 if target_id is None:
                     # Option: Add node implicitly or raise error
                     # self.logger.warning(f"Target term '{target_term_or_id}' not found, adding implicitly.")
@@ -388,64 +564,74 @@ class GraphManager:
                 return False
 
             # --- Determine Edge Properties ---
-            rel_props = self._get_relationship_properties(relationship)
             edge_dimension = dimension or self._determine_dimension(relationship)
-            edge_weight = weight if weight is not None else rel_props.get("weight", 1.0)
-            edge_color = color or rel_props.get(
-                "color", self.config.get_relationship_color(relationship)
-            )
-            edge_bidirectional = (
-                bidirectional
-                if bidirectional is not None
-                else rel_props.get("bidirectional", False)
-            )
-
-            # --- Construct Edge Attributes ---
-            source_term_text = self.query.get_term_by_id(source_id) or f"ID:{source_id}"
-            target_term_text = self.query.get_term_by_id(target_id) or f"ID:{target_id}"
-
-            edge_attrs = {
-                "relationship": relationship,
-                "weight": edge_weight,
-                "color": edge_color,
-                "bidirectional": edge_bidirectional,
-                "dimension": edge_dimension,
-                "title": f"{relationship}: {source_term_text} {'↔' if edge_bidirectional else '→'} {target_term_text}",
-                **kwargs,  # Include any additional user-provided attributes
-            }
-
-            # --- Add Edge ---
-            has_edge = (
-                self.g.has_edge(source_id, target_id)
-                if hasattr(self.g, "has_edge")
-                else (source_id, target_id) in self.g.edges()
-            )
-            if has_edge:
-                nx.set_edge_attributes(self.g, {(source_id, target_id): edge_attrs})
-                self.logger.debug(
-                    f"Updated existing edge between {source_id} and {target_id}."
+            assertion_source = str(kwargs.pop("source", "graph-api"))
+            confidence = kwargs.pop("confidence", 1.0)
+            valence = kwargs.pop("valence", None)
+            arousal = kwargs.pop("arousal", None)
+            reserved_attributes = _EDGE_ASSERTION_ATTRIBUTES.intersection(kwargs)
+            if reserved_attributes:
+                names = ", ".join(sorted(reserved_attributes))
+                raise ValueError(
+                    f"Reserved edge assertion attributes cannot be overridden: {names}"
                 )
-            else:
-                self.g.add_edge(source_id, target_id, **edge_attrs)
-                self._relationship_counts[relationship] += 1
-                self.logger.info(
-                    f"Added relationship '{relationship}' between {source_id} and {target_id}."
-                )
+
+            target_node_language = str(self.g.nodes[target_id].get("language", "und"))
+            mutation = self.builder._add_relationship_edge(
+                source_id,
+                target_id,
+                relationship,
+                dimension=edge_dimension,
+                valence=valence,
+                arousal=arousal,
+                source=assertion_source,
+                confidence=confidence,
+                related_language=target_node_language,
+            )
+
+            edge_overrides = dict(kwargs)
+            if weight is not None:
+                edge_overrides["weight"] = weight
+            if color is not None:
+                edge_overrides["color"] = color
+            if bidirectional is not None:
+                edge_overrides["bidirectional"] = bidirectional
+            if edge_overrides:
+                nx.set_edge_attributes(self.g, {(source_id, target_id): edge_overrides})
+
+            log_method = (
+                self.logger.info
+                if mutation is not AssertionMutation.UNCHANGED
+                else self.logger.debug
+            )
+            log_method(
+                "%s relationship assertion %r between %s and %s.",
+                mutation.value.capitalize(),
+                relationship,
+                source_id,
+                target_id,
+            )
 
             return True
 
     # ==========================================
     # Query Methods (via Query)
     # ==========================================
-    def get_node_id(self, term: Term) -> Optional[WordId]:
+    def get_node_id(
+        self, term: Term, language: Optional[str] = None
+    ) -> Optional[WordId]:
         """Retrieve node ID for a term. Delegates to GraphQuery."""
-        return self.query.get_node_id(term)
+        return self.query.get_node_id(term, language=language)
 
     def get_related_terms(
-        self, term: Term, rel_type: Optional[RelType] = None
+        self,
+        term: Term,
+        rel_type: Optional[RelType] = None,
+        *,
+        language: Optional[str] = None,
     ) -> List[Term]:
         """Find related terms. Delegates to GraphQuery."""
-        return self.query.get_related_terms(term, rel_type)
+        return self.query.get_related_terms(term, rel_type, language=language)
 
     def get_node_count(self) -> int:
         """Get node count. Delegates to GraphQuery."""
@@ -467,9 +653,11 @@ class GraphManager:
         """Display graph summary. Delegates to GraphQuery."""
         self.query.display_graph_summary()
 
-    def get_subgraph(self, term: Term, depth: int = 1) -> nx.Graph:
+    def get_subgraph(
+        self, term: Term, depth: int = 1, *, language: Optional[str] = None
+    ) -> nx.Graph:
         """Extract a subgraph. Delegates to GraphQuery."""
-        return self.query.get_subgraph(term, depth)
+        return self.query.get_subgraph(term, depth, language=language)
 
     def get_relationships_by_dimension(
         self,
@@ -555,12 +743,19 @@ class GraphManager:
             self.io.load_from_gexf(path)
 
     def export_subgraph(
-        self, term: Term, depth: int = 1, output_path: Optional[str] = None
+        self,
+        term: Term,
+        depth: int = 1,
+        output_path: Optional[str] = None,
+        *,
+        language: Optional[str] = None,
     ) -> str:
         """Export subgraph to GEXF. Delegates to GraphIO."""
         # Reads graph structure, lock ensures consistency
         with self._graph_lock:
-            return self.io.export_subgraph(term, depth, output_path)
+            return str(
+                self.io.export_subgraph(term, depth, output_path, language=language)
+            )
 
     # ==========================================
     # Analysis Methods (via Analysis)
@@ -602,8 +797,8 @@ class GraphManager:
         """Integrate emotional context. Delegates to GraphAnalysis."""
         # Potentially modifies graph state (_emotional_contexts), lock needed
         with self._graph_lock:
-            return self.analysis.integrate_emotional_context(
-                context_name, context_weights
+            return int(
+                self.analysis.integrate_emotional_context(context_name, context_weights)
             )
 
     def analyze_emotional_transitions(
@@ -625,8 +820,11 @@ class GraphManager:
     ) -> nx.Graph:
         """Get emotional subgraph. Delegates to GraphAnalysis."""
         with self._graph_lock:
-            return self.analysis.get_emotional_subgraph(
-                term, depth, context, emotional_types, min_intensity
+            return cast(
+                nx.Graph,
+                self.analysis.get_emotional_subgraph(
+                    term, depth, context, emotional_types, min_intensity
+                ),
             )
 
     # ==========================================

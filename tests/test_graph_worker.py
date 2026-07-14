@@ -111,6 +111,11 @@ def test_synchronous_refresh_captures_late_database_writes(tmp_path: Path) -> No
     assert final_metrics.full_rebuild is True
     assert final_metrics.new_nodes == 2
     assert final_metrics.new_edges == 1
+    assert final_metrics.new_relationships == 1
+    status = worker.get_status()
+    assert status["last_new_relationships"] == 1
+    assert status["last_updated_relationships"] == 0
+    assert worker.get_metrics()["last_new_relationships"] == 1
     assert manager.get_node_count() == 2
     assert manager.get_edge_count() == 1
     assert (tmp_path / "late_write.gexf").is_file()

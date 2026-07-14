@@ -25,14 +25,15 @@ import json
 import logging
 import traceback
 import webbrowser
+from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Final, List, Optional, Union, cast
 
 import networkx as nx
 
 # Optional dependencies for visualization
 try:
-    from pyvis.network import Network as PyvisNetwork
+    from pyvis.network import Network as PyvisNetwork  # type: ignore[import-untyped]
 
     _pyvis_available = True
 except ImportError:
@@ -40,7 +41,7 @@ except ImportError:
     PyvisNetwork = None  # Define for type checking
 
 try:
-    import plotly.graph_objects as go
+    import plotly.graph_objects as go  # type: ignore[import-untyped]
 
     _plotly_available = True
 except ImportError:
@@ -58,9 +59,11 @@ AROUSAL_HIGH_THRESHOLD: Final[float] = 0.5  # Above this = high arousal
 # Import necessary components
 from word_forge.exceptions import GraphVisualizationError
 from word_forge.graph.graph_config import (
+    PositionDict,  # Ensure PositionDict is imported
+)
+from word_forge.graph.graph_config import (
     ColorHex,
     Position,
-    PositionDict,  # Ensure PositionDict is imported
     RelationshipDimension,
     WordId,
 )
@@ -374,7 +377,11 @@ class GraphVisualizer:
             nx.Graph: A NetworkX graph object containing the filtered edges and involved nodes.
                       Returns a copy to prevent modification of the original graph view.
         """
-        active_dimensions = set(dimensions_filter or self._config.active_dimensions)
+        active_dimensions = set(
+            self._config.active_dimensions
+            if dimensions_filter is None
+            else dimensions_filter
+        )
         self.logger.debug(f"Filtering graph for dimensions: {active_dimensions}")
 
         if not active_dimensions:
@@ -386,19 +393,33 @@ class GraphVisualizer:
         def edge_filter(u: WordId, v: WordId) -> bool:
             """Check if edge between u and v matches active dimensions."""
             if self.manager.g.is_multigraph():
-                if not self.manager.g.has_edge(u, v):
+                multi_graph = cast(
+                    Union[nx.MultiGraph, nx.MultiDiGraph], self.manager.g
+                )
+                if not multi_graph.has_edge(u, v):
                     return False
-                for key in self.manager.g[u][v]:
-                    edge_data = self.manager.g.get_edge_data(u, v, key=key)
-                    if edge_data and edge_data.get("dimension") in active_dimensions:
+                for key in multi_graph[u][v]:
+                    edge_data = multi_graph.get_edge_data(u, v, key=key)
+                    dimensions = (
+                        str(
+                            edge_data.get("dimensions", edge_data.get("dimension", ""))
+                        ).split("|")
+                        if edge_data
+                        else []
+                    )
+                    if active_dimensions.intersection(dimensions):
                         return True
                 return False
             else:
                 edge_data = self.manager.g.get_edge_data(u, v)
-                return (
-                    edge_data is not None
-                    and edge_data.get("dimension") in active_dimensions
+                dimensions = (
+                    str(
+                        edge_data.get("dimensions", edge_data.get("dimension", ""))
+                    ).split("|")
+                    if edge_data is not None
+                    else []
                 )
+                return bool(active_dimensions.intersection(dimensions))
 
         filtered_view = nx.subgraph_view(self.manager.g, filter_edge=edge_filter)
         filtered_graph = type(self.manager.g)()
@@ -426,6 +447,7 @@ class GraphVisualizer:
         # Add nodes with attributes
         for node_id, attrs in graph.nodes(data=True):
             term = attrs.get("term", f"ID:{node_id}")
+            label = attrs.get("label", term)
             node_size = self._calculate_node_size(node_id, graph)
             node_color = self._get_node_color(attrs)
             pos = node_positions.get(node_id)
@@ -433,7 +455,19 @@ class GraphVisualizer:
             pos_x = float(pos[0] * 100) if pos is not None and len(pos) >= 1 else 0.0
             pos_y = float(pos[1] * 100) if pos is not None and len(pos) >= 2 else 0.0
 
-            title_parts = [f"Term: {term}", f"ID: {node_id}"]
+            title_parts = [
+                f"Term: {escape(str(term))}",
+                f"ID: {escape(str(node_id))}",
+            ]
+            title_parts.extend(
+                [
+                    f"Language: {escape(str(attrs.get('language', 'und')))}",
+                    f"Script: {escape(str(attrs.get('script', 'Zzzz')))}",
+                    f"Source: {escape(str(attrs.get('source', 'unknown')))}",
+                ]
+            )
+            if attrs.get("is_stub"):
+                title_parts.append("Status: awaiting lexical enrichment")
             if "valence" in attrs and attrs["valence"] is not None:
                 title_parts.append(f"Valence: {attrs['valence']:.2f}")
             if "arousal" in attrs and attrs["arousal"] is not None:
@@ -442,7 +476,7 @@ class GraphVisualizer:
 
             net.add_node(
                 str(node_id),
-                label=term if self._config.enable_labels else "",
+                label=label if self._config.enable_labels else "",
                 title=title,
                 size=node_size,
                 color=node_color,
@@ -453,8 +487,10 @@ class GraphVisualizer:
 
         # Add edges with attributes
         for u, v, attrs in graph.edges(data=True):
-            rel_type = attrs.get("relationship", "")
-            dimension = attrs.get("dimension", "lexical")
+            rel_type = str(
+                attrs.get("relationship_types", attrs.get("relationship", ""))
+            )
+            dimension = str(attrs.get("dimensions", attrs.get("dimension", "lexical")))
 
             # Get color based on relationship type, falling back to dimension-based color
             edge_color = self._get_edge_color(rel_type, dimension, attrs)
@@ -463,8 +499,14 @@ class GraphVisualizer:
             # Build informative tooltip
             title_parts = []
             if rel_type:
-                title_parts.append(f"Type: {rel_type}")
-            title_parts.append(f"Dimension: {dimension}")
+                title_parts.append(f"Type: {escape(rel_type.replace('|', ', '))}")
+            title_parts.append(f"Dimension: {escape(dimension.replace('|', ', '))}")
+            if attrs.get("sources"):
+                title_parts.append(
+                    "Source: " f"{escape(str(attrs['sources']).replace('|', ', '))}"
+                )
+            if attrs.get("assertion_count") is not None:
+                title_parts.append(f"Assertions: {attrs['assertion_count']}")
             if attrs.get("valence") is not None:
                 title_parts.append(f"Valence: {attrs['valence']:.2f}")
             if attrs.get("arousal") is not None:
@@ -484,7 +526,11 @@ class GraphVisualizer:
                 title=title,
                 color=edge_color,
                 width=edge_width,
-                label=rel_type if self._config.enable_edge_labels else "",
+                label=(
+                    rel_type.replace("|", ", ")
+                    if self._config.enable_edge_labels
+                    else ""
+                ),
                 dashes=(style == "dashed"),
             )
 
@@ -594,7 +640,12 @@ class GraphVisualizer:
                 node_z.append(pos[2])
 
                 term = attrs.get("term", f"ID:{node_id}")
-                hover_parts = [f"Term: {term}", f"ID: {node_id}"]
+                hover_parts = [
+                    f"Term: {escape(str(term))}",
+                    f"Language: {escape(str(attrs.get('language', 'und')))}",
+                    f"Script: {escape(str(attrs.get('script', 'Zzzz')))}",
+                    f"ID: {escape(str(node_id))}",
+                ]
                 if "valence" in attrs and attrs["valence"] is not None:
                     hover_parts.append(f"Valence: {attrs['valence']:.2f}")
                 if "arousal" in attrs and attrs["arousal"] is not None:
@@ -699,8 +750,8 @@ class GraphVisualizer:
             if strategy == "degree":
                 if node_id not in graph:
                     return default_size
-                degree = graph.degree(node_id)
-                all_degrees = [d for n, d in graph.degree()]
+                degree = float(graph.degree(node_id))
+                all_degrees = [float(d) for _, d in graph.degree()]
                 max_degree = max(all_degrees) if all_degrees else 1
                 size = min_size + (max_size - min_size) * (degree / max(1, max_degree))
                 return max(min_size, min(size, max_size))
@@ -710,8 +761,8 @@ class GraphVisualizer:
                 )
                 if node_id not in graph:
                     return default_size
-                degree = graph.degree(node_id)
-                all_degrees = [d for n, d in graph.degree()]
+                degree = float(graph.degree(node_id))
+                all_degrees = [float(d) for _, d in graph.degree()]
                 max_degree = max(all_degrees) if all_degrees else 1
                 size = min_size + (max_size - min_size) * (degree / max(1, max_degree))
                 return max(min_size, min(size, max_size))

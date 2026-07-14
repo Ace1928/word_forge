@@ -59,6 +59,7 @@ class ErrorCode:
     GRAPH_DATA_ERROR = "WF-GR-014"
     GRAPH_VISUALIZATION_ERROR = "WF-GR-015"
     GRAPH_DIMENSION_ERROR = "WF-GR-016"
+    AMBIGUOUS_TERM_ERROR = "WF-GR-017"
 
     # Queue errors (WF-QU-xxx)
     QUEUE_ERROR = "WF-QU-001"
@@ -270,6 +271,12 @@ class NodeNotFoundError(GraphError):
     """
 
     error_code: ClassVar[str] = ErrorCode.NODE_NOT_FOUND_ERROR
+
+
+class AmbiguousTermError(GraphError):
+    """Raised when a spelling identifies nodes in more than one language."""
+
+    error_code: ClassVar[str] = ErrorCode.AMBIGUOUS_TERM_ERROR
 
 
 class GraphDataError(GraphError):

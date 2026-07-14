@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import networkx as nx
 
 # Import necessary components
-from word_forge.exceptions import NodeNotFoundError
+from word_forge.exceptions import AmbiguousTermError, NodeNotFoundError
+from word_forge.graph.graph_assertions import decode_edge_assertions
 from word_forge.graph.graph_config import (
     GraphInfoDict,
     RelationshipDimension,
@@ -34,6 +35,10 @@ from word_forge.graph.graph_config import (
     Term,
     WordId,
     WordTupleDict,
+)
+from word_forge.parser.linguistics import (
+    canonicalize_language_tag,
+    normalize_term,
 )
 
 # Type hint for the main GraphManager to avoid circular imports
@@ -65,20 +70,42 @@ class GraphQuery:
         # Use config from manager for consistency
         self._config = self.manager.config
 
-    def get_node_id(self, term: Term) -> Optional[WordId]:
+    def get_node_id(
+        self, term: Term, language: Optional[str] = None
+    ) -> Optional[WordId]:
         """
         Retrieve the node ID for a given term (case-insensitive).
 
         Args:
             term: The term (word or phrase) to look up.
+            language: Optional BCP 47 tag required to disambiguate homographs.
 
         Returns:
             Optional[WordId]: The integer ID of the node if found, else None.
         """
-        return self.manager._term_to_id.get(term.lower())
+        normalized = normalize_term(term)
+        if language is not None:
+            identity = (normalized, canonicalize_language_tag(language))
+            return self.manager._identity_to_id.get(identity)
+
+        candidate_ids = self.manager._term_to_ids.get(normalized, set())
+        if len(candidate_ids) > 1:
+            languages = sorted(
+                str(self.manager.g.nodes[node_id].get("language", "und"))
+                for node_id in candidate_ids
+            )
+            raise AmbiguousTermError(
+                f"Term {term!r} exists in multiple languages "
+                f"({', '.join(languages)}); provide language=..."
+            )
+        return next(iter(candidate_ids), None)
 
     def get_related_terms(
-        self, term: Term, rel_type: Optional[RelType] = None
+        self,
+        term: Term,
+        rel_type: Optional[RelType] = None,
+        *,
+        language: Optional[str] = None,
     ) -> List[Term]:
         """
         Find terms directly related to a given term in the graph.
@@ -94,7 +121,7 @@ class GraphQuery:
         Raises:
             NodeNotFoundError: If the input term is not found in the graph.
         """
-        start_node_id = self.get_node_id(term)
+        start_node_id = self.get_node_id(term, language=language)
         if start_node_id is None:
             raise NodeNotFoundError(f"Term '{term}' not found in the graph.")
 
@@ -108,15 +135,27 @@ class GraphQuery:
                 continue
 
             current_rel_type = edge_data.get("relationship")
+            relationship_types_value = edge_data.get(
+                "relationship_types",
+                [current_rel_type] if current_rel_type else [],
+            )
+            relationship_types = (
+                relationship_types_value.split("|")
+                if isinstance(relationship_types_value, str)
+                else relationship_types_value
+            )
 
             # Apply relationship type filter if provided
             if rel_type is None or (
-                current_rel_type and current_rel_type.lower() == rel_type.lower()
+                any(
+                    str(candidate).lower() == rel_type.lower()
+                    for candidate in relationship_types
+                )
             ):
                 # Get the term attribute from the neighbor node
                 neighbor_term = self.manager.g.nodes[neighbor_id].get("term")
                 if neighbor_term:
-                    related_terms_list.append(neighbor_term)
+                    related_terms_list.append(str(neighbor_term))
                 else:
                     self.logger.warning(
                         f"Neighbor node {neighbor_id} of '{term}' is missing 'term' attribute."
@@ -134,7 +173,7 @@ class GraphQuery:
         Returns:
             int: The number of nodes.
         """
-        return self.manager.g.number_of_nodes()
+        return int(self.manager.g.number_of_nodes())
 
     def get_edge_count(self) -> int:
         """
@@ -143,7 +182,7 @@ class GraphQuery:
         Returns:
             int: The number of edges.
         """
-        return self.manager.g.number_of_edges()
+        return int(self.manager.g.number_of_edges())
 
     def get_term_by_id(self, word_id: WordId) -> Optional[Term]:
         """
@@ -157,8 +196,7 @@ class GraphQuery:
                             attribute, else None.
         """
         if word_id in self.manager.g.nodes():
-            node_attrs = dict(self.manager.g.nodes(data=True))
-            term_attr = node_attrs.get(word_id, {}).get("term")
+            term_attr = self.manager.g.nodes[word_id].get("term")
             return str(term_attr) if term_attr is not None else None
         return None
 
@@ -183,7 +221,14 @@ class GraphQuery:
             term = node_data.get(
                 "term", f"ID:{node_id}"
             )  # Provide default if term missing
-            sample_nodes_data.append({"id": node_id, "term": term})
+            sample_nodes_data.append(
+                {
+                    "id": node_id,
+                    "term": str(term),
+                    "language": str(node_data.get("language", "und")),
+                    "script": str(node_data.get("script", "Zzzz")),
+                }
+            )
 
         # Sample relationships (more complex to get terms efficiently)
         sample_relationships_data: List[Dict[str, str]] = []
@@ -191,9 +236,9 @@ class GraphQuery:
         for u, v, data in self.manager.g.edges(data=True):
             if edge_count >= 5:
                 break
-            term_u = self.manager.g.nodes[u].get("term", f"ID:{u}")
-            term_v = self.manager.g.nodes[v].get("term", f"ID:{v}")
-            rel_type = data.get("relationship", "unknown")
+            term_u = str(self.manager.g.nodes[u].get("term", f"ID:{u}"))
+            term_v = str(self.manager.g.nodes[v].get("term", f"ID:{v}"))
+            rel_type = str(data.get("relationship", "unknown"))
             sample_relationships_data.append(
                 {"source": term_u, "target": term_v, "type": rel_type}
             )
@@ -241,7 +286,9 @@ class GraphQuery:
             print("\nNo relationship types found.")
         print("---------------------\n")
 
-    def get_subgraph(self, term: Term, depth: int = 1) -> nx.Graph:
+    def get_subgraph(
+        self, term: Term, depth: int = 1, *, language: Optional[str] = None
+    ) -> nx.Graph:
         """
         Extract a subgraph centered around a specific term up to a given depth.
 
@@ -261,7 +308,7 @@ class GraphQuery:
         if depth < 0:
             raise ValueError("Subgraph depth cannot be negative.")
 
-        start_node_id = self.get_node_id(term)
+        start_node_id = self.get_node_id(term, language=language)
         if start_node_id is None:
             raise NodeNotFoundError(f"Term '{term}' not found for subgraph extraction.")
 
@@ -309,50 +356,61 @@ class GraphQuery:
         filtered_relationships: List[Tuple[Term, Term, RelType, Dict[str, Any]]] = []
 
         for u, v, data in self.manager.g.edges(data=True):
-            edge_dimension = data.get("dimension")
-            edge_rel_type = data.get("relationship")
-
-            # --- Dimension Filter ---
-            if edge_dimension != dimension:
-                continue
-
-            # --- Relationship Type Filter ---
-            if rel_type is not None and edge_rel_type != rel_type:
-                continue
-
-            # --- Valence Filter (Apply only if relevant and specified) ---
-            apply_valence_filter = valence_range is not None and dimension in [
-                "emotional",
-                "affective",
-            ]
-            if apply_valence_filter:
-                # Check valence on both nodes (or edge if stored there)
-                # This example assumes valence is primarily a node attribute
-                valence_u = self.manager.g.nodes[u].get("valence")
-                valence_v = self.manager.g.nodes[v].get("valence")
-                # Define logic: e.g., include if *either* node is in range
-                node_in_range = False
-                min_val, max_val = valence_range
-                if valence_u is not None and min_val <= valence_u <= max_val:
-                    node_in_range = True
-                if valence_v is not None and min_val <= valence_v <= max_val:
-                    node_in_range = True
-
-                if not node_in_range:
-                    continue  # Skip edge if no node meets valence criteria
-
-            # --- Passed Filters: Retrieve terms and add to results ---
-            term_u = self.manager.g.nodes[u].get("term", f"ID:{u}")
-            term_v = self.manager.g.nodes[v].get("term", f"ID:{v}")
-
-            # Ensure rel_type is not None before adding
-            if edge_rel_type is None:
-                self.logger.warning(
-                    f"Edge ({u}, {v}) matches dimension '{dimension}' but lacks 'relationship' attribute."
+            assertions = decode_edge_assertions(
+                data,
+                default_source_id=u,
+                default_target_id=v,
+            )
+            for assertion in assertions:
+                assertion_dimension = str(
+                    assertion.get("dimension", data.get("dimension", "lexical"))
                 )
-                edge_rel_type = "unknown"  # Assign default
+                assertion_type = str(
+                    assertion.get("relationship", data.get("relationship", "unknown"))
+                )
+                if assertion_dimension != dimension:
+                    continue
+                if rel_type is not None and assertion_type != rel_type:
+                    continue
 
-            filtered_relationships.append((term_u, term_v, edge_rel_type, data))
+                if valence_range is not None and dimension in {
+                    "emotional",
+                    "affective",
+                }:
+                    min_valence, max_valence = valence_range
+                    assertion_valence = assertion.get("valence")
+                    candidate_valences = [assertion_valence]
+                    if not isinstance(assertion_valence, (int, float)):
+                        candidate_valences.extend(
+                            [
+                                self.manager.g.nodes[assertion["source_id"]].get(
+                                    "valence"
+                                ),
+                                self.manager.g.nodes[assertion["target_id"]].get(
+                                    "valence"
+                                ),
+                            ]
+                        )
+                    if not any(
+                        isinstance(value, (int, float))
+                        and min_valence <= float(value) <= max_valence
+                        for value in candidate_valences
+                    ):
+                        continue
+
+                assertion_attributes = dict(data)
+                assertion_attributes.update(assertion)
+                source_id = assertion["source_id"]
+                target_id = assertion["target_id"]
+                source_term = str(
+                    self.manager.g.nodes[source_id].get("term", f"ID:{source_id}")
+                )
+                target_term = str(
+                    self.manager.g.nodes[target_id].get("term", f"ID:{target_id}")
+                )
+                filtered_relationships.append(
+                    (source_term, target_term, assertion_type, assertion_attributes)
+                )
 
         self.logger.debug(
             f"Found {len(filtered_relationships)} relationships matching criteria."

@@ -39,6 +39,28 @@ seed, script, and graphemes as a stub and reports an actionable source warning.
 It does not relabel English definitions or queue English NLP discoveries as the
 requested language.
 
+## Language-aware graph identity
+
+Graph nodes use `(normalized_term, language)` identity. Homographs therefore
+remain separate nodes, and their labels are disambiguated only when necessary,
+for example `chat [en]` and `chat [fr]`. Queries without a language retain
+the convenient legacy behavior for unambiguous spellings and raise
+`AmbiguousTermError` when a spelling exists in more than one language:
+
+```python
+english_chat = graph.get_node_id("chat", language="en")
+french_chat = graph.get_node_id("chat", language="fr")
+french_neighbors = graph.get_related_terms("chat", language="fr")
+```
+
+One visual connection can carry several typed source assertions without losing
+provenance. Every assertion retains its source and target node IDs, target
+language, relationship type, dimension, source identifier, confidence, and
+optional emotional values. This also preserves opposite directed assertions
+when the display graph is undirected. GEXF exports encode the assertion list as
+deterministic JSON and restore language indexes, direction, and source counts on
+load.
+
 ## Graphemes
 
 `segment_graphemes()` implements Unicode extended grapheme-cluster boundaries

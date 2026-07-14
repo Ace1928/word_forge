@@ -981,6 +981,11 @@ class DBManager:
                         confidence,
                     ),
                 )
+                if cursor.rowcount > 0:
+                    conn.execute(
+                        "UPDATE words SET last_refreshed = ? WHERE id = ?",
+                        (time.time(), word_id),
+                    )
                 # Return True if a new row was inserted
                 return cursor.rowcount > 0
         except (sqlite3.Error, TransactionError) as e:

@@ -42,7 +42,10 @@ class WorkerStatus(TypedDict):
     state: str
     last_error: Optional[str]
     last_new_nodes: int
+    last_updated_nodes: int
     last_new_edges: int
+    last_new_relationships: int
+    last_updated_relationships: int
     last_processed_words: int
     last_full_rebuild: bool
 
@@ -474,7 +477,12 @@ class GraphWorker(threading.Thread):
                 "state": str(state),
                 "last_error": self._last_error,
                 "last_new_nodes": self._last_cycle_metrics.new_nodes,
+                "last_updated_nodes": self._last_cycle_metrics.updated_nodes,
                 "last_new_edges": self._last_cycle_metrics.new_edges,
+                "last_new_relationships": self._last_cycle_metrics.new_relationships,
+                "last_updated_relationships": (
+                    self._last_cycle_metrics.updated_relationships
+                ),
                 "last_processed_words": self._last_cycle_metrics.processed_words,
                 "last_full_rebuild": self._last_cycle_metrics.full_rebuild,
             }
@@ -495,7 +503,12 @@ class GraphWorker(threading.Thread):
                     else 0
                 ),
                 "last_new_nodes": self._last_cycle_metrics.new_nodes,
+                "last_updated_nodes": self._last_cycle_metrics.updated_nodes,
                 "last_new_edges": self._last_cycle_metrics.new_edges,
+                "last_new_relationships": self._last_cycle_metrics.new_relationships,
+                "last_updated_relationships": (
+                    self._last_cycle_metrics.updated_relationships
+                ),
                 "last_processed_words": self._last_cycle_metrics.processed_words,
                 "last_full_rebuild": self._last_cycle_metrics.full_rebuild,
                 "last_refresh_watermark": self._last_cycle_metrics.max_last_refreshed,

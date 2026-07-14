@@ -11,7 +11,10 @@ class TestGraphUpdateMetrics:
     def test_default_values(self) -> None:
         metrics = GraphUpdateMetrics()
         assert metrics.new_nodes == 0
+        assert metrics.updated_nodes == 0
         assert metrics.new_edges == 0
+        assert metrics.new_relationships == 0
+        assert metrics.updated_relationships == 0
         assert metrics.processed_words == 0
         assert metrics.max_last_refreshed == 0.0
         assert metrics.full_rebuild is False
@@ -19,13 +22,19 @@ class TestGraphUpdateMetrics:
     def test_custom_values(self) -> None:
         metrics = GraphUpdateMetrics(
             new_nodes=2,
+            updated_nodes=1,
             new_edges=3,
+            new_relationships=5,
+            updated_relationships=2,
             processed_words=4,
             max_last_refreshed=1.0,
             full_rebuild=True,
         )
         assert metrics.new_nodes == 2
+        assert metrics.updated_nodes == 1
         assert metrics.new_edges == 3
+        assert metrics.new_relationships == 5
+        assert metrics.updated_relationships == 2
         assert metrics.processed_words == 4
         assert metrics.max_last_refreshed == 1.0
         assert metrics.full_rebuild is True

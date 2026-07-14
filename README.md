@@ -434,6 +434,8 @@ entry = db.get_word_entry("example")
 from word_forge.graph.graph_manager import GraphManager
 graph = GraphManager(db_manager=db)
 graph.build_graph()
+french_chat = graph.get_node_id("chat", language="fr")
+french_neighbors = graph.get_related_terms("chat", language="fr")
 graph.visualize(output_path="graph.html")
 
 # Emotion analysis

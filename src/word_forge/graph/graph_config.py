@@ -58,13 +58,59 @@ WordId = int  # Node identifier type
 Term = str
 RelType = str
 ColorHex = str  # Define ColorHex as a string alias
+LexicalIdentity = Tuple[str, str]
 
 RelationshipDimension = Literal[
     "lexical", "emotional", "affective", "connotative", "contextual"
 ]
 
-WordTuple = Tuple[WordId, Term]
 
+@dataclass(frozen=True, slots=True)
+class GraphWord:
+    """Language-aware word row used to construct a graph node."""
+
+    word_id: WordId
+    term: Term
+    normalized_term: str
+    language: str
+    script: str
+    source: str
+    is_stub: bool
+    last_refreshed: float
+
+
+@dataclass(frozen=True, slots=True)
+class GraphRelationship:
+    """One source-preserving relationship assertion from SQLite."""
+
+    word_id: WordId
+    related_term: Term
+    related_normalized_term: str
+    related_language: str
+    relationship_type: RelType
+    dimension: RelationshipDimension
+    valence: Optional[float]
+    arousal: Optional[float]
+    source: str
+    confidence: float
+
+
+class GraphAssertion(TypedDict):
+    """Serializable provenance record for one directed graph assertion."""
+
+    source_id: WordId
+    target_id: WordId
+    relationship: RelType
+    dimension: RelationshipDimension
+    source: str
+    confidence: float
+    related_language: str
+    valence: Optional[float]
+    arousal: Optional[float]
+
+
+# Backward-compatible legacy row aliases retained for external type imports.
+WordTuple = Tuple[WordId, Term]
 RelationshipTuple = Tuple[
     WordId,
     Term,
@@ -100,6 +146,8 @@ class WordTupleDict(TypedDict):
 
     id: int
     term: str
+    language: str
+    script: str
 
 
 class RelationshipTupleDict(TypedDict):
@@ -114,7 +162,10 @@ class RelationshipTupleDict(TypedDict):
 
     word_id: int
     related_term: str
+    related_language: str
     relationship_type: str
+    source: str
+    confidence: float
     dimension: RelationshipDimension
     valence: Optional[float]
     arousal: Optional[float]
@@ -224,42 +275,53 @@ class GraphConfig:
                 WHERE type='table' AND name='relationships'
             """,
             "fetch_all_words": """
-                SELECT id, term, last_refreshed FROM words
+                SELECT id, term, normalized_term, language, script, source,
+                       is_stub, last_refreshed
+                FROM words
             """,
             "fetch_words_since": """
-                SELECT id, term, last_refreshed
+                SELECT id, term, normalized_term, language, script, source,
+                       is_stub, last_refreshed
                 FROM words
                 WHERE last_refreshed > ?
                 ORDER BY last_refreshed ASC
             """,
             "fetch_all_relationships": """
-                SELECT word_id, related_term, relationship_type
+                SELECT word_id, related_term, related_normalized_term,
+                       related_language, relationship_type, source, confidence
                 FROM relationships
             """,
             "fetch_relationships_since": """
-                SELECT r.word_id, r.related_term, r.relationship_type
+                SELECT r.word_id, r.related_term, r.related_normalized_term,
+                       r.related_language, r.relationship_type, r.source,
+                       r.confidence
                 FROM relationships AS r
                 JOIN words AS w ON w.id = r.word_id
                 WHERE w.last_refreshed > ?
             """,
             "get_all_words": """
-                SELECT id, term, definition FROM words
+                SELECT id, term, normalized_term, language, script, definition
+                FROM words
             """,
             "get_all_relationships": """
-                SELECT word_id, related_term, relationship_type
+                SELECT word_id, related_term, related_normalized_term,
+                       related_language, relationship_type, source, confidence
                 FROM relationships
             """,
             "get_emotional_relationships": """
-                SELECT word_id, related_term, relationship_type, valence, arousal
+                SELECT word_id, related_term, related_language,
+                       relationship_type, valence, arousal, last_updated
                 FROM emotional_relationships
                 WHERE word_id = ?
             """,
             "get_all_emotional_relationships": """
-                SELECT word_id, related_term, relationship_type, valence, arousal
+                SELECT word_id, related_term, related_language,
+                       relationship_type, valence, arousal, last_updated
                 FROM emotional_relationships
             """,
             "get_emotional_relationships_since": """
-                SELECT word_id, related_term, relationship_type, valence, arousal
+                SELECT word_id, related_term, related_language,
+                       relationship_type, valence, arousal, last_updated
                 FROM emotional_relationships
                 WHERE last_updated > ?
             """,
@@ -284,7 +346,7 @@ class GraphConfig:
     )
 
     # Sample relationships for initial graph population
-    sample_relationships: List[tuple] = field(
+    sample_relationships: List[Tuple[str, str, str]] = field(
         default_factory=lambda: [
             ("algorithm", "computation", "domain"),
             ("algorithm", "procedure", "synonym"),
@@ -825,9 +887,13 @@ __all__ = [
     "GraphEdgeWeightStrategy",
     "RelationshipDimension",
     "ColorHex",  # Ensure ColorHex is exported
+    "LexicalIdentity",
     "WordId",
     "Term",
     "RelType",
+    "GraphWord",
+    "GraphRelationship",
+    "GraphAssertion",
     "WordTuple",
     "RelationshipTuple",
     "GraphData",

@@ -24,16 +24,24 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, cast
+from enum import Enum
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 # Import necessary components (adjust paths as needed)
 from word_forge.exceptions import GraphDataError, GraphError
+from word_forge.graph.graph_assertions import (
+    create_graph_assertion,
+    decode_edge_assertions,
+    encode_graph_assertions,
+    graph_assertion_identity,
+    sort_graph_assertions,
+)
 from word_forge.graph.graph_config import (
+    GraphRelationship,
+    GraphWord,
     RelationshipDimension,
-    RelationshipTuple,
     RelType,
     WordId,
-    WordTuple,
 )
 from word_forge.parser.linguistics import normalize_term
 from word_forge.relationships import RelationshipProperties
@@ -48,10 +56,27 @@ class GraphUpdateMetrics:
     """Lightweight snapshot of the most recent graph update."""
 
     new_nodes: int = 0
+    updated_nodes: int = 0
     new_edges: int = 0
+    new_relationships: int = 0
+    updated_relationships: int = 0
     processed_words: int = 0
     max_last_refreshed: float = 0.0
     full_rebuild: bool = False
+
+
+class AssertionMutation(str, Enum):
+    """Result of merging one source assertion into a graph edge."""
+
+    UNCHANGED = "unchanged"
+    ADDED = "added"
+    UPDATED = "updated"
+
+    @property
+    def changed(self) -> bool:
+        """Return whether edge metadata changed."""
+
+        return self is not AssertionMutation.UNCHANGED
 
 
 class GraphBuilder:
@@ -93,14 +118,20 @@ class GraphBuilder:
         self,
         *,
         new_nodes: int,
+        updated_nodes: int,
         new_edges: int,
+        new_relationships: int,
+        updated_relationships: int,
         processed_words: int,
         max_last_refreshed: float,
         full_rebuild: bool,
     ) -> None:
         self._last_update_metrics = GraphUpdateMetrics(
             new_nodes=new_nodes,
+            updated_nodes=updated_nodes,
             new_edges=new_edges,
+            new_relationships=new_relationships,
+            updated_relationships=updated_relationships,
             processed_words=processed_words,
             max_last_refreshed=max_last_refreshed,
             full_rebuild=full_rebuild,
@@ -180,7 +211,7 @@ class GraphBuilder:
         self.logger.info("Initiating full graph build process.")
         # Clear existing graph state held by the manager
         self.manager.g.clear()
-        self.manager._term_to_id.clear()
+        self.manager._clear_node_indexes()
         self.manager._positions.clear()
         self.manager._relationship_counts.clear()  # Use clear() for consistency
 
@@ -198,59 +229,83 @@ class GraphBuilder:
 
         # --- Node Addition ---
         total_words = len(words)
-        for idx, (word_id, term) in enumerate(words, start=1):
+        for idx, word in enumerate(words, start=1):
             # Ensure term is not None or empty before adding
-            if term:
+            if word.term:
                 # Add node with term and ID attributes for consistency
-                self.manager.g.add_node(word_id, term=term, id=word_id)
-                # Store lowercase term for case-insensitive lookup
-                self.manager._term_to_id[term.lower()] = word_id
+                self.manager.g.add_node(
+                    word.word_id,
+                    term=word.term,
+                    normalized_term=word.normalized_term,
+                    language=word.language,
+                    script=word.script,
+                    source=word.source,
+                    is_stub=word.is_stub,
+                    last_refreshed=word.last_refreshed,
+                    id=word.word_id,
+                )
+                self.manager._index_node(
+                    word.word_id,
+                    word.term,
+                    word.language,
+                    word.normalized_term,
+                )
             else:
                 self.logger.warning(
-                    f"Skipping node with ID {word_id} due to missing term."
+                    f"Skipping node with ID {word.word_id} due to missing term."
                 )
             if idx % max(total_words // 10, 1) == 0:
                 self.logger.info("Node build progress: %d/%d", idx, total_words)
 
         # --- Edge Addition ---
         total_edges = len(relationships)
-        for idx, (
-            word_id,
-            related_term,
-            rel_type,
-            dimension,
-            valence,
-            arousal,
-        ) in enumerate(relationships, start=1):
+        relationships_added = 0
+        for idx, relationship in enumerate(relationships, start=1):
             # Validate source node exists
-            if word_id not in self.manager.g.nodes():
-                self.logger.debug(f"Skipping edge from non-existent node ID {word_id}.")
+            if relationship.word_id not in self.manager.g.nodes():
+                self.logger.debug(
+                    "Skipping edge from non-existent node ID %s.",
+                    relationship.word_id,
+                )
                 continue
 
-            # Find target node ID (case-insensitive)
-            related_id = self.manager._term_to_id.get(related_term.lower())
+            related_id = self.manager._identity_to_id.get(
+                (
+                    relationship.related_normalized_term,
+                    relationship.related_language,
+                )
+            )
 
             # Validate target node exists
             if related_id is None or related_id not in self.manager.g.nodes():
                 self.logger.debug(
-                    f"Skipping edge to non-existent term '{related_term}'."
+                    "Skipping edge to non-existent term %r (%s).",
+                    relationship.related_term,
+                    relationship.related_language,
                 )
                 continue
 
             # Prevent self-loops unless explicitly allowed by config (future)
-            if word_id == related_id:
-                self.logger.debug(f"Skipping self-loop for node ID {word_id}.")
+            if relationship.word_id == related_id:
+                self.logger.debug(
+                    "Skipping self-loop for node ID %s.", relationship.word_id
+                )
                 continue
 
             # Add edge with calculated properties
-            self._add_relationship_edge(
-                word_id,
+            mutation = self._add_relationship_edge(
+                relationship.word_id,
                 related_id,
-                rel_type,
-                dimension=dimension,
-                valence=valence,
-                arousal=arousal,
+                relationship.relationship_type,
+                dimension=relationship.dimension,
+                valence=relationship.valence,
+                arousal=relationship.arousal,
+                source=relationship.source,
+                confidence=relationship.confidence,
+                related_language=relationship.related_language,
             )
+            if mutation is AssertionMutation.ADDED:
+                relationships_added += 1
             if idx % max(total_edges // 10, 1) == 0:
                 self.logger.info("Edge build progress: %d/%d", idx, total_edges)
 
@@ -267,7 +322,10 @@ class GraphBuilder:
 
         self._set_last_update_metrics(
             new_nodes=self.manager.g.number_of_nodes(),
+            updated_nodes=0,
             new_edges=self.manager.g.number_of_edges(),
+            new_relationships=relationships_added,
+            updated_relationships=0,
             processed_words=len(words),
             max_last_refreshed=latest_refresh,
             full_rebuild=True,
@@ -294,7 +352,7 @@ class GraphBuilder:
                 "Graph is empty, performing initial build instead of update."
             )
             self.build_graph()
-            return self.manager.g.number_of_nodes()
+            return int(self.manager.g.number_of_nodes())
 
         self.logger.info("Initiating incremental graph update.")
         since = (
@@ -317,69 +375,145 @@ class GraphBuilder:
 
         current_node_ids: Set[WordId] = set(self.manager.g.nodes())
         new_nodes_added: List[WordId] = []
+        updated_node_count = 0
         new_edges_added_count = 0
 
         # --- Add New Nodes ---
-        for word_id, term in all_words:
-            if term and word_id not in current_node_ids:
-                self.manager.g.add_node(word_id, term=term, id=word_id)
-                self.manager._term_to_id[term.lower()] = word_id
-                new_nodes_added.append(word_id)
+        for word in all_words:
+            if word.term and word.word_id not in current_node_ids:
+                self.manager.g.add_node(
+                    word.word_id,
+                    term=word.term,
+                    normalized_term=word.normalized_term,
+                    language=word.language,
+                    script=word.script,
+                    source=word.source,
+                    is_stub=word.is_stub,
+                    last_refreshed=word.last_refreshed,
+                    id=word.word_id,
+                )
+                self.manager._index_node(
+                    word.word_id,
+                    word.term,
+                    word.language,
+                    word.normalized_term,
+                )
+                new_nodes_added.append(word.word_id)
+            elif word.term and word.word_id in current_node_ids:
+                current = self.manager.g.nodes[word.word_id]
+                current_identity = (
+                    str(
+                        current.get(
+                            "normalized_term", normalize_term(str(current["term"]))
+                        )
+                    ),
+                    str(current.get("language", word.language)),
+                )
+                incoming_identity = (word.normalized_term, word.language)
+                if current_identity != incoming_identity:
+                    raise GraphDataError(
+                        f"Node ID {word.word_id} changed lexical identity from "
+                        f"{current_identity!r} to {incoming_identity!r}"
+                    )
+                refreshed_attributes = {
+                    "term": word.term,
+                    "normalized_term": word.normalized_term,
+                    "language": word.language,
+                    "script": word.script,
+                    "source": word.source,
+                    "is_stub": word.is_stub,
+                    "last_refreshed": word.last_refreshed,
+                    "id": word.word_id,
+                }
+                if any(
+                    current.get(name) != value
+                    for name, value in refreshed_attributes.items()
+                    if name != "last_refreshed"
+                ):
+                    updated_node_count += 1
+                current.update(refreshed_attributes)
+                self.manager._index_node(
+                    word.word_id,
+                    word.term,
+                    word.language,
+                    word.normalized_term,
+                )
 
         new_node_count = len(new_nodes_added)
 
         # --- Add New Edges ---
-        for (
-            word_id,
-            related_term,
-            rel_type,
-            dimension,
-            valence,
-            arousal,
-        ) in all_relationships:
-            related_id = self.manager._term_to_id.get(related_term.lower())
+        new_relationships_added_count = 0
+        updated_relationships_count = 0
+        for relationship in all_relationships:
+            related_id = self.manager._identity_to_id.get(
+                (
+                    relationship.related_normalized_term,
+                    relationship.related_language,
+                )
+            )
             # Ensure both nodes exist in the potentially updated graph
             if (
-                word_id in self.manager.g
+                relationship.word_id in self.manager.g
                 and related_id is not None
                 and related_id in self.manager.g
             ):
-                # Check if the edge (or its reverse for undirected) already exists
-                if not self.manager.g.has_edge(word_id, related_id):
-                    # Prevent self-loops
-                    if word_id == related_id:
-                        continue
-                    self._add_relationship_edge(
-                        word_id,
-                        related_id,
-                        rel_type,
-                        dimension=dimension,
-                        valence=valence,
-                        arousal=arousal,
-                    )
-                    new_edges_added_count += 1
+                if relationship.word_id == related_id:
+                    continue
+                edge_existed = self.manager.g.has_edge(relationship.word_id, related_id)
+                mutation = self._add_relationship_edge(
+                    relationship.word_id,
+                    related_id,
+                    relationship.relationship_type,
+                    dimension=relationship.dimension,
+                    valence=relationship.valence,
+                    arousal=relationship.arousal,
+                    source=relationship.source,
+                    confidence=relationship.confidence,
+                    related_language=relationship.related_language,
+                )
+                if mutation is AssertionMutation.ADDED:
+                    new_relationships_added_count += 1
+                    if not edge_existed:
+                        new_edges_added_count += 1
+                elif mutation is AssertionMutation.UPDATED:
+                    updated_relationships_count += 1
 
         # --- Post-Update Actions ---
-        if new_node_count > 0 or new_edges_added_count > 0:
+        if (
+            new_node_count > 0
+            or updated_node_count > 0
+            or new_edges_added_count > 0
+            or new_relationships_added_count > 0
+            or updated_relationships_count > 0
+        ):
             self.logger.info(
-                f"Graph updated: Added {new_node_count} nodes and {new_edges_added_count} edges."
+                "Graph updated: +%d nodes, %d nodes refreshed, +%d edges, "
+                "+%d assertions, %d assertions refreshed.",
+                new_node_count,
+                updated_node_count,
+                new_edges_added_count,
+                new_relationships_added_count,
+                updated_relationships_count,
             )
             # Delegate incremental layout update only if nodes were added
             if new_node_count > 0:
                 self.logger.info("Triggering incremental layout update.")
                 self.manager.layout.update_layout_incrementally(new_nodes_added)
             else:
-                self.logger.info(
-                    "Only edges added, layout update may not be necessary depending on algorithm."
-                )
+                self.logger.debug("No new nodes; retaining the current layout.")
                 # Optionally trigger full re-layout if edge changes significantly impact structure
                 # self.manager.layout.compute_layout()
         else:
-            self.logger.info("Graph update: No new nodes or edges detected.")
+            self.logger.info(
+                "Graph update: no topology or provenance changes detected."
+            )
 
         self._set_last_update_metrics(
             new_nodes=new_node_count,
+            updated_nodes=updated_node_count,
             new_edges=new_edges_added_count,
+            new_relationships=new_relationships_added_count,
+            updated_relationships=updated_relationships_count,
             processed_words=len(all_words),
             max_last_refreshed=latest_refresh,
             full_rebuild=False,
@@ -397,7 +531,10 @@ class GraphBuilder:
         dimension: Optional[RelationshipDimension] = None,
         valence: Optional[float] = None,
         arousal: Optional[float] = None,
-    ) -> None:
+        source: str = "unknown",
+        confidence: float = 1.0,
+        related_language: str = "en",
+    ) -> AssertionMutation:
         """
         Adds a single relationship edge to the graph with calculated attributes.
 
@@ -409,48 +546,119 @@ class GraphBuilder:
             target_id: The ID of the target node.
             rel_type: The type of the relationship.
         """
-        # Use manager's helper to get properties and determine dimension
-        # Provide a default RelationshipProperties if type is unknown
-        rel_props: RelationshipProperties = self.manager._get_relationship_properties(
-            rel_type
-        )
         resolved_dimension = dimension or self.manager._determine_dimension(rel_type)
 
-        # Safely get term text for title, providing defaults
-        node_attrs = dict(self.manager.g.nodes(data=True))
-        source_term_text = node_attrs.get(source_id, {}).get("term", f"ID:{source_id}")
-        target_term_text = node_attrs.get(target_id, {}).get("term", f"ID:{target_id}")
+        assertion = create_graph_assertion(
+            source_id,
+            target_id,
+            rel_type,
+            dimension=resolved_dimension,
+            source=source,
+            confidence=confidence,
+            related_language=related_language,
+            valence=valence,
+            arousal=arousal,
+        )
+        existing_data = self.manager.g.get_edge_data(source_id, target_id) or {}
+        assertions = decode_edge_assertions(
+            existing_data,
+            default_source_id=source_id,
+            default_target_id=target_id,
+        )
+        assertion_identity = graph_assertion_identity(assertion)
+        mutation = AssertionMutation.ADDED
+        for index, existing_assertion in enumerate(assertions):
+            if graph_assertion_identity(existing_assertion) != assertion_identity:
+                continue
+            if existing_assertion == assertion:
+                return AssertionMutation.UNCHANGED
+            assertions[index] = assertion
+            mutation = AssertionMutation.UPDATED
+            break
+        else:
+            assertions.append(assertion)
+        assertions = sort_graph_assertions(assertions)
 
-        # Construct edge attributes
+        relationship_types = list(
+            dict.fromkeys(str(item["relationship"]) for item in assertions)
+        )
+        dimensions = list(dict.fromkeys(str(item["dimension"]) for item in assertions))
+        sources = list(dict.fromkeys(str(item["source"]) for item in assertions))
+        assertion_properties: List[RelationshipProperties] = [
+            self.manager._get_relationship_properties(item["relationship"])
+            for item in assertions
+        ]
+        primary_assertion = assertions[0]
+        primary_properties = assertion_properties[0]
+        directions = {(item["source_id"], item["target_id"]) for item in assertions}
+        has_opposite_directions = any(
+            (target, source_node) in directions for source_node, target in directions
+        )
+        is_bidirectional = has_opposite_directions or any(
+            bool(properties.get("bidirectional", False))
+            for properties in assertion_properties
+        )
+        source_term_text = self.manager.g.nodes[primary_assertion["source_id"]].get(
+            "term", f"ID:{primary_assertion['source_id']}"
+        )
+        target_term_text = self.manager.g.nodes[primary_assertion["target_id"]].get(
+            "term", f"ID:{primary_assertion['target_id']}"
+        )
+
+        # Construct GEXF-compatible scalar edge attributes. Complete assertions
+        # remain available as canonical JSON instead of an unserializable list.
         edge_attrs = {
-            "relationship": rel_type,
-            "weight": rel_props.get("weight", 1.0),  # Default weight if missing
-            "color": rel_props.get(
+            "relationship": relationship_types[0],
+            "relationship_types": "|".join(relationship_types),
+            "weight": max(
+                float(properties.get("weight", 1.0)) * item["confidence"]
+                for item, properties in zip(assertions, assertion_properties)
+            ),
+            "color": primary_properties.get(
                 "color", self._config.relationship_colors.get("default", "#aaaaaa")
-            ),  # Default color
-            "bidirectional": rel_props.get(
-                "bidirectional", False
-            ),  # Default directionality
-            "dimension": resolved_dimension,
-            # Ensure title generation handles potential None terms gracefully
-            "title": f"{rel_type}: {source_term_text or '?'} {'↔' if rel_props.get('bidirectional', False) else '→'} {target_term_text or '?'}",
+            ),
+            "bidirectional": is_bidirectional,
+            "dimension": dimensions[0],
+            "dimensions": "|".join(dimensions),
+            "source": sources[0],
+            "sources": "|".join(sources),
+            "confidence": max(float(item["confidence"]) for item in assertions),
+            "assertion_count": len(assertions),
+            "assertions_json": encode_graph_assertions(assertions),
+            "title": (
+                f"{', '.join(relationship_types)}: {source_term_text or '?'} "
+                f"{'↔' if is_bidirectional else '→'} "
+                f"{target_term_text or '?'}"
+            ),
         }
 
-        if valence is not None:
-            edge_attrs["valence"] = valence
-        if arousal is not None:
-            edge_attrs["arousal"] = arousal
+        valences = [
+            float(item["valence"]) for item in assertions if item["valence"] is not None
+        ]
+        arousals = [
+            float(item["arousal"]) for item in assertions if item["arousal"] is not None
+        ]
+        if valences:
+            edge_attrs["valence"] = max(valences, key=abs)
+        else:
+            existing_data.pop("valence", None)
+        if arousals:
+            edge_attrs["arousal"] = max(arousals)
+        else:
+            existing_data.pop("arousal", None)
 
         # Add the edge to the manager's graph
         self.manager.g.add_edge(source_id, target_id, **edge_attrs)
 
         # Update relationship counts held by the manager
         # Use Counter's update method for clarity
-        self.manager._relationship_counts.update([rel_type])
+        if mutation is AssertionMutation.ADDED:
+            self.manager._relationship_counts.update([rel_type])
+        return mutation
 
     def _fetch_data(
         self, since: Optional[float] = None
-    ) -> Tuple[List[WordTuple], List[RelationshipTuple], float]:
+    ) -> Tuple[List[GraphWord], List[GraphRelationship], float]:
         """
         Fetch words and relationships from the database.
 
@@ -468,8 +676,8 @@ class GraphBuilder:
             sqlite3.Error: For underlying database connection or query errors.
         """
         self.logger.debug("Fetching graph data from database.")
-        words: List[WordTuple] = []
-        relationships: List[RelationshipTuple] = []
+        words: List[GraphWord] = []
+        relationships: List[GraphRelationship] = []
         latest_refresh = self._last_refresh_watermark
 
         try:
@@ -495,7 +703,16 @@ class GraphBuilder:
                 cursor.execute(word_query, params)
                 words_raw = cursor.fetchall()
                 words = [
-                    cast(WordTuple, (row["id"], row["term"]))
+                    GraphWord(
+                        word_id=int(row["id"]),
+                        term=str(row["term"]),
+                        normalized_term=str(row["normalized_term"]),
+                        language=str(row["language"]),
+                        script=str(row["script"]),
+                        source=str(row["source"]),
+                        is_stub=bool(row["is_stub"]),
+                        last_refreshed=float(row["last_refreshed"]),
+                    )
                     for row in words_raw
                     if row["id"] is not None and row["term"] is not None
                 ]
@@ -514,7 +731,7 @@ class GraphBuilder:
                         "Database table 'relationships' not found. Graph will have no edges."
                     )
                     # Return words only if relationships table is missing
-                    return words, []
+                    return words, [], latest_refresh
 
                 # Fetch relationships: Ensure all parts are not NULL
                 rel_query_key = (
@@ -524,26 +741,25 @@ class GraphBuilder:
                 )
                 rel_query = self._config.sql_templates.get(rel_query_key)
                 rel_params: Tuple[float, ...] = (
-                    (since,)
-                    if rel_query_key == "fetch_relationships_since"
-                    else tuple()
+                    (since,) if since is not None else tuple()
                 )
                 if rel_query is None:
                     rel_query = self._config.sql_templates["fetch_all_relationships"]
                     rel_params = tuple()
                 cursor.execute(rel_query, rel_params)
                 relationships_raw = cursor.fetchall()
-                lexical_relationships: List[RelationshipTuple] = [
-                    cast(
-                        RelationshipTuple,
-                        (
-                            row["word_id"],
-                            row["related_term"],
-                            row["relationship_type"],
-                            "lexical",
-                            None,
-                            None,
-                        ),
+                lexical_relationships: List[GraphRelationship] = [
+                    GraphRelationship(
+                        word_id=int(row["word_id"]),
+                        related_term=str(row["related_term"]),
+                        related_normalized_term=str(row["related_normalized_term"]),
+                        related_language=str(row["related_language"]),
+                        relationship_type=str(row["relationship_type"]),
+                        dimension="lexical",
+                        valence=None,
+                        arousal=None,
+                        source=str(row["source"]),
+                        confidence=float(row["confidence"]),
                     )
                     for row in relationships_raw
                     if row["word_id"] is not None
@@ -569,25 +785,30 @@ class GraphBuilder:
                         ]
                         emotional_params: Tuple[float, ...] = tuple()
                     else:
-                        emotional_params = (
-                            (since,)
-                            if emotional_query_key
-                            == "get_emotional_relationships_since"
-                            else tuple()
-                        )
+                        emotional_params = (since,) if since is not None else tuple()
                     cursor.execute(emotional_query, emotional_params)
                     emotional_rows = cursor.fetchall()
-                    emotional_relationships: List[RelationshipTuple] = [
-                        cast(
-                            RelationshipTuple,
-                            (
-                                row["word_id"],
-                                row["related_term"],
-                                row["relationship_type"],
-                                "emotional",
-                                row["valence"],
-                                row["arousal"],
+                    for row in emotional_rows:
+                        try:
+                            latest_refresh = max(
+                                latest_refresh, float(row["last_updated"] or 0.0)
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                    emotional_relationships: List[GraphRelationship] = [
+                        GraphRelationship(
+                            word_id=int(row["word_id"]),
+                            related_term=str(row["related_term"]),
+                            related_normalized_term=normalize_term(
+                                str(row["related_term"])
                             ),
+                            related_language=str(row["related_language"]),
+                            relationship_type=str(row["relationship_type"]),
+                            dimension="emotional",
+                            valence=float(row["valence"]),
+                            arousal=float(row["arousal"]),
+                            source="emotion-derived",
+                            confidence=1.0,
                         )
                         for row in emotional_rows
                         if row["word_id"] is not None
