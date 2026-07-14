@@ -264,13 +264,21 @@ class GraphConfig:
                 WHERE last_updated > ?
             """,
             "insert_sample_word": """
-                INSERT OR IGNORE INTO words (term, definition, part_of_speech)
-                VALUES (?, ?, ?)
+                INSERT OR IGNORE INTO words (
+                    term, normalized_term, language, script, definition,
+                    part_of_speech, usage_examples, source, is_stub,
+                    last_refreshed
+                )
+                VALUES (?, ?, 'en', 'Latn', ?, ?, '', 'sample', 0,
+                        CAST(strftime('%s', 'now') AS REAL))
             """,
             "insert_sample_relationship": """
                 INSERT OR IGNORE INTO relationships
-                (word_id, related_term, relationship_type)
-                VALUES (?, ?, ?)
+                (
+                    word_id, related_term, related_normalized_term,
+                    relationship_type
+                )
+                VALUES (?, ?, ?, ?)
             """,
         }
     )

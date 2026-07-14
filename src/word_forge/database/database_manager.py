@@ -62,8 +62,10 @@ Usage Examples:
     ...     conn.execute("INSERT INTO words (term) VALUES (?)", ("syntax",))
 """
 
+import json
 import sqlite3
 import time
+import unicodedata
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -75,6 +77,7 @@ from typing import (
     List,
     Optional,
     Protocol,
+    Sequence,
     Tuple,
     TypedDict,
     TypeVar,
@@ -83,6 +86,19 @@ from typing import (
 )
 
 from word_forge.config import config
+from word_forge.database.schema import (
+    CURRENT_SCHEMA_VERSION,
+    MigrationReport,
+    SchemaMigrationError,
+    ensure_schema,
+)
+from word_forge.parser.linguistics import (
+    Grapheme,
+    Pronunciation,
+    canonicalize_language_tag,
+    infer_script,
+    normalize_term,
+)
 
 
 class DatabaseError(Exception):
@@ -264,7 +280,50 @@ class RelationshipDict(TypedDict):
     """
 
     related_term: str
+    related_normalized_term: str
+    related_language: str
     relationship_type: str
+    source: str
+    confidence: float
+
+
+class GraphemeDict(TypedDict):
+    """Persisted Unicode grapheme-cluster metadata."""
+
+    position: int
+    text: str
+    normalized: str
+    codepoints: List[str]
+    unicode_names: List[str]
+    categories: List[str]
+    combining_classes: List[int]
+    script: str
+
+
+class PhonemeDict(TypedDict):
+    """Persisted phonetic segment metadata."""
+
+    position: int
+    symbol: str
+    base_symbol: str
+    stress: Optional[int]
+    syllabic: bool
+
+
+class PronunciationDict(TypedDict):
+    """Persisted pronunciation and ordered phoneme records."""
+
+    id: int
+    notation: str
+    text: str
+    language: str
+    dialect: Optional[str]
+    source: str
+    confidence: float
+    generated: bool
+    syllable_count: int
+    stress_pattern: List[int]
+    phonemes: List[PhonemeDict]
 
 
 class WordEntryDict(TypedDict):
@@ -282,6 +341,10 @@ class WordEntryDict(TypedDict):
         part_of_speech: Grammatical category (noun, verb, etc.)
         usage_examples: List of example sentences using the term
         language: str
+        normalized_term: Unicode-normalized lexical identity key
+        script: ISO 15924 script code
+        source: Primary source responsible for the current entry
+        is_stub: Whether the word awaits lexical enrichment
         last_refreshed: Timestamp of last update (epoch time)
         relationships: List of relationships to other terms
     """
@@ -293,8 +356,14 @@ class WordEntryDict(TypedDict):
     part_of_speech: str
     usage_examples: List[str]
     language: str
+    normalized_term: str
+    script: str
     last_refreshed: float
+    source: str
+    is_stub: bool
     relationships: List[RelationshipDict]
+    graphemes: List[GraphemeDict]
+    pronunciations: List[PronunciationDict]
 
 
 class WordDataDict(TypedDict):
@@ -315,6 +384,9 @@ class WordDataDict(TypedDict):
     term: str
     definition: str
     usage_examples: str
+    language: str
+    script: str
+    last_refreshed: float
 
 
 class SQLExecutor(Protocol):
@@ -344,108 +416,75 @@ Cursor = sqlite3.Cursor
 QueryParams = Union[Tuple[Any, ...], Dict[str, Any]]
 
 
-# SQL constants for database schema operations
-SQL_CREATE_WORDS_TABLE = """
-CREATE TABLE IF NOT EXISTS words (
-    id INTEGER PRIMARY KEY,
-    term TEXT UNIQUE NOT NULL,
-    definition TEXT,
-    part_of_speech TEXT,
-    usage_examples TEXT,
-    last_refreshed REAL NOT NULL
-)
-"""
-
-SQL_CREATE_RELATIONSHIPS_TABLE = """
-CREATE TABLE IF NOT EXISTS relationships (
-    id INTEGER PRIMARY KEY,
-    word_id INTEGER NOT NULL,
-    related_term TEXT NOT NULL,
-    relationship_type TEXT NOT NULL,
-    FOREIGN KEY(word_id) REFERENCES words(id),
-    UNIQUE(word_id, related_term, relationship_type)
-)
-"""
-
-SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE = """
-CREATE TABLE IF NOT EXISTS emotional_relationships (
-    id INTEGER PRIMARY KEY,
-    word_id INTEGER NOT NULL,
-    related_term TEXT NOT NULL,
-    relationship_type TEXT NOT NULL,
-    valence REAL NOT NULL,
-    arousal REAL NOT NULL,
-    last_updated REAL NOT NULL,
-    FOREIGN KEY(word_id) REFERENCES words(id),
-    UNIQUE(word_id, related_term, relationship_type)
-)
-"""
-
-SQL_CREATE_WORD_ID_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_word_term ON words(term)
-"""
-
-SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
-ON relationships(word_id, related_term, relationship_type)
-"""
-
-SQL_CREATE_UNIQUE_EMOTIONAL_RELATIONSHIP_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_emotional_relationship
-ON emotional_relationships(word_id, related_term, relationship_type)
-"""
-
-SQL_CREATE_GRAPH_METADATA_TABLE = """
-CREATE TABLE IF NOT EXISTS graph_metadata (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at REAL NOT NULL
-)
-"""
-
 SQL_CHECK_WORDS_TABLE = (
     "SELECT name FROM sqlite_master WHERE type='table' AND name='words'"
 )
 
 # SQL query constants for data operations
 SQL_INSERT_OR_UPDATE_WORD = """
-INSERT INTO words (term, definition, part_of_speech, usage_examples, last_refreshed)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(term)
+INSERT INTO words (
+    term, normalized_term, language, script, definition, part_of_speech,
+    usage_examples, source, is_stub, last_refreshed
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(normalized_term, language)
 DO UPDATE SET
-    definition=excluded.definition,
-    part_of_speech=excluded.part_of_speech,
-    usage_examples=excluded.usage_examples,
+    term=excluded.term,
+    script=excluded.script,
+    definition=CASE
+        WHEN excluded.definition <> '' THEN excluded.definition
+        ELSE words.definition
+    END,
+    part_of_speech=CASE
+        WHEN excluded.part_of_speech <> '' THEN excluded.part_of_speech
+        ELSE words.part_of_speech
+    END,
+    usage_examples=CASE
+        WHEN excluded.usage_examples <> '' THEN excluded.usage_examples
+        ELSE words.usage_examples
+    END,
+    source=CASE
+        WHEN excluded.source <> 'unknown' THEN excluded.source
+        ELSE words.source
+    END,
+    is_stub=CASE
+        WHEN excluded.is_stub = 0 THEN 0
+        ELSE words.is_stub
+    END,
     last_refreshed=excluded.last_refreshed
 """
 
 SQL_INSERT_RELATIONSHIP = """
 INSERT OR IGNORE INTO relationships
-(word_id, related_term, relationship_type)
-VALUES (?, ?, ?)
+(word_id, related_term, related_normalized_term, related_language,
+ relationship_type, source, confidence)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 """
 
 SQL_GET_WORD_ENTRY = """
-SELECT id, term, definition, part_of_speech, usage_examples, last_refreshed
-FROM words WHERE term = ?
+SELECT id, term, normalized_term, language, script, definition,
+       part_of_speech, usage_examples, source, is_stub, last_refreshed
+FROM words WHERE normalized_term = ? AND language = ?
 """
 
 SQL_GET_RELATIONSHIPS = """
-SELECT related_term, relationship_type
+SELECT related_term, related_normalized_term, related_language,
+       relationship_type, source, confidence
 FROM relationships
 WHERE word_id = ?
 """
 
 SQL_GET_WORD_ID = """
-SELECT id FROM words WHERE term = ?
+SELECT id FROM words WHERE normalized_term = ? AND language = ?
 """
 
 SQL_GET_ALL_WORDS = """
-SELECT id, term, definition, usage_examples FROM words
+SELECT id, term, definition, usage_examples, language, script, last_refreshed
+FROM words
 """
 
 SQL_GET_UPDATED_WORDS = """
-SELECT id, term, definition, usage_examples
+SELECT id, term, definition, usage_examples, language, script, last_refreshed
 FROM words
 WHERE last_refreshed > ?
 """
@@ -465,12 +504,6 @@ WHERE type='table' AND name=?
 SQL_GET_TABLE_INFO = """
 PRAGMA table_info(?)
 """
-SQL_GET_DATABASE_VERSION = """
-PRAGMA user_version
-"""
-SQL_SET_DATABASE_VERSION = """
-PRAGMA user_version = ?
-"""
 
 
 class DBManager:
@@ -487,18 +520,22 @@ class DBManager:
         self._thread_local = local()  # Thread-local storage for connections
         self._thread_local.conn_pool = []  # Initialize connection pool
         self._lock = Lock()
+        self._schema_lock = Lock()
         self._max_pool_size = getattr(config.database, "max_connections", 5)
+        self.last_migration_report: Optional[MigrationReport] = None
 
         try:
             self._ensure_database_directory()
-            # Ensure schema exists on initialization for convenience
-            self.create_tables()
-        except Exception as e:
+        except OSError as e:
             raise ConnectionError(
                 f"Failed to create database directory for {self.db_path}",
                 e,
                 str(self.db_path),
-            )
+            ) from e
+
+        # Ensure schema exists on initialization for convenience. Schema and
+        # database errors retain their precise public exception types.
+        self.create_tables()
 
     @property
     def connection(self) -> Optional[sqlite3.Connection]:
@@ -515,8 +552,7 @@ class DBManager:
         """Get the connection pool for the current thread."""
         if not hasattr(self._thread_local, "conn_pool"):
             self._thread_local.conn_pool = []  # Connection list is created empty
-        return cast(List[Connection], self._thread_local.conn_pool)  # type: ignore
-        return self._thread_local.conn_pool
+        return cast(List[Connection], self._thread_local.conn_pool)
 
     def _ensure_database_directory(self) -> None:
         """Ensure the database directory exists."""
@@ -548,31 +584,34 @@ class DBManager:
             return conn
 
     def create_tables(self) -> None:
-        """Create database tables if they don't exist."""
+        """Create or migrate every database table transactionally."""
         try:
-            with self.get_connection() as conn:
-                # Create core tables
-                conn.execute(SQL_CREATE_WORDS_TABLE)
-                conn.execute(SQL_CREATE_RELATIONSHIPS_TABLE)
-                conn.execute(SQL_CREATE_EMOTIONAL_RELATIONSHIPS_TABLE)
-                conn.execute(SQL_CREATE_GRAPH_METADATA_TABLE)
-
-                # Create indexes for performance
-                conn.execute(SQL_CREATE_WORD_ID_INDEX)
-                conn.execute(SQL_CREATE_UNIQUE_RELATIONSHIP_INDEX)
-                conn.execute(SQL_CREATE_UNIQUE_EMOTIONAL_RELATIONSHIP_INDEX)
-
-                # Configure database settings
-                conn.execute(SQL_PRAGMA_FOREIGN_KEYS)
-                conn.execute(SQL_PRAGMA_JOURNAL_MODE)
-                conn.execute(SQL_PRAGMA_SYNCHRONOUS)
-        except (ConnectionError, sqlite3.Error) as e:
+            with self._schema_lock:
+                with self.get_connection() as conn:
+                    self.last_migration_report = ensure_schema(conn)
+                    conn.execute(SQL_PRAGMA_FOREIGN_KEYS)
+                    conn.execute(SQL_PRAGMA_JOURNAL_MODE)
+                    conn.execute(SQL_PRAGMA_SYNCHRONOUS)
+        except (ConnectionError, SchemaMigrationError, sqlite3.Error) as e:
             raise SchemaError("Failed to create database schema", e)
 
     def ensure_tables_exist(self) -> None:
         """Ensure that all required tables exist in the database."""
-        if not self.table_exists("words"):
+        if (
+            not self.table_exists("words")
+            or self.schema_version < CURRENT_SCHEMA_VERSION
+        ):
             self.create_tables()
+
+    @property
+    def schema_version(self) -> int:
+        """Return the persisted application schema version."""
+
+        try:
+            value = self.execute_scalar("PRAGMA user_version")
+            return int(value or 0)
+        except (QueryError, TypeError, ValueError):
+            return 0
 
     @contextmanager
     def get_connection(self) -> Iterator[Connection]:
@@ -744,7 +783,12 @@ class DBManager:
         definition: str = "",
         part_of_speech: str = "",
         usage_examples: Optional[List[str]] = None,
-    ) -> None:
+        *,
+        language: str = "en",
+        script: Optional[str] = None,
+        source: str = "unknown",
+        is_stub: bool = False,
+    ) -> int:
         """
         Insert a new word or update an existing word in the database.
 
@@ -753,6 +797,13 @@ class DBManager:
             definition: The word's meaning or description
             part_of_speech: Grammatical category (noun, verb, etc.)
             usage_examples: List of example sentences using the term
+            language: Structurally valid BCP 47 language tag
+            script: Optional ISO 15924 script code; inferred when omitted
+            source: Provenance label for the lexical record
+            is_stub: Whether this record awaits lexical enrichment
+
+        Returns:
+            Persistent word identifier.
 
         Raises:
             DatabaseError: If the insertion or update fails
@@ -766,12 +817,18 @@ class DBManager:
             ...     ["The sorting algorithm runs in O(n log n) time"]
             ... )
         """
-        if not term:
+        if not isinstance(term, str) or not term.strip():
             raise ValueError("Term cannot be empty")
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("source must be a non-empty string")
 
         # Ensure tables exist before attempting operations
         self.ensure_tables_exist()
 
+        display_term = unicodedata.normalize("NFC", term.strip())
+        normalized = normalize_term(display_term)
+        canonical_language = canonicalize_language_tag(language)
+        resolved_script = script or infer_script(display_term)
         # Handle optional usage examples
         examples = usage_examples if usage_examples else []
         serialized_examples = "\n".join(examples)
@@ -782,22 +839,36 @@ class DBManager:
                 conn.execute(
                     SQL_INSERT_OR_UPDATE_WORD,
                     (
-                        term,
+                        display_term,
+                        normalized,
+                        canonical_language,
+                        resolved_script,
                         definition,
                         part_of_speech,
                         serialized_examples,
+                        source.strip(),
+                        int(is_stub),
                         current_time,
                     ),
                 )
+                row = conn.execute(
+                    SQL_GET_WORD_ID, (normalized, canonical_language)
+                ).fetchone()
+                if row is None:
+                    raise DatabaseError(
+                        f"Upserted word '{display_term}' could not be retrieved"
+                    )
+                return int(row[0])
         except (sqlite3.Error, TransactionError) as e:
-            raise DatabaseError(f"Failed to insert or update word '{term}'", e)
+            raise DatabaseError(f"Failed to insert or update word '{display_term}'", e)
 
-    def get_word_id(self, term: str) -> int:
+    def get_word_id(self, term: str, language: str = "en") -> int:
         """
         Get the database ID for a specific term.
 
         Args:
             term: The word to look up
+            language: BCP 47 language tag distinguishing homographs
 
         Returns:
             The numeric ID of the word in the database
@@ -814,25 +885,40 @@ class DBManager:
             ...     print("Term not found")
         """
         try:
-            result = self.execute_scalar(SQL_GET_WORD_ID, (term,))
+            normalized = normalize_term(term)
+            canonical_language = canonicalize_language_tag(language)
+            result = self.execute_scalar(
+                SQL_GET_WORD_ID, (normalized, canonical_language)
+            )
             if result is None:
                 raise TermNotFoundError(term)
             return cast(int, result)
         except QueryError as e:
             raise QueryError(f"Database error while retrieving ID for term '{term}'", e)
 
-    def word_exists(self, term: str) -> bool:
+    def word_exists(self, term: str, language: str = "en") -> bool:
         """Return ``True`` if the given term already exists in the database."""
 
         self.ensure_tables_exist()
         try:
-            result = self.execute_scalar(SQL_GET_WORD_ID, (term,))
+            result = self.execute_scalar(
+                SQL_GET_WORD_ID,
+                (normalize_term(term), canonicalize_language_tag(language)),
+            )
             return result is not None
-        except QueryError:
+        except (QueryError, ValueError):
             return False
 
     def insert_relationship(
-        self, base_term: str, related_term: str, relationship_type: str
+        self,
+        base_term: str,
+        related_term: str,
+        relationship_type: str,
+        *,
+        base_language: str = "en",
+        related_language: Optional[str] = None,
+        source: str = "unknown",
+        confidence: float = 1.0,
     ) -> bool:
         """
         Create a relationship between two terms.
@@ -841,6 +927,10 @@ class DBManager:
             base_term: The source term in the relationship
             related_term: The target term in the relationship
             relationship_type: The type of relationship (e.g., synonym, antonym)
+            base_language: Language tag for the source term
+            related_language: Language tag for the target term
+            source: Provenance label for this assertion
+            confidence: Source confidence between zero and one
 
         Returns:
             True if a new relationship was created, False if it already existed
@@ -859,15 +949,37 @@ class DBManager:
         """
         # Validate inputs
         self._validate_relationship_params(base_term, related_term, relationship_type)
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("source must be a non-empty string")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+        canonical_base_language = canonicalize_language_tag(base_language)
+        canonical_related_language = canonicalize_language_tag(
+            related_language or canonical_base_language
+        )
+        if (
+            normalize_term(base_term) == normalize_term(related_term)
+            and canonical_base_language == canonical_related_language
+        ):
+            raise ValueError("Cannot create relationship to self")
 
         try:
             # Get the word ID (will raise TermNotFoundError if term not found)
-            word_id = self.get_word_id(base_term)
+            word_id = self.get_word_id(base_term, canonical_base_language)
 
             # Insert the relationship
             with self.transaction() as conn:
                 cursor = conn.execute(
-                    SQL_INSERT_RELATIONSHIP, (word_id, related_term, relationship_type)
+                    SQL_INSERT_RELATIONSHIP,
+                    (
+                        word_id,
+                        unicodedata.normalize("NFC", related_term.strip()),
+                        normalize_term(related_term),
+                        canonical_related_language,
+                        relationship_type.strip(),
+                        source.strip(),
+                        confidence,
+                    ),
                 )
                 # Return True if a new row was inserted
                 return cursor.rowcount > 0
@@ -891,16 +1003,14 @@ class DBManager:
         Raises:
             ValueError: If any parameters are invalid
         """
-        if not base_term:
+        if not isinstance(base_term, str) or not base_term.strip():
             raise ValueError("Base term cannot be empty")
-        if not related_term:
+        if not isinstance(related_term, str) or not related_term.strip():
             raise ValueError("Related term cannot be empty")
-        if not relationship_type:
+        if not isinstance(relationship_type, str) or not relationship_type.strip():
             raise ValueError("Relationship type cannot be empty")
-        if base_term == related_term:
-            raise ValueError("Cannot create relationship to self")
 
-    def get_word_entry(self, term: str) -> WordEntryDict:
+    def get_word_entry(self, term: str, language: str = "en") -> WordEntryDict:
         """
         Get complete information about a word including its relationships.
 
@@ -910,6 +1020,7 @@ class DBManager:
 
         Args:
             term: The word or phrase to retrieve
+            language: BCP 47 language tag distinguishing homographs
 
         Returns:
             WordEntryDict: Complete dictionary containing the word's data and relationships
@@ -939,7 +1050,11 @@ class DBManager:
         """
         try:
             # Get basic word information
-            row = self.execute_query(SQL_GET_WORD_ENTRY, (term,))
+            normalized = normalize_term(term)
+            canonical_language = canonicalize_language_tag(language)
+            row = self.execute_query(
+                SQL_GET_WORD_ENTRY, (normalized, canonical_language)
+            )
             if not row:
                 raise TermNotFoundError(term)
 
@@ -947,9 +1062,14 @@ class DBManager:
             result = row[0]
             word_id_int: int = result["id"]
             term_value: str = result["term"]
+            normalized_term: str = result["normalized_term"]
+            language_value: str = result["language"]
+            script: str = result["script"]
             definition: str = result["definition"] or ""
             part_of_speech: str = result["part_of_speech"] or ""
             usage_examples_str: str = result["usage_examples"] or ""
+            source: str = result["source"] or "unknown"
+            is_stub = bool(result["is_stub"])
             last_refreshed: float = result["last_refreshed"] or time.time()
 
             # Parse usage examples with guaranteed type safety
@@ -957,18 +1077,26 @@ class DBManager:
 
             # Get relationships
             relationships = self.get_relationships(str(word_id_int))
+            graphemes = self.get_graphemes(word_id_int)
+            pronunciations = self.get_pronunciations(word_id_int)
 
             # Construct and return the complete word entry
             return {
                 "id": str(word_id_int),
                 "id_int": word_id_int,
-                "language": "en",
+                "language": language_value,
                 "term": term_value,
+                "normalized_term": normalized_term,
+                "script": script,
                 "definition": definition,
                 "part_of_speech": part_of_speech,
                 "usage_examples": usage_examples,
                 "last_refreshed": last_refreshed,
+                "source": source,
+                "is_stub": is_stub,
                 "relationships": relationships,
+                "graphemes": graphemes,
+                "pronunciations": pronunciations,
             }
         except QueryError as e:
             raise DatabaseError(f"Database error while retrieving term '{term}'", e)
@@ -1021,7 +1149,11 @@ class DBManager:
             return [
                 {
                     "related_term": row["related_term"],
+                    "related_normalized_term": row["related_normalized_term"],
+                    "related_language": row["related_language"],
                     "relationship_type": row["relationship_type"],
+                    "source": row["source"],
+                    "confidence": float(row["confidence"]),
                 }
                 for row in rows
             ]
@@ -1032,6 +1164,214 @@ class DBManager:
                 SQL_GET_RELATIONSHIPS,
                 (word_id,),
             )
+
+    def replace_graphemes(self, word_id: int, graphemes: Sequence[Grapheme]) -> int:
+        """Atomically replace ordered grapheme records for a word."""
+
+        try:
+            with self.transaction() as conn:
+                conn.execute("DELETE FROM graphemes WHERE word_id = ?", (word_id,))
+                conn.executemany(
+                    """
+                    INSERT INTO graphemes (
+                        word_id, position, text, normalized, codepoints,
+                        unicode_names, categories, combining_classes, script
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            word_id,
+                            grapheme.position,
+                            grapheme.text,
+                            grapheme.normalized,
+                            json.dumps(
+                                grapheme.codepoints,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                grapheme.unicode_names,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                grapheme.categories,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            json.dumps(
+                                grapheme.combining_classes,
+                                separators=(",", ":"),
+                            ),
+                            grapheme.script,
+                        )
+                        for grapheme in graphemes
+                    ],
+                )
+            return len(graphemes)
+        except (sqlite3.Error, TransactionError) as exc:
+            raise DatabaseError(
+                f"Failed to replace graphemes for word {word_id}", exc
+            ) from exc
+
+    def get_graphemes(self, word_id: int) -> List[GraphemeDict]:
+        """Return ordered grapheme records for a word identifier."""
+
+        try:
+            rows = self.execute_query(
+                """
+                SELECT position, text, normalized, codepoints, unicode_names,
+                       categories, combining_classes, script
+                FROM graphemes
+                WHERE word_id = ?
+                ORDER BY position ASC
+                """,
+                (word_id,),
+            )
+            return [
+                {
+                    "position": int(row["position"]),
+                    "text": str(row["text"]),
+                    "normalized": str(row["normalized"]),
+                    "codepoints": _json_string_list(row["codepoints"]),
+                    "unicode_names": _json_string_list(row["unicode_names"]),
+                    "categories": _json_string_list(row["categories"]),
+                    "combining_classes": _json_int_list(row["combining_classes"]),
+                    "script": str(row["script"]),
+                }
+                for row in rows
+            ]
+        except QueryError as exc:
+            raise QueryError(
+                f"Failed to retrieve graphemes for word {word_id}",
+                exc,
+                "SELECT ... FROM graphemes WHERE word_id = ?",
+                (word_id,),
+            ) from exc
+
+    def replace_pronunciations(
+        self, word_id: int, pronunciations: Sequence[Pronunciation]
+    ) -> int:
+        """Atomically replace pronunciations and their phoneme segments."""
+
+        try:
+            with self.transaction() as conn:
+                conn.execute("DELETE FROM pronunciations WHERE word_id = ?", (word_id,))
+                for pronunciation in pronunciations:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO pronunciations (
+                            word_id, notation, transcription, language, dialect,
+                            source, confidence, generated, syllable_count,
+                            stress_pattern
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            word_id,
+                            pronunciation.notation,
+                            pronunciation.text,
+                            pronunciation.language,
+                            pronunciation.dialect or "",
+                            pronunciation.source,
+                            pronunciation.confidence,
+                            int(pronunciation.generated),
+                            pronunciation.syllable_count,
+                            json.dumps(
+                                pronunciation.stress_pattern, separators=(",", ":")
+                            ),
+                        ),
+                    )
+                    if cursor.lastrowid is None:
+                        raise DatabaseError(
+                            f"Pronunciation insert for word {word_id} returned no ID"
+                        )
+                    pronunciation_id = int(cursor.lastrowid)
+                    conn.executemany(
+                        """
+                        INSERT INTO phonemes (
+                            pronunciation_id, position, symbol, base_symbol,
+                            stress, syllabic
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                pronunciation_id,
+                                phoneme.position,
+                                phoneme.symbol,
+                                phoneme.base_symbol,
+                                phoneme.stress,
+                                int(phoneme.syllabic),
+                            )
+                            for phoneme in pronunciation.phonemes
+                        ],
+                    )
+            return len(pronunciations)
+        except (sqlite3.Error, TransactionError) as exc:
+            raise DatabaseError(
+                f"Failed to replace pronunciations for word {word_id}", exc
+            ) from exc
+
+    def get_pronunciations(self, word_id: int) -> List[PronunciationDict]:
+        """Return pronunciations with ordered phoneme segments."""
+
+        try:
+            rows = self.execute_query(
+                """
+                SELECT id, notation, transcription, language, dialect, source,
+                       confidence, generated, syllable_count, stress_pattern
+                FROM pronunciations
+                WHERE word_id = ?
+                ORDER BY id ASC
+                """,
+                (word_id,),
+            )
+            result: List[PronunciationDict] = []
+            for row in rows:
+                pronunciation_id = int(row["id"])
+                phoneme_rows = self.execute_query(
+                    """
+                    SELECT position, symbol, base_symbol, stress, syllabic
+                    FROM phonemes
+                    WHERE pronunciation_id = ?
+                    ORDER BY position ASC
+                    """,
+                    (pronunciation_id,),
+                )
+                phonemes: List[PhonemeDict] = [
+                    {
+                        "position": int(phoneme["position"]),
+                        "symbol": str(phoneme["symbol"]),
+                        "base_symbol": str(phoneme["base_symbol"]),
+                        "stress": (
+                            int(phoneme["stress"])
+                            if phoneme["stress"] is not None
+                            else None
+                        ),
+                        "syllabic": bool(phoneme["syllabic"]),
+                    }
+                    for phoneme in phoneme_rows
+                ]
+                result.append(
+                    {
+                        "id": pronunciation_id,
+                        "notation": str(row["notation"]),
+                        "text": str(row["transcription"]),
+                        "language": str(row["language"]),
+                        "dialect": str(row["dialect"]) or None,
+                        "source": str(row["source"]),
+                        "confidence": float(row["confidence"]),
+                        "generated": bool(row["generated"]),
+                        "syllable_count": int(row["syllable_count"]),
+                        "stress_pattern": _json_int_list(row["stress_pattern"]),
+                        "phonemes": phonemes,
+                    }
+                )
+            return result
+        except QueryError as exc:
+            raise QueryError(
+                f"Failed to retrieve pronunciations for word {word_id}",
+                exc,
+            ) from exc
 
     def get_all_words(self) -> List[WordDataDict]:
         """
@@ -1067,6 +1407,9 @@ class DBManager:
                     "term": row["term"],
                     "definition": row["definition"] or "",
                     "usage_examples": row["usage_examples"] or "",
+                    "language": row["language"],
+                    "script": row["script"],
+                    "last_refreshed": float(row["last_refreshed"]),
                 }
                 for row in rows
             ]
@@ -1083,6 +1426,9 @@ class DBManager:
                     "term": row["term"],
                     "definition": row["definition"] or "",
                     "usage_examples": row["usage_examples"] or "",
+                    "language": row["language"],
+                    "script": row["script"],
+                    "last_refreshed": float(row["last_refreshed"]),
                 }
                 for row in rows
             ]
@@ -1112,6 +1458,32 @@ class DBManager:
             except sqlite3.Error:
                 pass  # Ignore errors during cleanup
         self._conn_pool.clear()
+
+
+def _json_string_list(value: object) -> List[str]:
+    """Decode a persisted JSON list, retaining only string values."""
+
+    decoded = _json_list(value)
+    return [item for item in decoded if isinstance(item, str)]
+
+
+def _json_int_list(value: object) -> List[int]:
+    """Decode a persisted JSON list, retaining non-boolean integers."""
+
+    decoded = _json_list(value)
+    return [
+        item for item in decoded if isinstance(item, int) and not isinstance(item, bool)
+    ]
+
+
+def _json_list(value: object) -> List[object]:
+    """Decode a JSON list defensively for database read paths."""
+
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return list(decoded) if isinstance(decoded, list) else []
 
 
 class RelationshipTypeManager:
@@ -1261,7 +1633,12 @@ class RelationshipTypeManager:
 __all__ = [
     "DBManager",
     "WordEntryDict",
+    "WordDataDict",
     "RelationshipDict",
+    "GraphemeDict",
+    "PhonemeDict",
+    "PronunciationDict",
+    "CURRENT_SCHEMA_VERSION",
     "DatabaseError",
     "ConnectionError",
     "QueryError",

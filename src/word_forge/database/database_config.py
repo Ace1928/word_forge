@@ -180,21 +180,40 @@ class DatabaseConfig:
             {
                 "create_words_table": """
                 CREATE TABLE IF NOT EXISTS words (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    term TEXT UNIQUE NOT NULL,
-                    definition TEXT,
-                    part_of_speech TEXT,
-                    usage_examples TEXT,
-                    last_refreshed REAL
+                    id INTEGER PRIMARY KEY,
+                    term TEXT NOT NULL,
+                    normalized_term TEXT NOT NULL,
+                    language TEXT NOT NULL DEFAULT 'en',
+                    script TEXT NOT NULL DEFAULT 'Zzzz',
+                    definition TEXT NOT NULL DEFAULT '',
+                    part_of_speech TEXT NOT NULL DEFAULT '',
+                    usage_examples TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'unknown',
+                    is_stub INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_stub IN (0, 1)),
+                    last_refreshed REAL NOT NULL,
+                    UNIQUE(normalized_term, language)
                 );
             """,
                 "create_relationships_table": """
                 CREATE TABLE IF NOT EXISTS relationships (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY,
                     word_id INTEGER NOT NULL,
                     related_term TEXT NOT NULL,
+                    related_normalized_term TEXT NOT NULL,
+                    related_language TEXT NOT NULL DEFAULT 'en',
                     relationship_type TEXT NOT NULL,
-                    FOREIGN KEY(word_id) REFERENCES words(id)
+                    source TEXT NOT NULL DEFAULT 'unknown',
+                    confidence REAL NOT NULL DEFAULT 1.0
+                        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                    FOREIGN KEY(word_id) REFERENCES words(id) ON DELETE CASCADE,
+                    UNIQUE(
+                        word_id,
+                        related_normalized_term,
+                        related_language,
+                        relationship_type,
+                        source
+                    )
                 );
             """,
                 "create_word_id_index": """
@@ -203,7 +222,13 @@ class DatabaseConfig:
             """,
                 "create_unique_relationship_index": """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_relationship
-                ON relationships(word_id, related_term, relationship_type);
+                ON relationships(
+                    word_id,
+                    related_normalized_term,
+                    related_language,
+                    relationship_type,
+                    source
+                );
             """,
             },
         )

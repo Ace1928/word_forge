@@ -35,6 +35,7 @@ from word_forge.graph.graph_config import (
     WordId,
     WordTuple,
 )
+from word_forge.parser.linguistics import normalize_term
 from word_forge.relationships import RelationshipProperties
 
 # Type hint for the main GraphManager to avoid circular imports
@@ -692,6 +693,7 @@ class GraphBuilder:
                             self._config.sql_templates["insert_sample_word"],
                             (
                                 term,
+                                normalize_term(term),
                                 word_data.get("definition", ""),
                                 word_data.get("part_of_speech", ""),
                             ),
@@ -771,6 +773,7 @@ class GraphBuilder:
                                 (
                                     id1,
                                     term2,  # Insert using term2 text as per schema
+                                    normalize_term(term2),
                                     rel_type,
                                 ),
                             )

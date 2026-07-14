@@ -81,7 +81,7 @@ INSERT INTO emotional_relationships
     (word_id, related_term, relationship_type, valence, arousal, last_updated)
 VALUES
     (?, ?, ?, ?, ?, ?)
-ON CONFLICT(word_id, related_term, relationship_type)
+ON CONFLICT(word_id, related_term, related_language, relationship_type)
 DO UPDATE SET
     valence=excluded.valence,
     arousal=excluded.arousal,
