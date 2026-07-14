@@ -70,6 +70,7 @@ word_forge = "word_forge.forge:main"
 [tool.black]
 line-length    = 88
 target-version = [ "py38" ]
+extend-exclude = "^/src/old/"
 
 [tool.isort]
 profile     = "black"

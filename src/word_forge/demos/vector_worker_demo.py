@@ -40,16 +40,14 @@ def temporary_database(path: Path) -> Iterator[Path]:
         cursor = conn.cursor()
 
         # Create schema
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS words (
                 id INTEGER PRIMARY KEY,
                 term TEXT NOT NULL,
                 definition TEXT NOT NULL,
                 usage_examples TEXT
             )
-            """
-        )
+            """)
 
         # Add sample data
         sample_words = [

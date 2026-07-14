@@ -26,7 +26,6 @@ from word_forge.vectorizer.vector_store import (
     VectorStore,
 )
 
-
 TEST_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 

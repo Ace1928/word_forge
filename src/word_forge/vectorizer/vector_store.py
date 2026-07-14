@@ -465,16 +465,14 @@ class SQLiteFAISSCollection:
 
     def _ensure_schema(self) -> None:
         with self._lock:
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS vectors (
                     id TEXT PRIMARY KEY,
                     embedding BLOB NOT NULL,
                     metadata TEXT,
                     document TEXT
                 )
-                """
-            )
+                """)
             self._conn.commit()
 
     def _row_to_vector(self, row: sqlite3.Row) -> NDArray[np.float32]:

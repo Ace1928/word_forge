@@ -108,15 +108,13 @@ class GraphBuilder:
     def _ensure_metadata_table(self, conn: sqlite3.Connection) -> None:
         """Ensure the metadata table needed for graph watermarks exists."""
 
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS graph_metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at REAL NOT NULL
             )
-            """
-        )
+            """)
 
     def _load_last_refresh_watermark(self) -> float:
         """Load the persisted watermark indicating the last processed timestamp."""

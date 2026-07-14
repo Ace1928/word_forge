@@ -24,7 +24,6 @@ from word_forge.database.database_manager import DBManager
 from word_forge.vectorizer.vector_store import VectorStore
 from word_forge.vectorizer.vector_worker import EmbeddingError, VectorWorker
 
-
 TEST_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 

@@ -967,18 +967,15 @@ def run_conversation_start(*, title: Optional[str] = None) -> bool:
         # Create conversation tables if they don't exist
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     status TEXT DEFAULT 'ACTIVE' NOT NULL,
                     created_at REAL DEFAULT (strftime('%s','now')) NOT NULL,
                     updated_at REAL DEFAULT (strftime('%s','now')) NOT NULL
                 );
-                """
-            )
-            cursor.execute(
-                """
+                """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id INTEGER NOT NULL,
@@ -987,8 +984,7 @@ def run_conversation_start(*, title: Optional[str] = None) -> bool:
                     timestamp REAL DEFAULT (strftime('%s','now')) NOT NULL,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
-                """
-            )
+                """)
 
             cursor.execute("INSERT INTO conversations (status) VALUES ('ACTIVE');")
             conv_id = cursor.lastrowid

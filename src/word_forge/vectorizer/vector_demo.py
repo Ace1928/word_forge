@@ -244,8 +244,7 @@ class VectorDemo:
             cursor = conn.cursor()
 
             # Create words table with AUTOINCREMENT
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS words (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     term TEXT NOT NULL,
@@ -253,15 +252,12 @@ class VectorDemo:
                     usage_examples TEXT,
                     language TEXT
                 )
-                """
-            )
+                """)
 
             # Create index on term for faster lookups
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_words_term ON words(term)
-                """
-            )
+                """)
 
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
