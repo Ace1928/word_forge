@@ -37,7 +37,7 @@ def test_read_jsonl_file(tmp_path: Path) -> None:
     path = tmp_path / "data.jsonl"
     path.write_text('{"a":1}\n{"a":2}\n')
 
-    def proc(data):
+    def proc(data: dict[str, int]) -> int:
         return data["a"]
 
     assert read_jsonl_file(path, proc) == [1, 2]
@@ -104,7 +104,7 @@ def test_dbnary_lookup_preserves_definition_and_translation_languages(
         encoding="utf-8",
     )
 
-    entries = get_dbnary_data("chat", str(rdf_path), "fr")
+    entries = get_dbnary_data("chat", str(rdf_path), "fr-FR")
 
     assert entries == [
         {

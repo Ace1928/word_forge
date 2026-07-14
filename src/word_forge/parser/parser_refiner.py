@@ -689,7 +689,8 @@ class ParserRefiner:
             return "local-thesaurus"
         return "user-seed"
 
-    def _extract_all_definitions(self, dataset: LexicalDataset) -> List[str]:
+    @staticmethod
+    def _extract_all_definitions(dataset: LexicalDataset) -> List[str]:
         """
         Extract and deduplicate definitions from all sources.
 
@@ -701,6 +702,7 @@ class ParserRefiner:
         """
         combined_definitions: List[str] = []
         seen_definitions: Set[str] = set()
+        target_primary = dataset["language"].split("-", 1)[0]
 
         def append_definition(value: object) -> None:
             """Append a non-placeholder definition once, preserving source order."""
@@ -721,7 +723,11 @@ class ParserRefiner:
         # Use .get with default empty list
         for wn_data in dataset.get("wordnet_data", []):
             # Ensure wn_data is a dict before accessing keys
-            if isinstance(wn_data, dict):
+            if (
+                isinstance(wn_data, dict)
+                and str(wn_data.get("definition_language", "en")).split("-", 1)[0]
+                == target_primary
+            ):
                 append_definition(wn_data.get("definition", ""))
 
         # ODict / OpenDictData
@@ -746,7 +752,12 @@ class ParserRefiner:
         for item in dataset.get("dbnary_data", []):
             # Ensure item is a dict before accessing keys
             if isinstance(item, dict):
-                append_definition(item.get("definition", ""))
+                definition_language = str(item.get("definition_language", ""))
+                if (
+                    not definition_language
+                    or definition_language.split("-", 1)[0] == target_primary
+                ):
+                    append_definition(item.get("definition", ""))
 
         return combined_definitions
 

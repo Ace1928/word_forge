@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import nltk  # type: ignore[import-untyped]
 import pytest
 
 from word_forge.parser.lexical_functions import (
@@ -11,10 +12,12 @@ from word_forge.parser.lexical_functions import (
     get_wordnet_data,
 )
 from word_forge.parser.wordnet_languages import (
+    MULTILINGUAL_WORDNET_PACKAGE,
     MultilingualWordNetUnavailableError,
     UnsupportedWordNetLanguageError,
     multilingual_wordnet_available,
     resolve_wordnet_language,
+    select_multilingual_wordnet_package,
 )
 from word_forge.utils.nltk_utils import ensure_nltk_data
 
@@ -27,6 +30,15 @@ def test_bcp47_language_is_mapped_to_wordnet_iso_639_3() -> None:
     assert french.nltk_code == "fra"
     assert french.source_id == "open-multilingual-wordnet"
     assert mandarin.nltk_code == "cmn"
+
+
+def test_omw_package_tracks_the_nltk_loader_generation() -> None:
+    assert select_multilingual_wordnet_package("3.9.2") == "omw-1.4"
+    assert select_multilingual_wordnet_package("3.10.0") == "omw-2.0"
+    assert select_multilingual_wordnet_package("4.0.0a1") == "omw-2.0"
+    assert MULTILINGUAL_WORDNET_PACKAGE == select_multilingual_wordnet_package(
+        nltk.__version__
+    )
 
 
 def test_english_wordnet_is_core_and_provenanced() -> None:

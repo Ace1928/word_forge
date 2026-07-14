@@ -54,8 +54,9 @@ metadata shipped with the exact downloaded snapshot are authoritative.
 - [Open Multilingual Wordnet](https://omwn.org/) aggregates independently
   licensed wordnets. Importers must preserve each component's license and
   citation rather than applying one inferred license to the aggregate. Word
-  Forge can query an installed NLTK OMW 2.0 snapshot, but its installer requires
-  both `--multilingual` and `--accept-source-licenses`; it is excluded from
+  Forge selects the corpus package expected by the installed NLTK line
+  (`omw-1.4` for NLTK 3.9 and `omw-2.0` for NLTK 3.10+) and requires both
+  `--multilingual` and `--accept-source-licenses`; it is excluded from
   unattended bootstrap.
 - [Epitran](https://github.com/dmort27/epitran) provides MIT-licensed,
   language-and-script-specific orthography-to-IPA mappings.

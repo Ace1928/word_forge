@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
@@ -9,7 +10,28 @@ import nltk  # type: ignore[import-untyped]
 
 from word_forge.parser.linguistics import canonicalize_language_tag
 
-MULTILINGUAL_WORDNET_PACKAGE = "omw-2.0"
+
+def select_multilingual_wordnet_package(nltk_version: str) -> str:
+    """Return the OMW package expected by an NLTK release line.
+
+    NLTK 3.10 changed its built-in WordNet loader from ``omw-1.4`` to
+    ``omw-2.0``. Selecting from the installed library version keeps setup and
+    readiness checks aligned with the loader instead of merely finding an
+    incompatible corpus left behind by an earlier environment.
+    """
+
+    match = re.match(r"^(\d+)\.(\d+)", nltk_version)
+    if match is None:
+        # The long-established package is the safest compatibility fallback
+        # for downstream builds that do not expose a PEP 440 release string.
+        return "omw-1.4"
+    release = (int(match.group(1)), int(match.group(2)))
+    return "omw-2.0" if release >= (3, 10) else "omw-1.4"
+
+
+MULTILINGUAL_WORDNET_PACKAGE = select_multilingual_wordnet_package(
+    str(getattr(nltk, "__version__", ""))
+)
 MULTILINGUAL_SETUP_COMMAND = (
     "word_forge setup-nltk --multilingual --accept-source-licenses"
 )
@@ -115,7 +137,7 @@ def resolve_wordnet_language(
 
 
 def multilingual_wordnet_available() -> bool:
-    """Return whether NLTK can locate OMW 2.0 locally without downloading."""
+    """Return whether NLTK can locate its compatible OMW corpus locally."""
 
     for candidate in (
         f"corpora/{MULTILINGUAL_WORDNET_PACKAGE}",
@@ -144,5 +166,6 @@ __all__ = [
     "WordNetLanguageError",
     "multilingual_wordnet_available",
     "resolve_wordnet_language",
+    "select_multilingual_wordnet_package",
     "supported_primary_languages",
 ]

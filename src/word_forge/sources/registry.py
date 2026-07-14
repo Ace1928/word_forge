@@ -251,7 +251,8 @@ _SOURCES: Tuple[LexicalSource, ...] = (
         attribution="Cite each originating wordnet and the aggregation when applicable.",
         redistribution="Enforce the license declared by every selected component.",
         notes=(
-            "NLTK OMW 2.0 is installed only after explicit license acknowledgement; "
+            "The OMW package compatible with the installed NLTK release is "
+            "installed only after explicit license acknowledgement; "
             "never infer one blanket license for its component wordnets."
         ),
     ),

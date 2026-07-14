@@ -347,6 +347,7 @@ def get_dbnary_data(
 
     try:
         canonical_language = canonicalize_language_tag(language)
+        lookup_language = canonical_language.split("-", 1)[0]
         graph = Graph()
         graph.parse(dbnary_path, format="ttl")
 
@@ -365,7 +366,11 @@ def get_dbnary_data(
 
         results = graph.query(
             sparql_query,
-            initBindings={"lookup": RdfLiteral(word, lang=canonical_language)},
+            # DBnary written forms normally use a primary language subtag
+            # (for example ``fr``), not a regional application locale such as
+            # ``fr-FR``. Keep the full canonical tag at Word Forge's boundary
+            # while matching the source representation precisely.
+            initBindings={"lookup": RdfLiteral(word, lang=lookup_language)},
         )
         output: List[DbnaryEntry] = []
 
@@ -573,15 +578,33 @@ def create_lexical_dataset(
         wordnet_data = []
         source_warnings.append(str(exc))
 
+    is_english = canonical_language.split("-", 1)[0] == "en"
+    missing_dictionary_entry = DictionaryEntry(definition="Not Found", examples=[])
+
     dataset: LexicalDataset = {
         "word": word,
         "language": canonical_language,
         "wordnet_data": wordnet_data,
-        "openthesaurus_synonyms": get_openthesaurus_data(word, openthesaurus_path),
-        "odict_data": get_odict_data(word, odict_path),
+        # These legacy local formats carry no language metadata. Until their
+        # schema is made language-aware, treating them as English-only avoids
+        # silently relabelling records from a different language.
+        "openthesaurus_synonyms": (
+            get_openthesaurus_data(word, openthesaurus_path) if is_english else []
+        ),
+        "odict_data": (
+            get_odict_data(word, odict_path)
+            if is_english
+            else missing_dictionary_entry.copy()
+        ),
         "dbnary_data": get_dbnary_data(word, dbnary_path, canonical_language),
-        "opendict_data": get_opendictdata(word, opendict_path),
-        "thesaurus_synonyms": get_thesaurus_data(word, thesaurus_path),
+        "opendict_data": (
+            get_opendictdata(word, opendict_path)
+            if is_english
+            else missing_dictionary_entry.copy()
+        ),
+        "thesaurus_synonyms": (
+            get_thesaurus_data(word, thesaurus_path) if is_english else []
+        ),
         "example_sentence": "",
         "source_warnings": source_warnings,
     }
