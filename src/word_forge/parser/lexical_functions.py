@@ -2,6 +2,8 @@
 # ============================================================================
 #                              IMPORTS
 # ============================================================================
+from __future__ import annotations
+
 import functools
 import json
 import os
@@ -9,7 +11,17 @@ import re
 import typing
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import (
+    IO,
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Union,
+)
 
 from nltk.corpus import wordnet as wn  # type: ignore
 from nltk.corpus.reader.wordnet import Lemma, Synset  # type: ignore
@@ -27,8 +39,6 @@ except ImportError:
     RdfLiteral = None  # type: ignore[assignment]
     ResultRow = None  # type: ignore[assignment]
 
-from word_forge.utils.nltk_utils import ensure_nltk_data
-
 from word_forge.configs.config_essentials import (
     DbnaryEntry,
     DictionaryEntry,
@@ -39,7 +49,10 @@ from word_forge.configs.config_essentials import (
     T,
     WordnetEntry,
 )
-from word_forge.parser.language_model import ModelState
+from word_forge.utils.nltk_utils import ensure_nltk_data
+
+if TYPE_CHECKING:
+    from word_forge.parser.language_model import ModelState
 
 
 # ============================================================================
@@ -400,7 +413,9 @@ def get_thesaurus_data(word: str, thesaurus_path: str) -> List[str]:
 
     def process_line(data: Dict[str, Any]) -> Optional[List[str]]:
         if word == data.get("word"):
-            return data.get("synonyms", [])
+            synonyms = data.get("synonyms", [])
+            if isinstance(synonyms, list):
+                return [item for item in synonyms if isinstance(item, str)]
         return None
 
     results: List[str] = []
@@ -484,7 +499,7 @@ def create_lexical_dataset(
     dbnary_path: str = "data/dbnary.ttl",
     opendict_path: str = "data/opendict.json",
     thesaurus_path: str = "data/thesaurus.jsonl",
-    model_state: ModelState = None,
+    model_state: Optional[ModelState] = None,
 ) -> LexicalDataset:
     """
     Create a comprehensive dataset of lexical information for a word.
@@ -501,9 +516,6 @@ def create_lexical_dataset(
     Returns:
         Dictionary containing comprehensive lexical data from all sources
     """
-    if model_state is None:
-        model_state = ModelState()
-
     wordnet_data = get_wordnet_data(word)
 
     dataset: LexicalDataset = {
@@ -517,22 +529,30 @@ def create_lexical_dataset(
         "example_sentence": "",
     }
 
-    # Generate an example sentence if WordNet data exists
+    # Prefer source-authored examples. Generative enrichment only fills a gap,
+    # which keeps the default pipeline offline, fast, and reproducible.
     if wordnet_data:
-        first_entry = wordnet_data[0]
-        example = generate_example_usage(
-            word,
-            definition=first_entry.get("definition", ""),
-            synonyms=dataset["openthesaurus_synonyms"],
-            antonyms=first_entry.get("antonyms", []),
-            pos=first_entry.get("part_of_speech", ""),
-            model_state=model_state,
+        source_example = next(
+            (
+                example.strip()
+                for entry in wordnet_data
+                for example in entry.get("examples", [])
+                if example.strip()
+            ),
+            "",
         )
-        dataset["example_sentence"] = example
-    else:
-        dataset["example_sentence"] = (
-            "No example available due to missing WordNet data."
-        )
+        if source_example:
+            dataset["example_sentence"] = source_example
+        elif model_state is not None:
+            first_entry = wordnet_data[0]
+            dataset["example_sentence"] = generate_example_usage(
+                word,
+                definition=first_entry.get("definition", ""),
+                synonyms=dataset["openthesaurus_synonyms"],
+                antonyms=first_entry.get("antonyms", []),
+                pos=first_entry.get("part_of_speech", ""),
+                model_state=model_state,
+            )
 
     return dataset
 

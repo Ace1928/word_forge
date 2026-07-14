@@ -49,8 +49,9 @@ lexical = [
     "rdflib>=6.0.0",
 ]
 llm = [
+    "accelerate>=1.0.0",
     "torch>=2.1.0",
-    "transformers>=4.45.0",
+    "transformers>=5.5.0,<6",
 ]
 nlp = [
     "spacy>=3.7.0",
@@ -69,6 +70,7 @@ audio = [
     "openai-whisper>=20231117",
 ]
 all = [
+    "accelerate>=1.0.0",
     "chromadb>=0.4.24",
     "faiss-cpu>=1.7.4",
     "ffmpeg-python>=0.2.0",
@@ -80,7 +82,7 @@ all = [
     "spacy>=3.7.0",
     "textblob>=0.18.0",
     "torch>=2.1.0",
-    "transformers>=4.45.0",
+    "transformers>=5.5.0,<6",
 ]
 
 [project.urls]

@@ -47,7 +47,8 @@ class ParserConfig:
     Attributes:
         data_dir: Base directory for lexical resources
         enable_model: Whether to use language models for examples
-        model_name: Custom language model name (None uses vectorizer's model)
+        model_name: Optional custom Hugging Face model identifier
+        model_profile: Named resource profile used when no custom model is set
         resource_paths: Paths to various lexical resources, relative to data_dir
         ENV_VARS: Mapping of environment variables to config attributes
 
@@ -67,10 +68,13 @@ class ParserConfig:
     data_dir: str = str(DATA_ROOT)
 
     # Control language model usage for examples
-    enable_model: bool = True
+    enable_model: bool = False
 
-    # Custom language model name (None = use vectorizer's model)
+    # Custom language model name (None = use the selected model profile)
     model_name: Optional[str] = None
+
+    # Portable is ungated; the model is still only loaded when enable_model=True.
+    model_profile: str = "portable"
 
     # Resource paths relative to data_dir
     resource_paths: Dict[str, str] = field(
@@ -88,6 +92,7 @@ class ParserConfig:
         "WORD_FORGE_DATA_DIR": ("data_dir", str),
         "WORD_FORGE_ENABLE_MODEL": ("enable_model", bool),
         "WORD_FORGE_PARSER_MODEL": ("model_name", str),
+        "WORD_FORGE_MODEL_PROFILE": ("model_profile", str),
     }
 
     @cached_property
@@ -175,6 +180,7 @@ class ParserConfig:
             data_dir=self.data_dir,
             enable_model=True,  # Force enable when specifying a model
             model_name=model_name,
+            model_profile=self.model_profile,
             resource_paths=self.resource_paths.copy(),
         )
 

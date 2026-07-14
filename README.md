@@ -71,7 +71,7 @@ Install feature bundles based on your needs:
 |-------|---------|----------|
 | `emotion` | `python -m pip install -e ".[emotion]"` | TextBlob sentiment analysis |
 | `lexical` | `python -m pip install -e ".[lexical]"` | RDFLib import/export |
-| `llm` | `python -m pip install -e ".[llm]"` | Torch and Transformers |
+| `llm` | `python -m pip install -e ".[llm]"` | Torch, Transformers, and Accelerate |
 | `nlp` | `python -m pip install -e ".[nlp]"` | spaCy processing |
 | `vector` | `python -m pip install -e ".[vector]"` | sentence-transformers, ChromaDB, FAISS |
 | `visualization` | `python -m pip install -e ".[visualization]"` | PyVis and Plotly |
@@ -126,6 +126,10 @@ word_forge --version
 # Check core and optional capabilities (add --json for automation)
 word_forge doctor
 
+# Inspect model readiness and get a hardware-aware recommendation
+word_forge models list
+word_forge models recommend
+
 # Start the processing pipeline with seed words
 word_forge start apple banana --minutes 5 --workers 4
 
@@ -133,6 +137,10 @@ word_forge start apple banana --minutes 5 --workers 4
 word_forge start apple --db-path /tmp/word_forge.sqlite \
   --vector-model sentence-transformers/all-MiniLM-L6-v2 \
   --llm-model sshleifer/tiny-gpt2
+
+# Or use a reproducible local-model profile
+word_forge start apple --llm-profile portable
+word_forge start apple --llm-profile gemma4-edge
 
 # Build the semantic graph
 word_forge graph build --timeout 180
@@ -265,6 +273,8 @@ Word Forge uses a centralized configuration system with environment variable ove
 | `WORDFORGE_DB_PATH` | Database file path | `data/word_forge.sqlite` |
 | `WORDFORGE_LOG_LEVEL` | Logging level | `INFO` |
 | `WORDFORGE_VECTOR_MODEL` | Embedding model name | `sentence-transformers/all-MiniLM-L6-v2` |
+| `WORD_FORGE_ENABLE_MODEL` | Enable optional generative enrichment | `false` |
+| `WORD_FORGE_MODEL_PROFILE` | Local language-model profile | `portable` |
 
 Configuration can also be modified programmatically:
 
@@ -319,6 +329,9 @@ nltk.download('vader_lexicon')
 ```
 
 #### Memory Issues with Large Models
+
+Run `word_forge models recommend` before enabling generative enrichment. The
+offline lexical pipeline is the default and does not load Torch or Transformers.
 
 For systems with limited RAM:
 

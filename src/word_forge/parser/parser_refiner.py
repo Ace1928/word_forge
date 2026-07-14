@@ -24,13 +24,15 @@ Example:
     >>> stats = parser.get_stats()
 """
 
+from __future__ import annotations
+
 import logging  # Import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, cast
+from typing import TYPE_CHECKING, Dict, FrozenSet, List, Optional, Set, Tuple, cast
 
 import nltk  # type: ignore
 from nltk import Tree  # type: ignore
@@ -41,12 +43,14 @@ from nltk.stem import WordNetLemmatizer  # type: ignore
 
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.database_manager import DBManager
-from word_forge.parser.language_model import ModelState
 from word_forge.parser.lexical_functions import create_lexical_dataset
 from word_forge.queue.queue_manager import QueueManager
 from word_forge.utils.nltk_utils import ensure_nltk_data
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from word_forge.parser.language_model import ModelState
 
 
 @dataclass
@@ -158,7 +162,7 @@ class TermExtractor:
             WordNet POS constant for lemmatization
         """
         tag_map = {"J": wn.ADJ, "V": wn.VERB, "N": wn.NOUN, "R": wn.ADV}
-        return tag_map.get(treebank_tag[0], wn.NOUN)
+        return cast(str, tag_map.get(treebank_tag[:1].upper(), wn.NOUN))
 
     def extract_terms(
         self, definition: str, examples: List[str], original_term: str
@@ -489,6 +493,7 @@ class ParserRefiner:
         queue_manager: Optional[QueueManager[str]] = None,
         data_dir: str = "data",
         model_name: Optional[str] = None,
+        model_profile: Optional[str] = None,
         llm_state: Optional[ModelState] = None,
     ):
         """
@@ -498,7 +503,9 @@ class ParserRefiner:
             db_manager: DBManager instance for database operations
             queue_manager: QueueManager instance for enqueuing new terms
             data_dir: Path to the folder containing lexical resources
-            model_name: Custom model name to use (if None, uses default)
+            model_name: Optional custom Hugging Face model identifier
+            model_profile: Named model profile, including ``auto`` and ``off``
+            llm_state: Preconfigured model state, primarily for embedded use
         """
         self.db_manager = db_manager or DBManager()
         self.queue_manager = (
@@ -508,9 +515,29 @@ class ParserRefiner:
         self.term_extractor = TermExtractor()
         self.stats = ProcessingStatistics()
 
-        self.llm_state = llm_state or ModelState(
-            model_name or "qwen/qwen2.5-0.5b-instruct"
-        )
+        self.llm_state = llm_state
+        selected_model: Optional[str] = None
+        if self.llm_state is None and model_name:
+            selected_model = model_name
+        elif self.llm_state is None and model_profile:
+            from word_forge.parser.model_profiles import resolve_model_profile
+
+            selected_profile = resolve_model_profile(model_profile)
+            selected_model = selected_profile.model_id
+        elif self.llm_state is None:
+            from word_forge.config import config
+            from word_forge.parser.model_profiles import resolve_model_profile
+
+            if config.parser.enable_model:
+                selected_model = config.parser.model_name
+                if selected_model is None:
+                    selected_model = resolve_model_profile(
+                        config.parser.model_profile
+                    ).model_id
+        if self.llm_state is None and selected_model is not None:
+            from word_forge.parser.language_model import ModelState
+
+            self.llm_state = ModelState(selected_model)
 
         # Initialize thread pool for parallel processing
         self._executor = ThreadPoolExecutor(max_workers=5)

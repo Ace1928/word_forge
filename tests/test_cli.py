@@ -43,6 +43,26 @@ def test_cli_doctor_json_command(capsys: pytest.CaptureFixture[str]) -> None:
     assert report["ok"] is True
 
 
+def test_cli_models_json_command(capsys: pytest.CaptureFixture[str]) -> None:
+    """Model readiness is discoverable without loading model weights."""
+    from word_forge import forge
+
+    assert forge.main(["models", "list", "--json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["recommended"] in {
+        "off",
+        "portable",
+        "gemma4-edge",
+    }
+    assert {profile["name"] for profile in report["profiles"]} == {
+        "off",
+        "portable",
+        "gemma3-tiny",
+        "gemma4-edge",
+    }
+
+
 def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:
     """The lightweight core pipeline must run without vector backends."""
     from word_forge import forge

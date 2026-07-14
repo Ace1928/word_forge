@@ -21,6 +21,7 @@ using the underlying classes directly.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -66,7 +67,7 @@ def _get_version() -> str:
         Version string in format 'word_forge VERSION'
     """
     try:
-        from importlib.metadata import version, PackageNotFoundError
+        from importlib.metadata import PackageNotFoundError, version
 
         return f"word_forge {version('word_forge')}"
     except (ImportError, PackageNotFoundError):
@@ -88,6 +89,7 @@ def start(
     db_path: Optional[str] = None,
     vector_model: Optional[str] = None,
     llm_model: Optional[str] = None,
+    llm_profile: Optional[str] = None,
     enable_vector: Optional[bool] = None,
 ) -> None:
     """Launch the Word Forge processing pipeline.
@@ -107,12 +109,18 @@ def start(
         and the vector worker embedder.
     llm_model:
         Optional override for the language model used to generate example sentences.
+    llm_profile:
+        Optional named local-model profile (``portable``, ``gemma3-tiny``,
+        ``gemma4-edge``, ``auto``, or ``off``).
     enable_vector:
         ``True`` requires vector indexing, ``False`` disables it, and ``None``
         enables it when the optional vector dependencies are available.
     """
 
+    from word_forge.configs.config_essentials import measure_execution
     from word_forge.database.database_manager import DBManager
+    from word_forge.graph.graph_manager import GraphManager
+    from word_forge.graph.graph_worker import GraphWorker
     from word_forge.parser.parser_refiner import ParserRefiner
     from word_forge.queue.queue_manager import QueueManager
     from word_forge.queue.queue_worker import (
@@ -121,14 +129,37 @@ def start(
         WorkerPoolConfig,
     )
     from word_forge.queue.worker_manager import WorkerManager
-    from word_forge.graph.graph_manager import GraphManager
-    from word_forge.graph.graph_worker import GraphWorker
-    from word_forge.vectorizer.vector_store import VectorStore, VectorStoreError
-    from word_forge.vectorizer.vector_worker import VectorWorker
-    from word_forge.configs.config_essentials import measure_execution
 
     _setup_logging()
     LOGGER.info("Starting Word Forge")
+
+    requested_profile = llm_profile
+    if llm_model is None and requested_profile is None:
+        from word_forge.config import config
+
+        if config.parser.enable_model and config.parser.model_name is None:
+            requested_profile = config.parser.model_profile
+
+    if requested_profile is not None:
+        from word_forge.parser.model_profiles import (
+            detect_runtime_resources,
+            resolve_model_profile,
+        )
+
+        if requested_profile.strip().casefold() == "off":
+            selected_profile = resolve_model_profile(
+                requested_profile, require_ready=True
+            )
+        else:
+            runtime = detect_runtime_resources()
+            selected_profile = resolve_model_profile(
+                requested_profile,
+                runtime,
+                require_ready=True,
+            )
+            for warning in selected_profile.warnings(runtime):
+                LOGGER.warning("Model profile '%s': %s", selected_profile.name, warning)
+        llm_profile = selected_profile.name
 
     db_manager = DBManager(db_path=db_path)
     queue_manager: QueueManager[str] = QueueManager()
@@ -137,6 +168,7 @@ def start(
         db_manager=db_manager,
         queue_manager=queue_manager,
         model_name=llm_model,
+        model_profile=llm_profile,
     )
     processor = WordProcessor(
         db_manager=db_manager, parser_refiner=parser_refiner, logger=LOGGER
@@ -147,8 +179,11 @@ def start(
     graph_manager = GraphManager(db_manager=db_manager)
     graph_worker = GraphWorker(graph_manager=graph_manager)
 
-    vector_worker: Optional[VectorWorker] = None
+    vector_worker = None
     if enable_vector is not False:
+        from word_forge.vectorizer.vector_store import VectorStore, VectorStoreError
+        from word_forge.vectorizer.vector_worker import VectorWorker
+
         try:
             vector_store = VectorStore(db_manager=db_manager, model_name=vector_model)
             vector_worker = VectorWorker(
@@ -249,6 +284,61 @@ def run_setup_nltk() -> int:
     return 0
 
 
+def run_model_catalog(action: str = "list", json_output: bool = False) -> int:
+    """List local-model profiles or recommend one for the current runtime."""
+    from word_forge.parser.model_profiles import (
+        detect_runtime_resources,
+        iter_model_profiles,
+        recommend_model_profile,
+    )
+
+    resources = detect_runtime_resources()
+    profiles = list(iter_model_profiles())
+    recommended = recommend_model_profile(resources)
+    report = {
+        "runtime": resources.to_dict(),
+        "recommended": recommended.name,
+        "profiles": [profile.to_dict(resources) for profile in profiles],
+    }
+
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    print(
+        "Runtime: "
+        f"{resources.accelerator}, {resources.available_ram_gib:.1f} GiB available / "
+        f"{resources.total_ram_gib:.1f} GiB total, {resources.cpu_threads} CPU threads"
+    )
+    print(f"Recommended profile: {recommended.name} ({recommended.display_name})")
+    if action == "recommend":
+        if recommended.model_id is None:
+            print("Install word_forge[llm] to enable optional generative enrichment.")
+        else:
+            print(f"Model: {recommended.model_id}")
+            print(
+                "Run: word_forge start --llm-profile "
+                f"{recommended.name} <seed words>"
+            )
+        return 0
+
+    print()
+    print("PROFILE         READY  RAM MIN/REC  MODEL")
+    for profile in profiles:
+        ready, _issues = profile.readiness(resources)
+        ready_label = "yes*" if ready and profile.warnings(resources) else "yes"
+        if not ready:
+            ready_label = "no"
+        model_id = profile.model_id or "disabled"
+        print(
+            f"{profile.name:<15} {ready_label:<6} "
+            f"{profile.minimum_available_ram_gib:g}/{profile.recommended_available_ram_gib:g} GiB  "
+            f"{model_id}"
+        )
+    print("\n* Ready with operational warnings; use --json for details.")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the ``word_forge`` command."""
 
@@ -314,11 +404,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Enable or disable vector indexing (default: enable when available)",
     )
-    start_parser.add_argument(
+    llm_group = start_parser.add_mutually_exclusive_group()
+    llm_group.add_argument(
         "--llm-model",
         type=str,
         default=None,
-        help="Override the default language model for example sentence generation",
+        help="Use a custom Hugging Face language model for missing examples",
+    )
+    llm_group.add_argument(
+        "--llm-profile",
+        choices=["auto", "off", "portable", "gemma3-tiny", "gemma4-edge"],
+        default=None,
+        help="Use a resource profile for optional generative enrichment",
     )
 
     graph_parser = subparsers.add_parser("graph", help="Graph management commands")
@@ -518,6 +615,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Emit machine-readable JSON",
     )
 
+    models_parser = subparsers.add_parser(
+        "models", help="List or recommend local language-model profiles"
+    )
+    models_parser.add_argument(
+        "models_action",
+        nargs="?",
+        choices=["list", "recommend"],
+        default="list",
+        help="List every profile or recommend one for this machine",
+    )
+    models_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable profile and runtime details",
+    )
+
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -548,15 +661,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     exit_code = 0
 
     if args.command == "start":
-        start(
-            args.words,
-            run_minutes=args.minutes,
-            worker_count=args.workers,
-            db_path=args.db_path,
-            vector_model=args.vector_model,
-            llm_model=args.llm_model,
-            enable_vector=args.vector,
-        )
+        from word_forge.parser.model_profiles import ModelProfileError
+
+        try:
+            start(
+                args.words,
+                run_minutes=args.minutes,
+                worker_count=args.workers,
+                db_path=args.db_path,
+                vector_model=args.vector_model,
+                llm_model=args.llm_model,
+                llm_profile=args.llm_profile,
+                enable_vector=args.vector,
+            )
+        except ModelProfileError as exc:
+            LOGGER.error("Unable to start Word Forge: %s", exc)
+            exit_code = 2
+    elif args.command == "models":
+        exit_code = run_model_catalog(args.models_action, args.json)
     elif args.command == "graph":
         if args.graph_command == "build":
             exit_code = (
