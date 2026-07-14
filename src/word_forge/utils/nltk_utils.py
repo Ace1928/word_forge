@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, NamedTuple, Optional
 
-import nltk
+import nltk  # type: ignore[import-untyped]
 
 
 class _NLTKResource(NamedTuple):
@@ -20,6 +20,11 @@ class _NLTKResource(NamedTuple):
 _NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
     _NLTKResource("wordnet", "corpora/wordnet", "WordNet lexical database"),
     _NLTKResource("omw-1.4", "corpora/omw-1.4", "Open Multilingual WordNet"),
+    _NLTKResource(
+        "cmudict",
+        "corpora/cmudict",
+        "CMU Pronouncing Dictionary for American English",
+    ),
     _NLTKResource("punkt", "tokenizers/punkt", "Punkt sentence tokenizer"),
     _NLTKResource(
         "punkt_tab",
