@@ -20,26 +20,43 @@ jobs:
     uses: ./.github/workflows/python-task.yml
     with:
       name: Lint
-      python-version: "3.10"
+      python-version: "3.12"
       install-command: |
         python -m pip install --upgrade pip
-        pip install black ruff
+        python -m pip install -e ".[dev]"
       run-command: |
-        black --check .
-        ruff check .
+        python -m black --check .
+        python -m ruff check .
 
   test:
     name: Test (Python ${{ matrix.python-version }})
     needs: lint
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     uses: ./.github/workflows/python-task.yml
     with:
       name: Test
       python-version: ${{ matrix.python-version }}
       install-command: |
         python -m pip install --upgrade pip
-        pip install networkx numpy nltk pytest
+        python -m pip install -e ".[dev]"
       run-command: |
-        pytest -q --tb=short
+        python -m pytest -q --tb=short
+
+  build:
+    name: Build distributions
+    needs: lint
+    uses: ./.github/workflows/python-task.yml
+    with:
+      name: Build
+      python-version: "3.12"
+      install-command: |
+        python -m pip install --upgrade pip
+        python -m pip install build
+      run-command: |
+        python -m build
+        python -m pip install --force-reinstall dist/*.whl
+        python -m pip check
+        word_forge --version
