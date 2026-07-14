@@ -6,8 +6,11 @@ various typed dictionaries, and layout/dimension types.
 
 from pathlib import Path
 
+import pytest
+
 from word_forge.configs.config_essentials import (
     GraphColorScheme,
+    GraphConfigError,
     GraphLayoutAlgorithm,
 )
 from word_forge.graph.graph_config import (
@@ -61,6 +64,8 @@ class TestGraphConfig:
         config = GraphConfig()
         assert config.animation_duration_ms == 800
         assert config.refresh_interval_seconds == 5.0
+        assert config.layout_iterations == 50
+        assert config.layout_seed == 42
 
     def test_limit_settings(self):
         """Test default node and edge limits."""
@@ -288,6 +293,17 @@ class TestGraphConfigEdgeCases:
         config = GraphConfig(limit_node_count=None, limit_edge_count=None)
         assert config.limit_node_count is None
         assert config.limit_edge_count is None
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            GraphConfig(layout_iterations=0),
+            GraphConfig(layout_seed=-1),
+        ],
+    )
+    def test_invalid_layout_controls_are_rejected(self, config: GraphConfig):
+        with pytest.raises(GraphConfigError):
+            config.validate()
 
     def test_custom_dimension_weights(self):
         """Test custom dimension weights."""

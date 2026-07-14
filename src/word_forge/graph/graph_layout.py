@@ -23,22 +23,26 @@ from __future__ import annotations
 
 import functools  # Import functools
 import logging
-from typing import TYPE_CHECKING, Dict, List, Optional, cast
+import math
+from collections.abc import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Dict, List, Optional, Union, cast
 
 import networkx as nx
 
 # Import necessary components
 from word_forge.exceptions import GraphLayoutError
+from word_forge.graph.graph_config import WordId  # Alias to avoid naming conflict
 from word_forge.graph.graph_config import (
     LayoutAlgorithm,
     Position,
     PositionDict,
-    WordId,  # Alias to avoid naming conflict
 )
 
 # Type hint for the main GraphManager to avoid circular imports
 if TYPE_CHECKING:
     from .graph_manager import GraphManager
+
+LayoutFunction = Callable[..., object]
 
 
 class GraphLayout:
@@ -88,47 +92,97 @@ class GraphLayout:
             self.manager._positions.clear()  # Ensure positions are cleared
             return
 
-        layout_algo_name = algorithm or self._config.default_layout
-        dimensions = self.manager.dimensions  # Get current dimensionality
-
+        self.manager._positions = self.compute_positions(
+            self.manager.g,
+            algorithm=algorithm,
+            dimensions=self.manager.dimensions,
+        )
         self.logger.info(
-            f"Computing {dimensions}D graph layout using '{layout_algo_name}' algorithm."
+            "Layout computation complete. Stored %d node positions.",
+            len(self.manager._positions),
+        )
+
+    def compute_positions(
+        self,
+        graph: nx.Graph,
+        *,
+        algorithm: Optional[LayoutAlgorithm] = None,
+        dimensions: Optional[int] = None,
+    ) -> PositionDict:
+        """Compute deterministic positions without mutating manager state.
+
+        Args:
+            graph: Graph or bounded graph view to position.
+            algorithm: Optional layout algorithm override.
+            dimensions: Coordinate dimensions. Defaults to the manager setting.
+
+        Returns:
+            Floating-point coordinate tuples keyed by node ID.
+
+        Raises:
+            GraphLayoutError: If the selected layout cannot be computed.
+            ValueError: If dimensions is not two or three.
+        """
+
+        if graph.number_of_nodes() == 0:
+            return {}
+
+        selected_dimensions = (
+            self.manager.dimensions if dimensions is None else dimensions
+        )
+        if selected_dimensions not in (2, 3):
+            raise ValueError(
+                "Invalid number of dimensions specified: "
+                f"{selected_dimensions}. Must be 2 or 3."
+            )
+        layout_name = algorithm or self._config.default_layout
+        algorithm_name = str(getattr(layout_name, "value", layout_name))
+        self.logger.info(
+            "Computing %dD layout for %d nodes using '%s'.",
+            selected_dimensions,
+            graph.number_of_nodes(),
+            algorithm_name,
         )
 
         try:
-            # Ensure layout_algo_name is the string value if it's an Enum
-            algo_str = (
-                layout_algo_name.value
-                if hasattr(layout_algo_name, "value")
-                else layout_algo_name
+            layout_function = self._get_layout_function(
+                algorithm_name,
+                selected_dimensions,
             )
-            layout_func = self._get_layout_function(
-                algo_str, dimensions
-            )  # Pass string value
-            # Pass the graph instance from the manager
-            computed_positions: Dict[WordId, Position] = layout_func(self.manager.g)
-
-            # Store the computed positions in the manager's state
-            self.manager._positions = cast(PositionDict, computed_positions)
-            self.logger.info(
-                f"Layout computation complete. Stored {len(self.manager._positions)} node positions."
-            )
-
-        except AttributeError as e:
-            # Use algo_str in error message
-            self.logger.error(f"Invalid layout algorithm specified: '{algo_str}'. {e}")
+            raw_positions = layout_function(self._canonical_graph(graph))
+            if not isinstance(raw_positions, Mapping):
+                raise TypeError("layout algorithm returned a non-mapping result")
+            positions: PositionDict = {}
+            for node_id, raw_coordinates in raw_positions.items():
+                if not isinstance(raw_coordinates, Iterable) or isinstance(
+                    raw_coordinates, (str, bytes)
+                ):
+                    raise TypeError(
+                        f"layout coordinates for node {node_id!r} are not iterable"
+                    )
+                coordinates = tuple(float(value) for value in raw_coordinates)
+                if len(coordinates) != selected_dimensions or not all(
+                    math.isfinite(value) for value in coordinates
+                ):
+                    raise ValueError(
+                        f"layout coordinates for node {node_id!r} must contain "
+                        f"{selected_dimensions} finite values"
+                    )
+                positions[cast(WordId, node_id)] = cast(Position, coordinates)
+            return positions
+        except AttributeError as exc:
+            self.logger.error("Invalid layout algorithm '%s': %s", algorithm_name, exc)
             raise GraphLayoutError(
-                f"Layout algorithm '{algo_str}' not found or failed.", e
-            ) from e
-        except Exception as e:
-            # Use algo_str in error message
+                f"Layout algorithm '{algorithm_name}' not found or failed.", exc
+            ) from exc
+        except Exception as exc:
             self.logger.error(
-                f"Error during layout computation using '{algo_str}': {e}",
-                exc_info=True,  # Add traceback for unexpected errors
+                "Layout computation using '%s' failed: %s",
+                algorithm_name,
+                exc,
+                exc_info=True,
             )
-            # Optionally clear positions on error, or leave them potentially partially computed
-            # self.manager._positions.clear()
-            raise GraphLayoutError(f"Layout computation failed: {e}", e) from e
+            raise GraphLayoutError(f"Layout computation failed: {exc}", exc) from exc
 
     def update_layout_incrementally(self, new_node_ids: List[WordId]) -> None:
         """
@@ -155,16 +209,14 @@ class GraphLayout:
         )
 
         default_algo = self._config.default_layout
-        algo_str = (
-            default_algo.value if hasattr(default_algo, "value") else default_algo
-        )
+        algo_str = str(getattr(default_algo, "value", default_algo))
 
         if algo_str != "force_directed" or not self.manager._positions:
             # Fallback to full recompute for unsupported algorithms or missing positions
             self.logger.debug(
                 "Incremental update not supported for this layout. Recomputing full layout."
             )
-            self.compute_layout(algorithm=algo_str)
+            self.compute_layout(algorithm=cast(LayoutAlgorithm, algo_str))
             return
 
         try:
@@ -175,7 +227,7 @@ class GraphLayout:
                 if n in self.manager._positions
             }
             k_value = getattr(self._config, "layout_k", None)
-            iterations = getattr(self._config, "layout_iterations", 50)
+            iterations = self._config.layout_iterations
             updated_pos = nx.spring_layout(
                 self.manager.g,
                 pos=pos_init,
@@ -183,6 +235,7 @@ class GraphLayout:
                 dim=self.manager.dimensions,
                 k=k_value,
                 iterations=iterations,
+                seed=self._config.layout_seed,
             )
             self.manager._positions.update(cast(PositionDict, updated_pos))
             self.logger.info(
@@ -195,7 +248,50 @@ class GraphLayout:
             )
             raise GraphLayoutError(f"Incremental layout update failed: {e}") from e
 
-    def _get_layout_function(self, algorithm_name: str, dimensions: int) -> callable:
+    @staticmethod
+    def _canonical_graph(graph: nx.Graph) -> nx.Graph:
+        """Copy a graph with deterministic node and edge insertion order."""
+
+        canonical = type(graph)()
+        canonical.graph.update(graph.graph)
+        canonical.add_nodes_from(
+            (node_id, dict(attributes))
+            for node_id, attributes in sorted(
+                graph.nodes(data=True), key=lambda item: str(item[0])
+            )
+        )
+        if graph.is_multigraph():
+            multigraph = cast(Union[nx.MultiGraph, nx.MultiDiGraph], graph)
+            canonical_multigraph = cast(
+                Union[nx.MultiGraph, nx.MultiDiGraph], canonical
+            )
+            for source_id, target_id, key, attributes in sorted(
+                multigraph.edges(keys=True, data=True),
+                key=lambda item: (
+                    str(item[0]),
+                    str(item[1]),
+                    str(item[2]),
+                ),
+            ):
+                canonical_multigraph.add_edge(
+                    source_id,
+                    target_id,
+                    key=key,
+                    **dict(attributes),
+                )
+        else:
+            canonical.add_edges_from(
+                (source_id, target_id, dict(attributes))
+                for source_id, target_id, attributes in sorted(
+                    graph.edges(data=True),
+                    key=lambda item: (str(item[0]), str(item[1])),
+                )
+            )
+        return canonical
+
+    def _get_layout_function(
+        self, algorithm_name: str, dimensions: int
+    ) -> LayoutFunction:
         """
         Retrieve the appropriate NetworkX layout function based on name and dimension.
         Ensures correct parameters are passed to the underlying layout function.
@@ -218,10 +314,11 @@ class GraphLayout:
 
         # Common parameters for spring_layout
         k_value = getattr(self._config, "layout_k", None)
-        iterations = getattr(self._config, "layout_iterations", 50)
+        iterations = self._config.layout_iterations
+        seed = self._config.layout_seed
 
         # Define base layout functions
-        layout_map_base: Dict[str, callable] = {
+        layout_map_base: Dict[str, LayoutFunction] = {
             "force_directed": nx.spring_layout,
             "spectral": nx.spectral_layout,
             "circular": nx.circular_layout,
@@ -237,7 +334,11 @@ class GraphLayout:
             if algorithm_name == "force_directed":
                 # Use functools.partial to pre-set arguments for spring_layout
                 return functools.partial(
-                    base_func, dim=dimensions, k=k_value, iterations=iterations
+                    base_func,
+                    dim=dimensions,
+                    k=k_value,
+                    iterations=iterations,
+                    seed=seed,
                 )
             elif algorithm_name == "spectral":
                 if dimensions == 3:
@@ -250,7 +351,11 @@ class GraphLayout:
                         )
                         # Fallback to 3D spring layout
                         return functools.partial(
-                            nx.spring_layout, dim=3, k=k_value, iterations=iterations
+                            nx.spring_layout,
+                            dim=3,
+                            k=k_value,
+                            iterations=iterations,
+                            seed=seed,
                         )
                 else:  # dimensions == 2
                     return base_func  # spectral_layout defaults to 2D
@@ -261,7 +366,11 @@ class GraphLayout:
                         "Circular layout requested for 3D, using 3D spring layout as fallback."
                     )
                     return functools.partial(
-                        nx.spring_layout, dim=3, k=k_value, iterations=iterations
+                        nx.spring_layout,
+                        dim=3,
+                        k=k_value,
+                        iterations=iterations,
+                        seed=seed,
                     )
                 else:
                     return base_func
@@ -271,12 +380,16 @@ class GraphLayout:
                         f"Layout '{algorithm_name}' is 2D only. Falling back to 3D spring layout."
                     )
                     return functools.partial(
-                        nx.spring_layout, dim=3, k=k_value, iterations=iterations
+                        nx.spring_layout,
+                        dim=3,
+                        k=k_value,
+                        iterations=iterations,
+                        seed=seed,
                     )
                 else:
                     # Check for pygraphviz dependency
                     try:
-                        import pygraphviz  # noqa: F401
+                        import pygraphviz  # type: ignore[import-not-found] # noqa: F401
 
                         return base_func  # Return the lambda defined in layout_map_base
                     except ImportError:
@@ -286,14 +399,22 @@ class GraphLayout:
                         self.logger.warning("Install with: pip install pygraphviz")
                         # Fallback to 2D spring layout
                         return functools.partial(
-                            nx.spring_layout, dim=2, k=k_value, iterations=iterations
+                            nx.spring_layout,
+                            dim=2,
+                            k=k_value,
+                            iterations=iterations,
+                            seed=seed,
                         )
             elif algorithm_name == "grid":
                 self.logger.debug(
                     "Grid layout requested, using spring layout as fallback."
                 )
                 return functools.partial(
-                    nx.spring_layout, dim=dimensions, k=k_value, iterations=iterations
+                    nx.spring_layout,
+                    dim=dimensions,
+                    k=k_value,
+                    iterations=iterations,
+                    seed=seed,
                 )
             else:
                 # Should not be reached if algorithm_name is in layout_map_base
@@ -309,7 +430,11 @@ class GraphLayout:
             )
             # Fallback to appropriate dimension spring layout
             return functools.partial(
-                nx.spring_layout, dim=dimensions, k=k_value, iterations=iterations
+                nx.spring_layout,
+                dim=dimensions,
+                k=k_value,
+                iterations=iterations,
+                seed=seed,
             )
 
     def _apply_layout(self) -> None:

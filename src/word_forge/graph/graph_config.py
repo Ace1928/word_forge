@@ -220,6 +220,8 @@ class GraphConfig:
         high_quality_rendering: Whether to use high quality rendering
         animation_duration_ms: Duration of animations in milliseconds
         refresh_interval_seconds: Delay between background graph refreshes
+        layout_iterations: Force-directed layout refinement iterations
+        layout_seed: Deterministic seed used by stochastic layouts
         limit_node_count: Maximum number of nodes to render
         limit_edge_count: Maximum number of edges to render
         vis_width: Width of visualization in pixels
@@ -375,6 +377,8 @@ class GraphConfig:
     # Performance settings
     animation_duration_ms: int = 800
     refresh_interval_seconds: float = 5.0
+    layout_iterations: int = 50
+    layout_seed: int = 42
     limit_node_count: Optional[int] = 1000
     limit_edge_count: Optional[int] = 2000
 
@@ -462,7 +466,10 @@ class GraphConfig:
         "WORD_FORGE_GRAPH_EXPORT_PATH": ("default_export_path", str),
         "WORD_FORGE_GRAPH_HIGH_QUALITY": ("high_quality_rendering", bool),
         "WORD_FORGE_GRAPH_REFRESH_INTERVAL": ("refresh_interval_seconds", float),
+        "WORD_FORGE_GRAPH_LAYOUT_ITERATIONS": ("layout_iterations", int),
+        "WORD_FORGE_GRAPH_LAYOUT_SEED": ("layout_seed", int),
         "WORD_FORGE_GRAPH_NODE_LIMIT": ("limit_node_count", int),
+        "WORD_FORGE_GRAPH_EDGE_LIMIT": ("limit_edge_count", int),
         "WORD_FORGE_GRAPH_VIS_WIDTH": ("vis_width", int),
         "WORD_FORGE_GRAPH_VIS_HEIGHT": ("vis_height", int),
         "WORD_FORGE_GRAPH_ENABLE_EMOTIONAL": ("enable_emotional_relationships", bool),
@@ -792,6 +799,17 @@ class GraphConfig:
                 f"{self.refresh_interval_seconds}"
             )
 
+        if self.layout_iterations <= 0:
+            errors.append(
+                f"Layout iterations must be positive, got {self.layout_iterations}"
+            )
+
+        if not 0 <= self.layout_seed <= (2**32 - 1):
+            errors.append(
+                "Layout seed must be between 0 and 4294967295, "
+                f"got {self.layout_seed}"
+            )
+
         # Validate node and edge limits
         if self.limit_node_count is not None and self.limit_node_count <= 0:
             errors.append(f"Node limit must be positive, got {self.limit_node_count}")
@@ -851,6 +869,8 @@ class GraphConfig:
             "high_quality_rendering": self.high_quality_rendering,
             "animation_duration_ms": self.animation_duration_ms,
             "refresh_interval_seconds": self.refresh_interval_seconds,
+            "layout_iterations": self.layout_iterations,
+            "layout_seed": self.layout_seed,
             "limit_node_count": self.limit_node_count,
             "limit_edge_count": self.limit_edge_count,
             "active_dimensions": self.active_dimensions,

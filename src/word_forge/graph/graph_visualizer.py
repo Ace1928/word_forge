@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import traceback
 import webbrowser
 from html import escape
@@ -56,16 +57,43 @@ VALENCE_HIGH_THRESHOLD: Final[float] = 0.3  # Above this = positive
 VALENCE_LOW_THRESHOLD: Final[float] = -0.3  # Below this = negative
 AROUSAL_HIGH_THRESHOLD: Final[float] = 0.5  # Above this = high arousal
 
+
+def _pipe_values(value: object) -> List[str]:
+    """Return stable, non-empty values from a pipe-delimited attribute."""
+
+    if value is None:
+        return []
+    return sorted(
+        {part.strip() for part in str(value).split("|") if part.strip()},
+        key=str.casefold,
+    )
+
+
+def _finite_float(value: object, default: float) -> float:
+    """Coerce a finite numeric value, returning ``default`` on bad metadata."""
+
+    try:
+        normalized = float(str(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return normalized if math.isfinite(normalized) else default
+
+
 # Import necessary components
-from word_forge.exceptions import GraphVisualizationError
+from word_forge.exceptions import GraphVisualizationError, NodeNotFoundError
+from word_forge.graph.graph_assertions import decode_edge_assertions
 from word_forge.graph.graph_config import (
     PositionDict,  # Ensure PositionDict is imported
 )
 from word_forge.graph.graph_config import (
     ColorHex,
-    Position,
     RelationshipDimension,
     WordId,
+)
+from word_forge.graph.graph_html import (
+    GraphViewerMetadata,
+    atomic_write_graph_viewer,
+    render_graph_viewer,
 )
 
 # Type hint for the main GraphManager to avoid circular imports
@@ -109,6 +137,12 @@ class GraphVisualizer:
         use_3d: Optional[bool] = None,  # Explicitly choose 2D/3D
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,  # Option to automatically open
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """
         Generate an interactive graph visualization (2D default, optionally 3D).
@@ -125,6 +159,11 @@ class GraphVisualizer:
             dimensions_filter (Optional[List[RelationshipDimension]]): List of relationship dimensions to include.
                                                                        If None, includes dimensions specified in config.active_dimensions.
             open_in_browser (bool): If True, automatically opens the generated HTML file.
+            focus_term: Optional term whose bounded neighborhood should be shown.
+            focus_language: Optional BCP 47 tag used to resolve the focus term.
+            depth: Maximum graph distance from the focus term.
+            max_nodes: Optional render-node limit overriding configuration.
+            max_edges: Optional render-edge limit overriding configuration.
 
         Raises:
             GraphVisualizationError: If visualization libraries are missing or
@@ -134,10 +173,28 @@ class GraphVisualizer:
         is_3d = use_3d if use_3d is not None else (self.manager.dimensions == 3)
 
         if is_3d:
-            self.visualize_3d(output_path, dimensions_filter, open_in_browser)
+            self.visualize_3d(
+                output_path,
+                dimensions_filter,
+                open_in_browser,
+                focus_term=focus_term,
+                focus_language=focus_language,
+                depth=depth,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
         else:
             self.visualize_2d(
-                output_path, height, width, dimensions_filter, open_in_browser
+                output_path,
+                height,
+                width,
+                dimensions_filter,
+                open_in_browser,
+                focus_term=focus_term,
+                focus_language=focus_language,
+                depth=depth,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
             )
 
     def visualize_2d(
@@ -147,6 +204,12 @@ class GraphVisualizer:
         width: Optional[str] = None,
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """
         Generate an interactive 2D graph visualization using Pyvis.
@@ -175,43 +238,26 @@ class GraphVisualizer:
         if self.manager.g.number_of_nodes() == 0:
             raise GraphVisualizationError("Cannot visualize an empty graph.")
 
-        node_positions = self.manager.get_positions()
-        if not node_positions:
-            self.logger.warning(
-                "Node positions not computed. Computing default layout for 2D visualization."
+        graph_to_visualize = self._select_graph(
+            dimensions_filter,
+            focus_term=focus_term,
+            focus_language=focus_language,
+            depth=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+        if graph_to_visualize.number_of_nodes() == 0:
+            raise GraphVisualizationError(
+                "No graph nodes match the selected focus and dimensions."
             )
-            try:
-                original_dims = self.manager.dimensions
-                if original_dims != 2:
-                    self.manager.dimensions = 2
-                self.manager.layout.compute_layout()
-                node_positions = self.manager.get_positions()  # Re-fetch positions
-                if original_dims != 2:
-                    self.manager.dimensions = original_dims
-            except Exception as e:
-                raise GraphVisualizationError(
-                    "Failed to compute layout for visualization.", e
-                ) from e
-
-        sample_pos: Optional[Position] = next(iter(node_positions.values()), None)
-        if sample_pos is not None and len(sample_pos) != 2:
-            self.logger.warning(
-                "Graph positions are 3D, but 2D visualization requested. Using only X, Y coordinates."
-            )
+        node_positions = self._positions_for_graph(graph_to_visualize, dimensions=2)
 
         vis_height = height or f"{self._config.vis_height}px"
-        vis_width = width or f"{self._config.vis_width}px"
-        save_path_str = output_path or self._config.visualization_path
-        save_path = Path(save_path_str)
-
-        if save_path.is_dir() or save_path.suffix.lower() != ".html":
-            default_filename = "graph_2d.html"
-            save_path = (
-                save_path / default_filename
-                if save_path.is_dir()
-                else save_path.with_name(save_path.stem + "_2d.html")
-            )
-            self.logger.debug(f"Adjusted 2D visualization save path to: {save_path}")
+        vis_width = width or "100%"
+        save_path = self._resolve_output_path(
+            output_path or self._config.visualization_path,
+            "graph_2d.html",
+        )
 
         self.logger.info(f"Generating 2D visualization (Pyvis) to: {save_path}")
 
@@ -225,19 +271,41 @@ class GraphVisualizer:
         net = PyvisNetwork(
             height=vis_height,
             width=vis_width,
-            directed=isinstance(self.manager.g, nx.DiGraph),
+            directed=graph_to_visualize.is_directed(),
             notebook=False,
+            neighborhood_highlight=False,
             bgcolor="#222222",
             font_color="white",
+            cdn_resources="in_line",
         )
-
-        graph_to_visualize = self._filter_graph_by_dimensions(dimensions_filter)
 
         # Configure Pyvis network appearance and add nodes/edges
         self._configure_pyvis_network(net, graph_to_visualize, node_positions)
 
         try:
-            net.save_graph(str(save_path))
+            generated_html = str(net.generate_html(notebook=False))
+            document = render_graph_viewer(
+                generated_html,
+                GraphViewerMetadata(
+                    title="Lexical connection graph",
+                    total_nodes=int(
+                        graph_to_visualize.graph.get(
+                            "word_forge_total_nodes",
+                            graph_to_visualize.number_of_nodes(),
+                        )
+                    ),
+                    total_edges=int(
+                        graph_to_visualize.graph.get(
+                            "word_forge_total_edges",
+                            graph_to_visualize.number_of_edges(),
+                        )
+                    ),
+                    rendered_nodes=graph_to_visualize.number_of_nodes(),
+                    rendered_edges=graph_to_visualize.number_of_edges(),
+                    height=vis_height,
+                ),
+            )
+            atomic_write_graph_viewer(save_path, document)
             self.logger.info(f"2D visualization saved successfully to {save_path}")
 
             if open_in_browser:
@@ -260,6 +328,12 @@ class GraphVisualizer:
         output_path: Optional[str] = None,
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """
         Generate an interactive 3D graph visualization using Plotly.
@@ -286,49 +360,23 @@ class GraphVisualizer:
         if self.manager.g.number_of_nodes() == 0:
             raise GraphVisualizationError("Cannot visualize an empty graph.")
 
-        node_positions = self.manager.get_positions()
-        if not node_positions:
-            self.logger.warning(
-                "Node positions not computed. Computing default 3D layout."
+        graph_to_visualize = self._select_graph(
+            dimensions_filter,
+            focus_term=focus_term,
+            focus_language=focus_language,
+            depth=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+        if graph_to_visualize.number_of_nodes() == 0:
+            raise GraphVisualizationError(
+                "No graph nodes match the selected focus and dimensions."
             )
-            try:
-                original_dims = self.manager.dimensions
-                if original_dims != 3:
-                    self.manager.dimensions = 3
-                self.manager.layout.compute_layout()
-                node_positions = self.manager.get_positions()  # Re-fetch
-                if original_dims != 3:
-                    self.manager.dimensions = original_dims
-            except Exception as e:
-                raise GraphVisualizationError(
-                    "Failed to compute 3D layout for visualization.", e
-                ) from e
-
-        sample_pos: Optional[Position] = next(iter(node_positions.values()), None)
-        if sample_pos is not None and len(sample_pos) != 3:
-            self.logger.warning(
-                "Graph positions are 2D, but 3D visualization requested. Computing 3D layout."
-            )
-            try:
-                self.manager.dimensions = 3
-                self.manager.layout.compute_layout()
-                node_positions = self.manager.get_positions()  # Re-fetch
-            except Exception as e:
-                raise GraphVisualizationError(
-                    "Failed to compute 3D layout for visualization.", e
-                ) from e
-
-        save_path_str = output_path or self._config.visualization_path
-        save_path = Path(save_path_str)
-
-        if save_path.is_dir() or save_path.suffix.lower() != ".html":
-            default_filename = "graph_3d.html"
-            save_path = (
-                save_path / default_filename
-                if save_path.is_dir()
-                else save_path.with_name(save_path.stem + "_3d.html")
-            )
-            self.logger.debug(f"Adjusted 3D visualization save path to: {save_path}")
+        node_positions = self._positions_for_graph(graph_to_visualize, dimensions=3)
+        save_path = self._resolve_output_path(
+            output_path or self._config.visualization_path,
+            "graph_3d.html",
+        )
 
         self.logger.info(f"Generating 3D visualization (Plotly) to: {save_path}")
 
@@ -339,13 +387,16 @@ class GraphVisualizer:
                 f"Could not create directory for visualization: {save_path.parent}", e
             ) from e
 
-        graph_to_visualize = self._filter_graph_by_dimensions(dimensions_filter)
-
         # Create Plotly figure using the potentially updated positions
         fig = self._configure_plotly_figure(graph_to_visualize, node_positions)
 
         try:
-            fig.write_html(str(save_path))
+            fig.write_html(
+                str(save_path),
+                include_plotlyjs=True,
+                full_html=True,
+                auto_open=False,
+            )
             self.logger.info(f"3D visualization saved successfully to {save_path}")
 
             if open_in_browser:
@@ -362,6 +413,243 @@ class GraphVisualizer:
             raise GraphVisualizationError(
                 f"Error generating 3D visualization: {e}", e
             ) from e
+
+    @staticmethod
+    def _resolve_output_path(raw_path: str, default_filename: str) -> Path:
+        """Resolve a user path to a concrete HTML artifact path.
+
+        Args:
+            raw_path: File or directory requested by the caller.
+            default_filename: Filename used when ``raw_path`` is a directory.
+
+        Returns:
+            Expanded HTML output path. Suffix-free paths are treated as
+            directories so configured visualization directories work before
+            they have been created.
+        """
+
+        path = Path(raw_path).expanduser()
+        if path.suffix.lower() == ".html":
+            return path
+        if path.is_dir() or not path.suffix:
+            return path / default_filename
+        return path.with_suffix(".html")
+
+    def _positions_for_graph(
+        self,
+        graph: nx.Graph,
+        *,
+        dimensions: int,
+    ) -> PositionDict:
+        """Return existing compatible positions or lay out only this graph view."""
+
+        existing_positions = self.manager.get_positions()
+        if all(
+            node_id in existing_positions
+            and len(existing_positions[node_id]) >= dimensions
+            for node_id in graph.nodes()
+        ):
+            return cast(
+                PositionDict,
+                {
+                    cast(WordId, node_id): tuple(
+                        float(value)
+                        for value in existing_positions[cast(WordId, node_id)][
+                            :dimensions
+                        ]
+                    )
+                    for node_id in graph.nodes()
+                },
+            )
+
+        try:
+            return self.manager.layout.compute_positions(
+                graph,
+                dimensions=dimensions,
+            )
+        except Exception as exc:
+            raise GraphVisualizationError(
+                "Failed to compute layout for the selected graph view.", exc
+            ) from exc
+
+    def _select_graph(
+        self,
+        dimensions_filter: Optional[List[RelationshipDimension]],
+        *,
+        focus_term: Optional[str],
+        focus_language: Optional[str],
+        depth: int,
+        max_nodes: Optional[int],
+        max_edges: Optional[int],
+    ) -> nx.Graph:
+        """Build a deterministic, bounded graph view for interactive rendering.
+
+        Args:
+            dimensions_filter: Relationship dimensions to retain.
+            focus_term: Optional center term for a hop-bounded neighborhood.
+            focus_language: Optional language used to disambiguate ``focus_term``.
+            depth: Maximum undirected hop distance from the focus node.
+            max_nodes: Optional node limit overriding graph configuration.
+            max_edges: Optional edge limit overriding graph configuration.
+
+        Returns:
+            A detached graph with deterministic node and edge selection.
+
+        Raises:
+            NodeNotFoundError: If the requested focus term is absent.
+            ValueError: If view bounds are invalid.
+        """
+
+        if depth < 0:
+            raise ValueError("Visualization depth cannot be negative")
+        if focus_language is not None and focus_term is None:
+            raise ValueError("focus_language requires focus_term")
+
+        node_limit = self._config.limit_node_count if max_nodes is None else max_nodes
+        edge_limit = self._config.limit_edge_count if max_edges is None else max_edges
+        if node_limit is not None and node_limit <= 0:
+            raise ValueError("max_nodes must be positive")
+        if edge_limit is not None and edge_limit <= 0:
+            raise ValueError("max_edges must be positive")
+
+        selected = self._filter_graph_by_dimensions(dimensions_filter)
+        focus_id: Optional[WordId] = None
+        distances: Dict[WordId, int] = {}
+        if focus_term is not None:
+            focus_id = self.manager.query.get_node_id(
+                focus_term,
+                language=focus_language,
+            )
+            if focus_id is None:
+                language_context = (
+                    f" ({focus_language})" if focus_language is not None else ""
+                )
+                raise NodeNotFoundError(
+                    f"Focus term {focus_term!r}{language_context} was not found"
+                )
+            if focus_id not in selected:
+                selected.add_node(focus_id, **dict(self.manager.g.nodes[focus_id]))
+            traversal_graph = (
+                selected.to_undirected(as_view=True)
+                if selected.is_directed()
+                else selected
+            )
+            distances = {
+                cast(WordId, node_id): distance
+                for node_id, distance in nx.single_source_shortest_path_length(
+                    traversal_graph,
+                    focus_id,
+                    cutoff=depth,
+                ).items()
+            }
+            selected = selected.subgraph(distances).copy()
+        elif selected.number_of_edges() > 0:
+            connected_nodes = {
+                cast(WordId, node_id)
+                for edge in selected.edges()
+                for node_id in edge[:2]
+            }
+            selected = selected.subgraph(connected_nodes).copy()
+        elif self.manager.g.number_of_edges() > 0:
+            selected = type(selected)()
+
+        original_nodes = selected.number_of_nodes()
+        original_edges = selected.number_of_edges()
+        selected = self._limit_graph(
+            selected,
+            focus_id=focus_id,
+            distances=distances,
+            max_nodes=node_limit,
+            max_edges=edge_limit,
+        )
+        selected.graph["word_forge_total_nodes"] = original_nodes
+        selected.graph["word_forge_total_edges"] = original_edges
+        if (
+            selected.number_of_nodes() != original_nodes
+            or selected.number_of_edges() != original_edges
+        ):
+            self.logger.info(
+                "Bounded graph view from %d nodes/%d edges to %d nodes/%d edges.",
+                original_nodes,
+                original_edges,
+                selected.number_of_nodes(),
+                selected.number_of_edges(),
+            )
+        return selected
+
+    @staticmethod
+    def _limit_graph(
+        graph: nx.Graph,
+        *,
+        focus_id: Optional[WordId],
+        distances: Dict[WordId, int],
+        max_nodes: Optional[int],
+        max_edges: Optional[int],
+    ) -> nx.Graph:
+        """Apply deterministic degree, distance, provenance, and weight limits."""
+
+        selected = graph
+        if max_nodes is not None and selected.number_of_nodes() > max_nodes:
+            far_distance = selected.number_of_nodes() + 1
+
+            def node_rank(node_id: WordId) -> tuple[object, ...]:
+                attributes = selected.nodes[node_id]
+                return (
+                    distances.get(node_id, far_distance if focus_id is not None else 0),
+                    -int(selected.degree[node_id]),
+                    str(attributes.get("normalized_term", attributes.get("term", ""))),
+                    str(attributes.get("language", "und")),
+                    str(node_id),
+                )
+
+            retained_node_ids = sorted(selected.nodes(), key=node_rank)[:max_nodes]
+            selected = selected.subgraph(retained_node_ids).copy()
+
+        if max_edges is not None and selected.number_of_edges() > max_edges:
+            far_distance = selected.number_of_nodes() + 1
+
+            def edge_rank(
+                edge: tuple[WordId, WordId, Dict[str, Any]],
+            ) -> tuple[object, ...]:
+                source_id, target_id, attributes = edge
+                weight = _finite_float(attributes.get("weight", 1.0), 1.0)
+                assertions = max(
+                    1,
+                    int(_finite_float(attributes.get("assertion_count", 1), 1.0)),
+                )
+                source_distance = distances.get(source_id, far_distance)
+                target_distance = distances.get(target_id, far_distance)
+                return (
+                    min(source_distance, target_distance),
+                    max(source_distance, target_distance),
+                    -assertions,
+                    -weight,
+                    str(source_id),
+                    str(target_id),
+                )
+
+            retained_edges = sorted(selected.edges(data=True), key=edge_rank)[
+                :max_edges
+            ]
+            limited = type(selected)()
+            limited.graph.update(selected.graph)
+            edge_node_ids = {
+                node_id
+                for source_id, target_id, _ in retained_edges
+                for node_id in (source_id, target_id)
+            }
+            if focus_id is not None and focus_id in selected:
+                edge_node_ids.add(focus_id)
+            limited.add_nodes_from(
+                (node_id, dict(selected.nodes[node_id])) for node_id in edge_node_ids
+            )
+            limited.add_edges_from(
+                (source_id, target_id, dict(attributes))
+                for source_id, target_id, attributes in retained_edges
+            )
+            selected = limited
+
+        return selected
 
     def _filter_graph_by_dimensions(
         self, dimensions_filter: Optional[List[RelationshipDimension]]
@@ -444,10 +732,17 @@ class GraphVisualizer:
 
         self.logger.debug("Configuring Pyvis network...")
 
-        # Add nodes with attributes
-        for node_id, attrs in graph.nodes(data=True):
-            term = attrs.get("term", f"ID:{node_id}")
-            label = attrs.get("label", term)
+        # Sort all records so equal graph snapshots produce byte-stable exports.
+        for raw_node_id, attrs in sorted(
+            graph.nodes(data=True), key=lambda item: str(item[0])
+        ):
+            node_id = cast(WordId, raw_node_id)
+            term = str(attrs.get("term", f"ID:{node_id}"))
+            label = str(attrs.get("label", term))
+            language = str(attrs.get("language", "und"))
+            script = str(attrs.get("script", "Zzzz"))
+            source = str(attrs.get("source", "unknown"))
+            is_stub = bool(attrs.get("is_stub", False))
             node_size = self._calculate_node_size(node_id, graph)
             node_color = self._get_node_color(attrs)
             pos = node_positions.get(node_id)
@@ -458,15 +753,11 @@ class GraphVisualizer:
             title_parts = [
                 f"Term: {escape(str(term))}",
                 f"ID: {escape(str(node_id))}",
+                f"Language: {escape(language)}",
+                f"Script: {escape(script)}",
+                f"Source: {escape(source)}",
             ]
-            title_parts.extend(
-                [
-                    f"Language: {escape(str(attrs.get('language', 'und')))}",
-                    f"Script: {escape(str(attrs.get('script', 'Zzzz')))}",
-                    f"Source: {escape(str(attrs.get('source', 'unknown')))}",
-                ]
-            )
-            if attrs.get("is_stub"):
+            if is_stub:
                 title_parts.append("Status: awaiting lexical enrichment")
             if "valence" in attrs and attrs["valence"] is not None:
                 title_parts.append(f"Valence: {attrs['valence']:.2f}")
@@ -483,17 +774,70 @@ class GraphVisualizer:
                 x=pos_x,
                 y=pos_y,
                 physics=False,
+                wfTerm=term,
+                wfDisplayLabel=label,
+                wfLanguage=language,
+                wfScript=script,
+                wfSource=source,
+                wfStub=is_stub,
             )
 
-        # Add edges with attributes
-        for u, v, attrs in graph.edges(data=True):
-            rel_type = str(
-                attrs.get("relationship_types", attrs.get("relationship", ""))
+        edge_records = sorted(
+            graph.edges(data=True),
+            key=lambda item: (
+                min(str(item[0]), str(item[1])),
+                max(str(item[0]), str(item[1])),
+                str(item[2].get("assertions_json", "")),
+                str(item[2].get("relationship_types", "")),
+            ),
+        )
+        for edge_index, (raw_source_id, raw_target_id, attrs) in enumerate(
+            edge_records
+        ):
+            source_id = cast(WordId, raw_source_id)
+            target_id = cast(WordId, raw_target_id)
+            assertions = decode_edge_assertions(
+                attrs,
+                default_source_id=source_id,
+                default_target_id=target_id,
             )
-            dimension = str(attrs.get("dimensions", attrs.get("dimension", "lexical")))
+            relationship_types = sorted(
+                {
+                    *(str(item["relationship"]) for item in assertions),
+                    *_pipe_values(
+                        attrs.get(
+                            "relationship_types",
+                            attrs.get("relationship", ""),
+                        )
+                    ),
+                },
+                key=str.casefold,
+            )
+            dimensions = sorted(
+                {
+                    *(str(item["dimension"]) for item in assertions),
+                    *_pipe_values(
+                        attrs.get("dimensions", attrs.get("dimension", "lexical"))
+                    ),
+                },
+                key=str.casefold,
+            )
+            sources = sorted(
+                {
+                    *(str(item["source"]) for item in assertions),
+                    *_pipe_values(attrs.get("sources", attrs.get("source", "unknown"))),
+                },
+                key=str.casefold,
+            )
+            rel_type = "|".join(relationship_types)
+            dimension = "|".join(dimensions) or "lexical"
 
             # Get color based on relationship type, falling back to dimension-based color
-            edge_color = self._get_edge_color(rel_type, dimension, attrs)
+            edge_color = self._get_edge_color(
+                relationship_types[0] if relationship_types else "",
+                dimensions[0] if dimensions else "lexical",
+                attrs,
+            )
             edge_width = self._calculate_edge_width(attrs.get("weight", 1.0))
 
             # Build informative tooltip
@@ -501,10 +845,8 @@ class GraphVisualizer:
             if rel_type:
                 title_parts.append(f"Type: {escape(rel_type.replace('|', ', '))}")
             title_parts.append(f"Dimension: {escape(dimension.replace('|', ', '))}")
-            if attrs.get("sources"):
-                title_parts.append(
-                    "Source: " f"{escape(str(attrs['sources']).replace('|', ', '))}"
-                )
+            if sources:
+                title_parts.append(f"Source: {escape(', '.join(sources))}")
             if attrs.get("assertion_count") is not None:
                 title_parts.append(f"Assertions: {attrs['assertion_count']}")
             if attrs.get("valence") is not None:
@@ -517,21 +859,49 @@ class GraphVisualizer:
 
             # Use dashed style for cross-dimensional edges or emotional relationships
             style = attrs.get("style", "solid")
-            if dimension in ("emotional", "affective") and style == "solid":
+            if {"emotional", "affective"}.intersection(dimensions) and style == "solid":
                 style = self._config.cross_dimension_edge_style
 
-            net.add_edge(
-                str(u),
-                str(v),
-                title=title,
-                color=edge_color,
-                width=edge_width,
-                label=(
-                    rel_type.replace("|", ", ")
+            display_source = source_id
+            display_target = target_id
+            directions = {(item["source_id"], item["target_id"]) for item in assertions}
+            arrows = ""
+            if bool(attrs.get("bidirectional")) or {
+                (source_id, target_id),
+                (target_id, source_id),
+            }.issubset(directions):
+                arrows = "to, from"
+            elif len(directions) == 1:
+                assertion_source, assertion_target = next(iter(directions))
+                if {assertion_source, assertion_target} == {source_id, target_id}:
+                    display_source = assertion_source
+                    display_target = assertion_target
+                    arrows = "to"
+
+            edge_options: Dict[str, Any] = {
+                "id": f"wf-edge-{edge_index}",
+                "title": title,
+                "color": edge_color,
+                "width": edge_width,
+                "label": (
+                    ", ".join(relationship_types)
                     if self._config.enable_edge_labels
                     else ""
                 ),
-                dashes=(style == "dashed"),
+                "dashes": style == "dashed",
+                "wfTypes": relationship_types,
+                "wfDimensions": dimensions,
+                "wfSources": sources,
+                "wfAssertions": [dict(item) for item in assertions],
+                "wfAssertionCount": len(assertions)
+                or int(_finite_float(attrs.get("assertion_count", 1), 1.0)),
+            }
+            if arrows:
+                edge_options["arrows"] = arrows
+            net.add_edge(
+                str(display_source),
+                str(display_target),
+                **edge_options,
             )
 
         # Apply general Pyvis options using set_options
@@ -786,7 +1156,7 @@ class GraphVisualizer:
         """
         min_width = self._config.min_edge_width
         max_width = self._config.max_edge_width
-        effective_weight = weight if weight is not None else 0.5
+        effective_weight = _finite_float(weight, 0.5)
         width = min_width + (max_width - min_width) * effective_weight
         return max(min_width, min(width, max_width))
 

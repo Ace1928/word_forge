@@ -33,6 +33,7 @@ from word_forge.vectorizer.embedding_models import DEFAULT_EMBEDDING_MODEL
 
 if TYPE_CHECKING:  # pragma: no cover - imported for typing only
     from word_forge.database.database_manager import DBManager
+    from word_forge.graph.graph_config import RelationshipDimension
     from word_forge.graph.graph_manager import GraphManager
 
 
@@ -61,6 +62,31 @@ DEFAULT_WORKER_COUNT: int = 4
 DEFAULT_SEARCH_RESULTS: int = 5
 DEFAULT_CONVERSATION_LIMIT: int = 10
 DEFAULT_MESSAGE_LIMIT: int = 20
+GRAPH_DIMENSION_CHOICES = (
+    "lexical",
+    "emotional",
+    "affective",
+    "connotative",
+    "contextual",
+)
+
+
+def _positive_int(value: str) -> int:
+    """Parse a strictly positive command-line integer."""
+
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    """Parse a non-negative command-line integer."""
+
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value cannot be negative")
+    return parsed
 
 
 def _get_version() -> str:
@@ -623,6 +649,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=1.0,
         help="Seconds between graph worker polling cycles",
     )
+    graph_build.add_argument(
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override the configured SQLite database path",
+    )
 
     graph_visualize = graph_sub.add_parser(
         "visualize", help="Generate a graph visualization"
@@ -643,6 +675,51 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="output_path",
         default=None,
         help="Override the default visualization output path",
+    )
+    graph_visualize.add_argument(
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override the configured SQLite database path",
+    )
+    graph_visualize.add_argument(
+        "--term",
+        dest="focus_term",
+        default=None,
+        help="Render a bounded neighborhood around this term",
+    )
+    graph_visualize.add_argument(
+        "--language",
+        dest="focus_language",
+        default=None,
+        metavar="BCP47",
+        help="Language tag used to disambiguate --term",
+    )
+    graph_visualize.add_argument(
+        "--depth",
+        type=_non_negative_int,
+        default=1,
+        help="Maximum hop distance from --term (default: 1)",
+    )
+    graph_visualize.add_argument(
+        "--dimension",
+        dest="dimensions",
+        action="append",
+        choices=GRAPH_DIMENSION_CHOICES,
+        default=None,
+        help="Relationship dimension to show; repeat to select several",
+    )
+    graph_visualize.add_argument(
+        "--max-nodes",
+        type=_positive_int,
+        default=None,
+        help="Maximum nodes rendered (default: configured graph limit)",
+    )
+    graph_visualize.add_argument(
+        "--max-edges",
+        type=_positive_int,
+        default=None,
+        help="Maximum edges rendered (default: configured graph limit)",
     )
 
     vector_parser = subparsers.add_parser(
@@ -1008,7 +1085,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             exit_code = (
                 0
                 if run_graph_build(
-                    poll_interval=args.poll_interval, timeout=args.timeout
+                    poll_interval=args.poll_interval,
+                    timeout=args.timeout,
+                    db_path=args.db_path,
                 )
                 else 1
             )
@@ -1019,6 +1098,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     output_path=args.output_path,
                     use_3d=args.use_3d,
                     open_in_browser=args.open_browser,
+                    db_path=args.db_path,
+                    focus_term=args.focus_term,
+                    focus_language=args.focus_language,
+                    depth=args.depth,
+                    dimensions=args.dimensions,
+                    max_nodes=args.max_nodes,
+                    max_edges=args.max_edges,
                 )
                 else 1
             )
@@ -1147,6 +1233,7 @@ def run_graph_build(
     graph_manager: Optional["GraphManager"] = None,
     poll_interval: float = 1.0,
     timeout: float = 120.0,
+    db_path: Optional[Path] = None,
 ) -> bool:
     """Run :class:`GraphWorker` until a full update cycle completes."""
 
@@ -1159,7 +1246,7 @@ def run_graph_build(
     owns_manager = graph_manager is None
     db_manager: Optional[DBManager] = None
     if graph_manager is None:
-        db_manager = DBManager()
+        db_manager = DBManager(db_path=db_path) if db_path is not None else DBManager()
         graph_manager = GraphManager(db_manager=db_manager)
     else:
         db_manager = graph_manager.db_manager
@@ -1192,8 +1279,15 @@ def run_graph_visualization(
     output_path: Optional[str] = None,
     use_3d: bool = False,
     open_in_browser: bool = False,
+    db_path: Optional[Path] = None,
+    focus_term: Optional[str] = None,
+    focus_language: Optional[str] = None,
+    depth: int = 1,
+    dimensions: Optional[List["RelationshipDimension"]] = None,
+    max_nodes: Optional[int] = None,
+    max_edges: Optional[int] = None,
 ) -> bool:
-    """Build the graph (if needed) and emit a visualization file."""
+    """Build a bounded graph view and emit a standalone visualization file."""
 
     _setup_logging()
     from word_forge.database.database_manager import DBManager
@@ -1202,15 +1296,23 @@ def run_graph_visualization(
     owns_manager = graph_manager is None
     db_manager: Optional[DBManager] = None
     if graph_manager is None:
-        db_manager = DBManager()
+        db_manager = DBManager(db_path=db_path) if db_path is not None else DBManager()
         graph_manager = GraphManager(db_manager=db_manager)
 
     try:
-        graph_manager.build_graph()
+        if focus_language is not None and focus_term is None:
+            raise ValueError("--language requires --term")
+        graph_manager.build_graph(compute_layout=False)
         graph_manager.visualize(
             output_path=output_path,
             use_3d=use_3d if use_3d else None,
+            dimensions_filter=dimensions,
             open_in_browser=open_in_browser,
+            focus_term=focus_term,
+            focus_language=focus_language,
+            depth=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
         )
         LOGGER.info("Graph visualization ready")
         return True

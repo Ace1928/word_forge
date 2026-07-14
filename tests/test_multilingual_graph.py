@@ -316,3 +316,48 @@ def test_visualization_escapes_untrusted_lexical_metadata(tmp_path: Path) -> Non
     assert '<img src=x onerror="alert(2)">' not in rendered
     assert r"\u0026lt;script\u0026gt;alert(1)" in rendered
     assert r"\u0026lt;img src=x onerror=\u0026quot;alert(2)" in rendered
+    assert "cdnjs.cloudflare.com" not in rendered
+    assert "lib/bindings" not in rendered
+    assert 'data-word-forge-viewer="1"' in rendered
+    assert 'id="wf-search"' in rendered
+    assert 'id="wf-language"' in rendered
+    assert 'id="wf-relationship"' in rendered
+    assert "Content-Security-Policy" in rendered
+
+
+def test_visualizer_selects_language_qualified_bounded_neighborhood(
+    tmp_path: Path,
+) -> None:
+    manager = GraphManager(DBManager(db_path=tmp_path / "bounded-view.sqlite"))
+    english_chat = manager.add_word_node("chat", language="en")
+    french_chat = manager.add_word_node("chat", language="fr")
+    hello = manager.add_word_node("hello", language="en")
+    bonjour = manager.add_word_node("bonjour", language="fr")
+    distant = manager.add_word_node("lointain", language="fr")
+    manager.add_relationship(english_chat, hello, "related", source="english")
+    manager.add_relationship(french_chat, bonjour, "related", source="french")
+    manager.add_relationship(bonjour, distant, "related", source="french")
+
+    view = manager.visualizer._select_graph(
+        ["lexical"],
+        focus_term="chat",
+        focus_language="fr",
+        depth=1,
+        max_nodes=10,
+        max_edges=10,
+    )
+    edge_limited = manager.visualizer._select_graph(
+        ["lexical"],
+        focus_term="chat",
+        focus_language="fr",
+        depth=2,
+        max_nodes=10,
+        max_edges=1,
+    )
+
+    assert set(view.nodes()) == {french_chat, bonjour}
+    assert english_chat not in view
+    assert hello not in view
+    assert distant not in view
+    assert edge_limited.number_of_edges() == 1
+    assert edge_limited.has_edge(french_chat, bonjour)

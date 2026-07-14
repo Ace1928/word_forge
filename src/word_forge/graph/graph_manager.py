@@ -326,18 +326,21 @@ class GraphManager:
     # ==========================================
     # Graph Building & Modification Methods (via Builder)
     # ==========================================
-    def build_graph(self) -> None:
+    def build_graph(self, *, compute_layout: bool = True) -> None:
         """
         Build the graph from the database, replacing the existing graph.
 
         Delegates to GraphBuilder.build_graph. Thread-safe.
+
+        Args:
+            compute_layout: Whether to compute positions for every loaded node.
 
         Raises:
             GraphDataError: If fetching data fails.
             GraphError: For other construction issues.
         """
         with self._graph_lock:
-            self.builder.build_graph()
+            self.builder.build_graph(compute_layout=compute_layout)
 
     def update_graph(self) -> int:
         """
@@ -693,12 +696,28 @@ class GraphManager:
         use_3d: Optional[bool] = None,
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """Generate graph visualization. Delegates to GraphVisualizer."""
         # Visualization reads graph structure and positions, lock ensures consistency
         with self._graph_lock:
             self.visualizer.visualize(
-                output_path, height, width, use_3d, dimensions_filter, open_in_browser
+                output_path,
+                height,
+                width,
+                use_3d,
+                dimensions_filter,
+                open_in_browser,
+                focus_term=focus_term,
+                focus_language=focus_language,
+                depth=depth,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
             )
 
     def visualize_2d(
@@ -708,11 +727,26 @@ class GraphManager:
         width: Optional[str] = None,
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """Generate 2D graph visualization. Delegates to GraphVisualizer."""
         with self._graph_lock:
             self.visualizer.visualize_2d(
-                output_path, height, width, dimensions_filter, open_in_browser
+                output_path,
+                height,
+                width,
+                dimensions_filter,
+                open_in_browser,
+                focus_term=focus_term,
+                focus_language=focus_language,
+                depth=depth,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
             )
 
     def visualize_3d(
@@ -720,11 +754,24 @@ class GraphManager:
         output_path: Optional[str] = None,
         dimensions_filter: Optional[List[RelationshipDimension]] = None,
         open_in_browser: bool = False,
+        *,
+        focus_term: Optional[str] = None,
+        focus_language: Optional[str] = None,
+        depth: int = 1,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
     ) -> None:
         """Generate 3D graph visualization. Delegates to GraphVisualizer."""
         with self._graph_lock:
             self.visualizer.visualize_3d(
-                output_path, dimensions_filter, open_in_browser
+                output_path,
+                dimensions_filter,
+                open_in_browser,
+                focus_term=focus_term,
+                focus_language=focus_language,
+                depth=depth,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
             )
 
     # ==========================================

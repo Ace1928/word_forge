@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from word_forge.graph.graph_manager import GraphManager
 from word_forge.database.database_manager import DBManager
 from word_forge.emotion.emotion_manager import EmotionManager
+from word_forge.graph.graph_manager import GraphManager
 
 
 def test_build_graph_from_db(tmp_path):
@@ -25,6 +25,20 @@ def test_build_graph_from_db(tmp_path):
     terms = {data["term"] for _, data in manager.g.nodes(data=True)}
     assert {"alpha", "beta"} <= terms
     assert manager.g.number_of_edges() == 1
+
+
+def test_build_graph_can_defer_whole_graph_layout(tmp_path):
+    db = DBManager(db_path=tmp_path / "deferred.db")
+    db.insert_or_update_word("alpha")
+    db.insert_or_update_word("beta")
+    db.insert_relationship("alpha", "beta", "related")
+    manager = GraphManager(db_manager=db)
+
+    manager.build_graph(compute_layout=False)
+
+    assert manager.get_node_count() == 2
+    assert manager.get_edge_count() == 1
+    assert manager.get_positions() == {}
 
 
 def test_graph_includes_emotional_relationships(tmp_path):

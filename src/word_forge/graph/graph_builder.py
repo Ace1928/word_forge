@@ -196,13 +196,18 @@ class GraphBuilder:
                 exc_info=self.logger.isEnabledFor(logging.DEBUG),
             )
 
-    def build_graph(self) -> None:
+    def build_graph(self, *, compute_layout: bool = True) -> None:
         """
         Construct the graph from the database, replacing any existing graph.
 
         Fetches all words and relationships, adds them as nodes and edges
         to the manager's graph object, builds the term-to-ID mapping,
         calculates relationship counts, and triggers a full layout computation.
+
+        Args:
+            compute_layout: Whether to position the complete graph after loading.
+                Disable this when a bounded visualization will compute its own
+                layout, avoiding unnecessary whole-graph work.
 
         Raises:
             GraphDataError: If fetching data from the database fails.
@@ -314,9 +319,11 @@ class GraphBuilder:
         )
 
         # Delegate layout computation via the manager
-        if self.manager.g.number_of_nodes() > 0:
+        if self.manager.g.number_of_nodes() > 0 and compute_layout:
             self.logger.info("Triggering full graph layout computation.")
             self.manager.layout.compute_layout()
+        elif self.manager.g.number_of_nodes() > 0:
+            self.logger.info("Skipping full layout for deferred bounded rendering.")
         else:
             self.logger.info("Graph is empty, skipping layout computation.")
 

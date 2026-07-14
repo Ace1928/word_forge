@@ -283,12 +283,74 @@ def test_cli_start_command(tmp_path: Path) -> None:
     assert result == 0
 
 
-def test_cli_graph_build_command() -> None:
+def test_cli_graph_build_command(tmp_path: Path) -> None:
     from word_forge import forge
 
     assert (
-        forge.main(["graph", "build", "--timeout", "10", "--poll-interval", "0.5"]) == 0
+        forge.main(
+            [
+                "graph",
+                "build",
+                "--timeout",
+                "10",
+                "--poll-interval",
+                "0.5",
+                "--db-path",
+                str(tmp_path / "graph-build.sqlite"),
+            ]
+        )
+        == 0
     )
+
+
+def test_cli_graph_visualize_focused_standalone(tmp_path: Path) -> None:
+    from word_forge import forge
+    from word_forge.database.database_manager import DBManager
+
+    database_path = tmp_path / "graph-view.sqlite"
+    output_path = tmp_path / "focused.html"
+    database = DBManager(db_path=database_path)
+    database.insert_or_update_word("chat", language="fr")
+    database.insert_or_update_word("bonjour", language="fr")
+    database.insert_relationship(
+        "chat",
+        "bonjour",
+        "related",
+        base_language="fr",
+        related_language="fr",
+        source="cli-test",
+    )
+    database.close()
+
+    result = forge.main(
+        [
+            "graph",
+            "visualize",
+            "--db-path",
+            str(database_path),
+            "--term",
+            "chat",
+            "--language",
+            "fr",
+            "--depth",
+            "1",
+            "--dimension",
+            "lexical",
+            "--max-nodes",
+            "2",
+            "--max-edges",
+            "1",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert result == 0
+    assert output_path.is_file()
+    rendered = output_path.read_text(encoding="utf-8")
+    assert 'data-word-forge-viewer="1"' in rendered
+    assert "Lexical connection graph" in rendered
+    assert "cdnjs.cloudflare.com" not in rendered
 
 
 @pytest.mark.skipif(
