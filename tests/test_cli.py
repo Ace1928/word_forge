@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,16 @@ def test_cli_setup_nltk_command() -> None:
 
     ensure_nltk_data()
     assert forge.main(["setup-nltk"]) == 0
+
+
+def test_cli_doctor_json_command(capsys: pytest.CaptureFixture[str]) -> None:
+    from word_forge import forge
+
+    ensure_nltk_data()
+    assert forge.main(["doctor", "--json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
 
 
 def test_cli_start_core_without_vector_dependencies(tmp_path: Path) -> None:

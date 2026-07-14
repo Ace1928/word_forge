@@ -86,6 +86,12 @@ For a complete development environment, use
 `vector` extra. The database, lexical, queue, conversation, emotion fallback,
 and graph APIs work with the lightweight core installation.
 
+Verify an installation and bootstrap parser data with one command:
+
+```bash
+word_forge doctor --fix
+```
+
 ## Quick Start
 
 ### Python API
@@ -116,6 +122,9 @@ The package installs a `word_forge` executable:
 ```bash
 # Show version
 word_forge --version
+
+# Check core and optional capabilities (add --json for automation)
+word_forge doctor
 
 # Start the processing pipeline with seed words
 word_forge start apple banana --minutes 5 --workers 4

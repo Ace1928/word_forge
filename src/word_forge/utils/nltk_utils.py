@@ -56,20 +56,29 @@ _NLTK_RESOURCES: tuple[_NLTKResource, ...] = (
 _initialized = False
 
 
+def _resource_available(resource: _NLTKResource) -> bool:
+    """Return whether a resource exists in extracted or archive form."""
+    for candidate in (resource.path, f"{resource.path}.zip"):
+        try:
+            nltk.data.find(candidate)  # type: ignore[arg-type]
+            return True
+        except LookupError:
+            continue
+    return False
+
+
 def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
     """Ensure that required NLTK data packages are available."""
 
     global _initialized
-    if _initialized:
+    if _initialized and not get_missing_nltk_resources():
         if logger:
             logger.info("NLTK resources already initialized; nothing to download.")
         return []
 
     downloaded: List[str] = []
     for resource in _NLTK_RESOURCES:
-        try:
-            nltk.data.find(resource.path)  # type: ignore[arg-type]
-        except LookupError:
+        if not _resource_available(resource):
             nltk.download(resource.package, quiet=True)  # type: ignore
             downloaded.append(resource.package)
             if logger:
@@ -93,4 +102,13 @@ def ensure_nltk_data(logger: Optional[logging.Logger] = None) -> List[str]:
     return downloaded
 
 
-__all__ = ["ensure_nltk_data"]
+def get_missing_nltk_resources() -> List[str]:
+    """Return package names for required NLTK resources not installed locally."""
+    missing: List[str] = []
+    for resource in _NLTK_RESOURCES:
+        if not _resource_available(resource):
+            missing.append(resource.package)
+    return missing
+
+
+__all__ = ["ensure_nltk_data", "get_missing_nltk_resources"]

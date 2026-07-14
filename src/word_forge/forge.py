@@ -504,6 +504,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Download the NLTK corpora required by Word Forge",
     )
 
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Check installation and optional feature readiness"
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Download missing NLTK parser resources",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -637,6 +651,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             exit_code = 1
     elif args.command == "setup-nltk":
         exit_code = run_setup_nltk()
+    elif args.command == "doctor":
+        import json
+
+        from word_forge.diagnostics import render_diagnostics, run_diagnostics
+
+        report = run_diagnostics(fix=args.fix)
+        output = (
+            json.dumps(report.to_dict(), indent=2)
+            if args.json
+            else render_diagnostics(report)
+        )
+        print(output)
+        exit_code = 0 if report.ok else 1
     else:
         parser.print_help()
         exit_code = 1
