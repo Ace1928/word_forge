@@ -4,7 +4,7 @@ import threading
 import time
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Dict, Optional, Protocol, TypedDict, final
+from typing import Any, Dict, Optional, Protocol, TypedDict, cast, final
 
 from word_forge.config import config
 from word_forge.exceptions import (  # Import specific exceptions
@@ -128,13 +128,7 @@ class GraphWorker(threading.Thread):
         # Use config values if parameters not provided, with fallbacks
         cfg = config.graph  # Shortcut to graph config
         self.poll_interval = (
-            poll_interval
-            if poll_interval is not None
-            else (
-                cfg.animation_duration_ms / 1000.0
-                if cfg.animation_duration_ms > 0
-                else 30.0
-            )
+            poll_interval if poll_interval is not None else cfg.refresh_interval_seconds
         )
 
         # Ensure proper paths for output and visualization
@@ -145,12 +139,11 @@ class GraphWorker(threading.Thread):
         # Default visualization HTML path
         vis_path_str = visualization_path or cfg.visualization_path
         vis_path = Path(vis_path_str)
-        if vis_path.suffix.lower() != ".html":  # Ensure HTML extension
-            vis_path = (
-                vis_path / "lexical_graph.html"
-                if vis_path.is_dir()
-                else vis_path.with_suffix(".html")
-            )
+        if vis_path.suffix.lower() != ".html":
+            # GraphConfig defines this value as a directory. Do not use
+            # ``is_dir()`` here because first-run output directories do not
+            # exist yet and would otherwise be mistaken for file stems.
+            vis_path = vis_path / "lexical_graph.html"
         self.visualization_path = str(vis_path)
 
         # Internal state and control flags
@@ -163,6 +156,7 @@ class GraphWorker(threading.Thread):
         self._last_error: Optional[str] = None
         self._current_state = WorkerState.STOPPED
         self._status_lock = threading.RLock()  # Reentrant lock for status access
+        self._cycle_lock = threading.Lock()
         self._error_backoff = self.poll_interval  # Initial backoff delay
         self._last_cycle_metrics: GraphUpdateMetrics = GraphUpdateMetrics()
 
@@ -202,7 +196,7 @@ class GraphWorker(threading.Thread):
         """Restart the worker and return the new running instance."""
         from .worker_factory import restart_worker
 
-        return restart_worker(self)
+        return cast("GraphWorker", restart_worker(self))
 
     def run(self) -> None:
         """
@@ -232,7 +226,7 @@ class GraphWorker(threading.Thread):
 
             cycle_start_time = time.time()
             try:
-                self._execute_update_cycle()
+                self.refresh()
                 # Successful cycle, reset backoff
                 with self._status_lock:
                     self._error_backoff = self.poll_interval
@@ -264,6 +258,22 @@ class GraphWorker(threading.Thread):
             f"GraphWorker thread '{self.name}' stopped after {uptime:.2f}s. "
             f"Updates: {self._update_count}, Errors: {self._error_count}."
         )
+
+    def refresh(self) -> GraphUpdateMetrics:
+        """Synchronously refresh graph data and generated artifacts.
+
+        Returns:
+            Metrics describing the completed refresh.
+
+        This method is safe to call after the background thread has stopped and
+        is used during graceful shutdown to capture writes that landed after
+        the worker's last periodic cycle.
+        """
+
+        with self._cycle_lock:
+            self._execute_update_cycle()
+            with self._status_lock:
+                return self._last_cycle_metrics
 
     def _execute_update_cycle(self) -> None:
         """Execute a complete update cycle: prepare, update, save, visualize."""
@@ -327,7 +337,7 @@ class GraphWorker(threading.Thread):
     def _verify_database_tables(self) -> bool:
         """Verify that required database tables exist."""
         try:
-            return self.graph_manager.verify_database_tables()
+            return cast(bool, self.graph_manager.verify_database_tables())
         except Exception as e:
             self.logger.error(
                 f"Database verification failed: {e}",

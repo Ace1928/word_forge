@@ -62,6 +62,22 @@ def test_worker_initialization(tmp_path: Path) -> None:
     assert not worker.is_alive()
 
 
+def test_nonexistent_visualization_path_is_treated_as_directory(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(db_path=tmp_path / "path_test.db")
+    manager = GraphManager(db_manager=db)
+    output_directory = tmp_path / "new_visualizations"
+
+    worker = GraphWorker(
+        graph_manager=manager,
+        visualization_path=str(output_directory),
+    )
+
+    assert worker.visualization_path == str(output_directory / "lexical_graph.html")
+    db.close()
+
+
 def test_worker_stop_when_not_running(tmp_path: Path) -> None:
     db = DBManager(db_path=tmp_path / "stop_test.db")
     manager = GraphManager(db_manager=db)
@@ -70,3 +86,32 @@ def test_worker_stop_when_not_running(tmp_path: Path) -> None:
 
     worker.stop()
     assert not worker.is_alive()
+
+
+def test_synchronous_refresh_captures_late_database_writes(tmp_path: Path) -> None:
+    """A final refresh must include data written after the prior cycle."""
+    db = DBManager(db_path=tmp_path / "late_write.db")
+    manager = GraphManager(db_manager=db)
+    worker = GraphWorker(
+        graph_manager=manager,
+        poll_interval=60.0,
+        output_path=str(tmp_path / "late_write.gexf"),
+        visualization_path=str(tmp_path / "late_write.html"),
+    )
+
+    first_metrics = worker.refresh()
+    assert first_metrics.processed_words == 0
+
+    db.insert_or_update_word("alpha")
+    db.insert_or_update_word("beta")
+    assert db.insert_relationship("alpha", "beta", "related") is True
+
+    final_metrics = worker.refresh()
+
+    assert final_metrics.full_rebuild is True
+    assert final_metrics.new_nodes == 2
+    assert final_metrics.new_edges == 1
+    assert manager.get_node_count() == 2
+    assert manager.get_edge_count() == 1
+    assert (tmp_path / "late_write.gexf").is_file()
+    db.close()

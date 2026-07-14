@@ -6,15 +6,15 @@ various typed dictionaries, and layout/dimension types.
 
 from pathlib import Path
 
+from word_forge.configs.config_essentials import (
+    GraphColorScheme,
+    GraphLayoutAlgorithm,
+)
 from word_forge.graph.graph_config import (
     GraphConfig,
-    WordTupleDict,
-    RelationshipTupleDict,
     GraphInfoDict,
-)
-from word_forge.configs.config_essentials import (
-    GraphLayoutAlgorithm,
-    GraphColorScheme,
+    RelationshipTupleDict,
+    WordTupleDict,
 )
 
 
@@ -60,6 +60,7 @@ class TestGraphConfig:
         """Test default animation settings."""
         config = GraphConfig()
         assert config.animation_duration_ms == 800
+        assert config.refresh_interval_seconds == 5.0
 
     def test_limit_settings(self):
         """Test default node and edge limits."""

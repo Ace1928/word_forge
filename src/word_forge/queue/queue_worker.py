@@ -351,14 +351,22 @@ class WordProcessor(QueueProcessor[str]):
 
         try:
             # Get queue size before processing
-            initial_queue_size = self.parser_refiner.queue_manager.size
+            initial_seen_count = len(self.parser_refiner.queue_manager.seen_items())
 
             # Process the term
-            self.parser_refiner.process_word(term)
+            if not self.parser_refiner.process_word(term):
+                return ProcessingResult.error(
+                    term,
+                    ProcessingStatus.PARSER_ERROR,
+                    f"Parser failed to refine term '{term}'",
+                )
 
-            # Calculate new terms found (use property, not method call)
-            new_terms_count = (
-                self.parser_refiner.queue_manager.size - initial_queue_size
+            # Queue size changes as other workers dequeue. Seen-item growth is
+            # monotonic during a run and therefore provides a stable count.
+            new_terms_count = max(
+                0,
+                len(self.parser_refiner.queue_manager.seen_items())
+                - initial_seen_count,
             )
 
             # Get information about any relationships

@@ -586,11 +586,18 @@ class ParserRefiner:
                 usage_examples=usage_examples,
             )
 
-            # Process relationships and discovered terms in parallel tasks
-            self._executor.submit(self._process_relationships, term_lower, dataset)
-            self._executor.submit(
+            # Relationship persistence and discovery may run in parallel, but
+            # both must complete before this term is reported as successful.
+            # Returning earlier lets callers stop the queue while these tasks
+            # are still trying to enqueue newly discovered terms.
+            relationship_future = self._executor.submit(
+                self._process_relationships, term_lower, dataset
+            )
+            discovery_future = self._executor.submit(
                 self._discover_new_terms, term_lower, full_definition, usage_examples
             )
+            relationship_future.result()
+            discovery_future.result()
 
             self.stats.increment_successful()
             return True

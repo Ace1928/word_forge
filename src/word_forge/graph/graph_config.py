@@ -168,6 +168,7 @@ class GraphConfig:
         enable_tooltips: Whether to enable interactive tooltips
         high_quality_rendering: Whether to use high quality rendering
         animation_duration_ms: Duration of animations in milliseconds
+        refresh_interval_seconds: Delay between background graph refreshes
         limit_node_count: Maximum number of nodes to render
         limit_edge_count: Maximum number of edges to render
         vis_width: Width of visualization in pixels
@@ -303,6 +304,7 @@ class GraphConfig:
 
     # Performance settings
     animation_duration_ms: int = 800
+    refresh_interval_seconds: float = 5.0
     limit_node_count: Optional[int] = 1000
     limit_edge_count: Optional[int] = 2000
 
@@ -389,6 +391,7 @@ class GraphConfig:
         "WORD_FORGE_GRAPH_VIZ_PATH": ("visualization_path", str),
         "WORD_FORGE_GRAPH_EXPORT_PATH": ("default_export_path", str),
         "WORD_FORGE_GRAPH_HIGH_QUALITY": ("high_quality_rendering", bool),
+        "WORD_FORGE_GRAPH_REFRESH_INTERVAL": ("refresh_interval_seconds", float),
         "WORD_FORGE_GRAPH_NODE_LIMIT": ("limit_node_count", int),
         "WORD_FORGE_GRAPH_VIS_WIDTH": ("vis_width", int),
         "WORD_FORGE_GRAPH_VIS_HEIGHT": ("vis_height", int),
@@ -632,7 +635,7 @@ class GraphConfig:
         Returns:
             Dict[str, Any]: Display configuration dictionary
         """
-        settings = {
+        settings: Dict[str, Any] = {
             "enable_labels": self.enable_labels,
             "enable_edge_labels": self.enable_edge_labels,
             "enable_tooltips": self.enable_tooltips,
@@ -713,6 +716,12 @@ class GraphConfig:
                 f"Visualization height must be positive, got {self.vis_height}"
             )
 
+        if self.refresh_interval_seconds <= 0:
+            errors.append(
+                "Graph refresh interval must be positive, got "
+                f"{self.refresh_interval_seconds}"
+            )
+
         # Validate node and edge limits
         if self.limit_node_count is not None and self.limit_node_count <= 0:
             errors.append(f"Node limit must be positive, got {self.limit_node_count}")
@@ -771,6 +780,7 @@ class GraphConfig:
             "enable_tooltips": self.enable_tooltips,
             "high_quality_rendering": self.high_quality_rendering,
             "animation_duration_ms": self.animation_duration_ms,
+            "refresh_interval_seconds": self.refresh_interval_seconds,
             "limit_node_count": self.limit_node_count,
             "limit_edge_count": self.limit_edge_count,
             "active_dimensions": self.active_dimensions,

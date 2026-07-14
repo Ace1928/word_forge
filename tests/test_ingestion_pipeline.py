@@ -107,3 +107,30 @@ def test_queue_running_state_allows_processing(tmp_path: Path) -> None:
         queue_manager.stop()
         parser_refiner.shutdown()
         db_manager.close()
+
+
+def test_refinement_persists_relationships_and_expands_queue_before_return(
+    tmp_path: Path,
+) -> None:
+    """Successful refinement is atomic from a pipeline caller's perspective."""
+    from word_forge.database.database_manager import DBManager
+    from word_forge.parser.parser_refiner import ParserRefiner
+    from word_forge.queue.queue_manager import QueueManager
+    from word_forge.utils.nltk_utils import ensure_nltk_data
+
+    ensure_nltk_data()
+    database = DBManager(db_path=tmp_path / "atomic_refinement.db")
+    queue: QueueManager[str] = QueueManager()
+    queue.start()
+    refiner = ParserRefiner(db_manager=database, queue_manager=queue)
+
+    try:
+        assert refiner.process_word("happy") is True
+        entry = database.get_word_entry("happy")
+        assert entry["relationships"]
+        assert queue.size > 0
+        assert "happy" not in queue.seen_items()
+    finally:
+        refiner.shutdown()
+        queue.stop()
+        database.close()

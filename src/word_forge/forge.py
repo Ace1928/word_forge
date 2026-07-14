@@ -263,9 +263,19 @@ def start(
         LOGGER.info("Interrupted by user")
     finally:
         manager.stop_all()
-        queue_manager.stop()
-        parser_refiner.shutdown()
-        db_manager.close()
+        try:
+            parser_refiner.shutdown()
+            final_graph_metrics = graph_worker.refresh()
+            LOGGER.info(
+                "Final graph refresh complete: +%d nodes, +%d edges",
+                final_graph_metrics.new_nodes,
+                final_graph_metrics.new_edges,
+            )
+        except Exception as exc:
+            LOGGER.error("Final graph refresh failed: %s", exc, exc_info=True)
+        finally:
+            queue_manager.stop()
+            db_manager.close()
         LOGGER.info("Word Forge stopped")
 
 
