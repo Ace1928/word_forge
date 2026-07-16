@@ -94,13 +94,13 @@ def get_stats(request: Request) -> Dict[str, Any]:
 
         # ── Graph stats ──────────────────────────────────────────────
         graph_nodes = (
-            web.graph_manager.graph.number_of_nodes()
-            if web.graph_manager.graph
+            web.graph_manager.g.number_of_nodes()
+            if web.graph_manager.g
             else 0
         )
         graph_edges = (
-            web.graph_manager.graph.number_of_edges()
-            if web.graph_manager.graph
+            web.graph_manager.g.number_of_edges()
+            if web.graph_manager.g
             else 0
         )
 

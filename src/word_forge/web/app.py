@@ -10,7 +10,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -75,8 +76,8 @@ class WebApp:
         logger.info(
             "Word Forge Web UI initialized  (db=%s, graph_nodes=%d)",
             self.db_manager.db_path,
-            self.graph_manager.graph.number_of_nodes()
-            if self.graph_manager.graph
+            self.graph_manager.g.number_of_nodes()
+            if self.graph_manager.g
             else 0,
         )
 
@@ -91,16 +92,12 @@ class WebApp:
         self.app.include_router(words_router, prefix="/api", tags=["words"])
         self.app.include_router(stats_router, prefix="/api", tags=["stats"])
 
-        # ── Dashboard page ───────────────────────────────────────────
-        from fastapi import Request
-        from fastapi.responses import HTMLResponse
-
         @self.app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
         async def dashboard(request: Request) -> HTMLResponse:
             """Serve the main explorer dashboard."""
             return self.templates.TemplateResponse(
-                "index.html",
-                {"request": request},
+                request=request,
+                name="index.html",
             )
 
     # ── Server Lifecycle ─────────────────────────────────────────────
