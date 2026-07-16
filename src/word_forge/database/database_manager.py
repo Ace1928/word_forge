@@ -562,7 +562,7 @@ class DBManager:
         """Create a new database connection with proper configuration."""
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(str(self.db_path))
+            connection = sqlite3.connect(str(self.db_path), timeout=60.0)
             connection.row_factory = sqlite3.Row
 
             # Configure connection for optimal performance and safety

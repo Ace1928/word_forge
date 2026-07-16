@@ -443,6 +443,13 @@ class GraphVisualizer:
     ) -> PositionDict:
         """Return existing compatible positions or lay out only this graph view."""
 
+        if graph.number_of_nodes() > 500:
+            self.logger.info(
+                "Graph too large (%d nodes) for fast Python-side layout; delegating entirely to browser-side vis.js physics.",
+                graph.number_of_nodes(),
+            )
+            return {}
+
         existing_positions = self.manager.get_positions()
         if all(
             node_id in existing_positions
@@ -746,9 +753,14 @@ class GraphVisualizer:
             node_size = self._calculate_node_size(node_id, graph)
             node_color = self._get_node_color(attrs)
             pos = node_positions.get(node_id)
-
-            pos_x = float(pos[0] * 100) if pos is not None and len(pos) >= 1 else 0.0
-            pos_y = float(pos[1] * 100) if pos is not None and len(pos) >= 2 else 0.0
+            if pos is not None and len(pos) >= 2:
+                pos_x: Optional[float] = float(pos[0] * 100)
+                pos_y: Optional[float] = float(pos[1] * 100)
+                node_physics = False
+            else:
+                pos_x = None
+                pos_y = None
+                node_physics = True
 
             title_parts = [
                 f"Term: {escape(str(term))}",
@@ -765,22 +777,25 @@ class GraphVisualizer:
                 title_parts.append(f"Arousal: {attrs['arousal']:.2f}")
             title = "\n".join(title_parts) if self._config.enable_tooltips else None
 
-            net.add_node(
-                str(node_id),
-                label=label if self._config.enable_labels else "",
-                title=title,
-                size=node_size,
-                color=node_color,
-                x=pos_x,
-                y=pos_y,
-                physics=False,
-                wfTerm=term,
-                wfDisplayLabel=label,
-                wfLanguage=language,
-                wfScript=script,
-                wfSource=source,
-                wfStub=is_stub,
-            )
+            node_kwargs: Dict[str, Any] = {
+                "label": label if self._config.enable_labels else "",
+                "title": title,
+                "size": node_size,
+                "color": node_color,
+                "physics": node_physics,
+                "wfTerm": term,
+                "wfDisplayLabel": label,
+                "wfLanguage": language,
+                "wfScript": script,
+                "wfSource": source,
+                "wfStub": is_stub,
+            }
+            if pos_x is not None:
+                node_kwargs["x"] = pos_x
+            if pos_y is not None:
+                node_kwargs["y"] = pos_y
+
+            net.add_node(str(node_id), **node_kwargs)
 
         edge_records = sorted(
             graph.edges(data=True),

@@ -77,11 +77,15 @@ class RecursiveEmotionProcessor:
         try:
             import spacy
 
-            # Use the smaller model for resource optimised semantic analysis
-            self.nlp = spacy.load("en_core_web_sm")
+            try:
+                # Try loading medium model first for fast and accurate vector similarity
+                self.nlp = spacy.load("en_core_web_md")
+            except OSError:
+                # Use the smaller model for resource optimised semantic analysis
+                self.nlp = spacy.load("en_core_web_sm")
         except (ImportError, OSError):
             print(
-                "Warning: spaCy 'en_core_web_sm' model not available. Using fallback methods."
+                "Warning: spaCy model not available. Using fallback methods."
             )
             self.nlp = None
 

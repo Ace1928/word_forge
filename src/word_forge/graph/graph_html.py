@@ -199,7 +199,7 @@ def _head_markup(metadata: GraphViewerMetadata) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>{title}</title>
     <style>{_GRAPH_VIEWER_STYLE}</style>
     """
@@ -658,6 +658,20 @@ _GRAPH_VIEWER_SCRIPT: Final[str] = r"""
 
   applyFilters();
   window.setTimeout(() => network.fit({ animation: false }), 80);
+
+  // Auto-refresh: Poll head headers every 5 seconds to detect if the file has updated.
+  let lastModified = null;
+  window.setInterval(() => {
+    window.fetch(window.location.href, { method: "HEAD" })
+      .then((res) => {
+        const lm = res.headers.get("Last-Modified");
+        if (lastModified && lm && lastModified !== lm) {
+          window.location.reload();
+        }
+        lastModified = lm;
+      })
+      .catch((err) => console.debug("Auto-refresh check failed:", err));
+  }, 5000);
 })();
 """
 

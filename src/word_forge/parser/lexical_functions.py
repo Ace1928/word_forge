@@ -8,9 +8,12 @@ import functools
 import json
 import os
 import re
+import threading
 import typing
 from contextlib import contextmanager
 from pathlib import Path
+
+WORDNET_LOCK = threading.RLock()
 from typing import (
     IO,
     TYPE_CHECKING,
@@ -180,7 +183,8 @@ def get_synsets(word: str, language: str = "en") -> List[Synset]:
 
     ensure_nltk_data()
     resolved = resolve_wordnet_language(language)
-    return list(_get_synsets_cached(word, resolved.nltk_code))
+    with WORDNET_LOCK:
+        return list(_get_synsets_cached(word, resolved.nltk_code))
 
 
 @functools.lru_cache(maxsize=4096)
@@ -202,64 +206,65 @@ def get_wordnet_data(word: str, language: str = "en") -> List[WordnetEntry]:
         List of structured entries containing definitions, examples, synonyms, antonyms,
         and part-of-speech information
     """
-    results: List[WordnetEntry] = []
-    resolved = resolve_wordnet_language(language)
-    synsets: List[Synset] = get_synsets(word, resolved.bcp47)
+    with WORDNET_LOCK:
+        results: List[WordnetEntry] = []
+        resolved = resolve_wordnet_language(language)
+        synsets: List[Synset] = get_synsets(word, resolved.bcp47)
 
-    for synset in synsets:
-        lemmas: List[Lemma] = synset.lemmas(lang=resolved.nltk_code) or []
-        synonyms: List[str] = []
-        for lemma in lemmas:
-            name = lemma.name()
-            if isinstance(name, str):
-                synonyms.append(name.replace("_", " "))
+        for synset in synsets:
+            lemmas: List[Lemma] = synset.lemmas(lang=resolved.nltk_code) or []
+            synonyms: List[str] = []
+            for lemma in lemmas:
+                name = lemma.name()
+                if isinstance(name, str):
+                    synonyms.append(name.replace("_", " "))
 
-        # Extract antonyms from lemmas
-        antonyms: List[str] = []
-        for lemma in lemmas:
-            lemma_antonyms: List[Lemma] = lemma.antonyms()
-            for antonym in lemma_antonyms:
-                if antonym.lang() != resolved.nltk_code:
-                    continue
-                antonym_name = antonym.name()
-                if isinstance(antonym_name, str):
-                    antonym_name = antonym_name.replace("_", " ")
-                    antonyms.append(antonym_name)
+            # Extract antonyms from lemmas
+            antonyms: List[str] = []
+            for lemma in lemmas:
+                lemma_antonyms: List[Lemma] = lemma.antonyms()
+                for antonym in lemma_antonyms:
+                    if antonym.lang() != resolved.nltk_code:
+                        continue
+                    antonym_name = antonym.name()
+                    if isinstance(antonym_name, str):
+                        antonym_name = antonym_name.replace("_", " ")
+                        antonyms.append(antonym_name)
 
-        # Explicitly type with expected return types but handle variations
-        # Cast the result to Optional[str] as nltk types might be incomplete
-        definition_result: Optional[str] = typing.cast(
-            Optional[str], synset.definition()
-        )
-        definition: str = definition_result if definition_result is not None else ""
-
-        # Cast the result to Optional[List[str]]
-        examples_result: Optional[List[str]] = typing.cast(
-            Optional[List[str]], synset.examples()
-        )
-        examples: List[str] = examples_result if examples_result is not None else []
-
-        # Cast the result to Optional[str]
-        pos_result: Optional[str] = typing.cast(Optional[str], synset.pos())
-        pos: str = pos_result if pos_result is not None else ""
-
-        results.append(
-            WordnetEntry(
-                word=word,
-                language=resolved.bcp47,
-                source=resolved.source_id,
-                synset_id=str(synset.name()),
-                definition=definition,
-                definition_language="en",
-                examples=examples,
-                examples_language="en",
-                synonyms=synonyms,
-                antonyms=antonyms,
-                part_of_speech=pos,
+            # Explicitly type with expected return types but handle variations
+            # Cast the result to Optional[str] as nltk types might be incomplete
+            definition_result: Optional[str] = typing.cast(
+                Optional[str], synset.definition()
             )
-        )
+            definition: str = definition_result if definition_result is not None else ""
 
-    return results
+            # Cast the result to Optional[List[str]]
+            examples_result: Optional[List[str]] = typing.cast(
+                Optional[List[str]], synset.examples()
+            )
+            examples: List[str] = examples_result if examples_result is not None else []
+
+            # Cast the result to Optional[str]
+            pos_result: Optional[str] = typing.cast(Optional[str], synset.pos())
+            pos: str = pos_result if pos_result is not None else ""
+
+            results.append(
+                WordnetEntry(
+                    word=word,
+                    language=resolved.bcp47,
+                    source=resolved.source_id,
+                    synset_id=str(synset.name()),
+                    definition=definition,
+                    definition_language="en",
+                    examples=examples,
+                    examples_language="en",
+                    synonyms=synonyms,
+                    antonyms=antonyms,
+                    part_of_speech=pos,
+                )
+            )
+
+        return results
 
 
 # ============================================================================

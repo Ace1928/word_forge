@@ -80,7 +80,8 @@ class ModelState:
         self._failure_threshold_reached = False
         self._last_error: Optional[str] = None
         self._initialization_lock = threading.Lock()
-        self._generation_lock = threading.Lock()
+        self._concurrency_limit = 4
+        self._generation_semaphore = threading.BoundedSemaphore(value=self._concurrency_limit)
 
     @property
     def last_error(self) -> Optional[str]:
@@ -105,13 +106,18 @@ class ModelState:
 
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("model_name must be a non-empty string")
-        with self._generation_lock:
+        for _ in range(self._concurrency_limit):
+            self._generation_semaphore.acquire()
+        try:
             with self._initialization_lock:
                 self._release_resources()
                 self.model_name = model_name.strip()
                 self._inference_failures = 0
                 self._failure_threshold_reached = False
                 self._last_error = None
+        finally:
+            for _ in range(self._concurrency_limit):
+                self._generation_semaphore.release()
 
     def initialize(self) -> bool:
         """Load the configured tokenizer and model on first use.
@@ -146,6 +152,9 @@ class ModelState:
                 )
             else:
                 self.device = torch_module.device(self._requested_device)
+
+            if hasattr(self.device, "type") and self.device.type == "cpu":
+                torch_module.set_num_threads(1)
 
             tokenizer = tokenizer_class.from_pretrained(
                 cast(Union[str, PathLike[str]], self.model_name)
@@ -226,7 +235,7 @@ class ModelState:
         if not self.initialize():
             return None
 
-        with self._generation_lock:
+        with self._generation_semaphore:
             return self._generate_unlocked(
                 prompt=prompt,
                 max_new_tokens=max_new_tokens,
@@ -346,9 +355,14 @@ class ModelState:
     def close(self) -> None:
         """Release references to model resources and accelerator caches."""
 
-        with self._generation_lock:
+        for _ in range(self._concurrency_limit):
+            self._generation_semaphore.acquire()
+        try:
             with self._initialization_lock:
                 self._release_resources()
+        finally:
+            for _ in range(self._concurrency_limit):
+                self._generation_semaphore.release()
 
     @staticmethod
     def _format_prompt(tokenizer: Any, prompt: str) -> str:

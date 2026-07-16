@@ -360,16 +360,49 @@ def test_cli_graph_visualize_focused_standalone(tmp_path: Path) -> None:
 def test_cli_vector_index_command(tmp_path: Path) -> None:
     from word_forge import forge
 
-    result = forge.main(
-        [
-            "vector",
-            "index",
-            "--embedder",
-            TEST_MODEL,
-            "--timeout",
-            "20",
-            "--poll-interval",
-            "0.5",
-        ]
+    import os
+    from word_forge.config import config
+    db_file = str(tmp_path / "test_cli_vector.sqlite")
+    
+    old_db_path_env = os.environ.get("WORDFORGE_DB_PATH")
+    os.environ["WORDFORGE_DB_PATH"] = db_file
+    
+    old_db_path_config = config.database.db_path
+    config.database.db_path = db_file
+
+    # Pre-populate the database with a word so the vectorizer has something to index
+    from word_forge.database.database_manager import DBManager
+    db = DBManager(db_path=db_file)
+    db.create_tables()
+    db.insert_or_update_word(
+        term="hello",
+        definition="a greeting",
+        part_of_speech="noun",
+        usage_examples=[],
+        language="en-US",
+        source="wiktionary",
+        is_stub=False,
     )
-    assert result == 0
+    db.close()
+
+    try:
+        result = forge.main(
+            [
+                "vector",
+                "index",
+                "--embedder",
+                TEST_MODEL,
+                "--timeout",
+                "120",
+                "--poll-interval",
+                "0.5",
+            ]
+        )
+        assert result == 0
+    finally:
+        # Restore configuration and environment variable
+        config.database.db_path = old_db_path_config
+        if old_db_path_env is not None:
+            os.environ["WORDFORGE_DB_PATH"] = old_db_path_env
+        else:
+            os.environ.pop("WORDFORGE_DB_PATH", None)

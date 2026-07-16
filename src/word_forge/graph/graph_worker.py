@@ -404,7 +404,7 @@ class GraphWorker(threading.Thread):
 
         if self.graph_manager.get_node_count() == 0:
             self.logger.debug("Graph empty; performing full build.")
-            self.graph_manager.build_graph()
+            self.graph_manager.build_graph(compute_layout=False)
         else:
             self.logger.debug("Graph initialized; performing incremental update.")
             self.graph_manager.update_graph()
@@ -430,9 +430,11 @@ class GraphWorker(threading.Thread):
             self.logger.debug(
                 f"Generating visualization to {self.visualization_path}..."
             )
-            # Use the manager's default visualize method (which chooses 2D/3D)
             self.graph_manager.visualize(
-                output_path=self.visualization_path, open_in_browser=False
+                output_path=self.visualization_path,
+                open_in_browser=False,
+                max_nodes=1000000,
+                max_edges=1000000,
             )
             self.logger.debug("Visualization generation complete.")
         else:

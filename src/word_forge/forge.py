@@ -121,6 +121,9 @@ def start(
     llm_profile: Optional[str] = None,
     enable_vector: Optional[bool] = None,
     language: Optional[str] = None,
+    enable_emotion: Optional[bool] = None,
+    emotion_worker_count: int = 4,
+    emotion_strategy: str = "recursive",
 ) -> None:
     """Launch the Word Forge processing pipeline.
 
@@ -244,14 +247,60 @@ def start(
                 exc,
             )
 
+    emotion_workers = []
+    if enable_emotion is not False:
+        try:
+            from word_forge.emotion.emotion_manager import EmotionManager
+            from word_forge.emotion.emotion_worker import EmotionWorker
+
+            emotion_manager = EmotionManager(db_manager)
+            for i in range(emotion_worker_count):
+                ew = EmotionWorker(
+                    db=db_manager,
+                    emotion_manager=emotion_manager,
+                    poll_interval=0.5,
+                    strategy=emotion_strategy,
+                    daemon=True,
+                    worker_id=i,
+                    total_workers=emotion_worker_count,
+                )
+                emotion_workers.append(ew)
+        except Exception as exc:
+            if enable_emotion is True:
+                raise
+            LOGGER.info(
+                "Emotion workers unavailable; continuing without them (%s)",
+                exc,
+            )
+
     manager = WorkerManager(logger=LOGGER)
     manager.register(worker_pool)
     manager.register(graph_worker)
     if vector_worker is not None:
         manager.register(vector_worker)
+    for ew in emotion_workers:
+        manager.register(ew)
 
     for term in seeds:
         queue_manager.enqueue(term)
+
+    # Reseed queue from database stubs — words discovered but not yet enriched.
+    try:
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT term FROM words WHERE is_stub = 1 ORDER BY id"
+            )
+            stub_terms = [row[0] for row in cursor.fetchall()]
+        if stub_terms:
+            LOGGER.info(
+                "Reseeding queue with %d stub words from database",
+                len(stub_terms),
+            )
+            for term in stub_terms:
+                queue_manager.enqueue(term)
+    except Exception as exc:
+        LOGGER.warning("Failed to reseed from stubs: %s", exc)
 
     with measure_execution(
         "forge.start", {"workers": worker_count, "language": selected_language}
@@ -617,6 +666,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Enable or disable vector indexing (default: enable when available)",
     )
+    start_parser.add_argument(
+        "--emotion",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable concurrent emotion workers (default: enable when available)",
+    )
+    start_parser.add_argument(
+        "--emotion-workers",
+        type=int,
+        default=4,
+        help="Number of parallel emotion annotation workers (default: 4)",
+    )
+    start_parser.add_argument(
+        "--emotion-strategy",
+        choices=["random", "recursive", "hybrid"],
+        default="recursive",
+        help="Emotion assignment strategy (default: recursive)",
+    )
     llm_group = start_parser.add_mutually_exclusive_group()
     llm_group.add_argument(
         "--llm-model",
@@ -838,6 +905,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=0.5,
         help="Seconds between annotation cycles",
     )
+    emotion_annotate.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel emotion annotation workers",
+    )
+    emotion_annotate.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Run continuously, polling for new words to annotate",
+    )
 
     demo_parser = subparsers.add_parser("demo", help="Pre-baked demo flows")
     demo_sub = demo_parser.add_subparsers(dest="demo_command")
@@ -1050,6 +1128,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 llm_profile=args.llm_profile,
                 enable_vector=args.vector,
                 language=args.language,
+                enable_emotion=args.emotion,
+                emotion_worker_count=args.emotion_workers,
+                emotion_strategy=args.emotion_strategy,
             )
         except (ModelProfileError, ValueError) as exc:
             LOGGER.error("Unable to start Word Forge: %s", exc)
@@ -1161,6 +1242,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     strategy=args.strategy,
                     poll_interval=args.poll_interval,
                     timeout=args.timeout,
+                    worker_count=args.workers,
+                    continuous=args.continuous,
                 )
                 else 1
             )
@@ -1391,6 +1474,8 @@ def run_emotion_annotation(
     strategy: str = "random",
     poll_interval: float = 0.5,
     timeout: float = 180.0,
+    worker_count: int = 1,
+    continuous: bool = False,
 ) -> bool:
     """Run :class:`EmotionWorker` until all words have annotations."""
 
@@ -1405,31 +1490,45 @@ def run_emotion_annotation(
     db.create_tables()
 
     emotion_manager = EmotionManager(db)
-    worker = EmotionWorker(
-        db=db,
-        emotion_manager=emotion_manager,
-        poll_interval=poll_interval,
-        strategy=strategy,
-        daemon=False,
-    )
     manager = WorkerManager(logger=LOGGER)
-    manager.register(worker)
-    LOGGER.info("Starting emotion annotation worker")
+    
+    workers = []
+    for i in range(worker_count):
+        worker = EmotionWorker(
+            db=db,
+            emotion_manager=emotion_manager,
+            poll_interval=poll_interval,
+            strategy=strategy,
+            daemon=False,
+            worker_id=i,
+            total_workers=worker_count,
+        )
+        workers.append(worker)
+        manager.register(worker)
 
-    def _all_tagged() -> bool:
+    LOGGER.info(
+        "Starting %d emotion annotation worker(s) with strategy %s",
+        worker_count,
+        strategy,
+    )
+
+    def _should_exit() -> bool:
+        if continuous:
+            return False
         return _remaining_unemotioned_words(db) == 0
 
     try:
         manager.start_all()
         completed = _wait_for_condition(
             "emotion annotation",
-            lambda: _all_tagged(),
+            lambda: _should_exit(),
             timeout=timeout,
         )
         return completed
     finally:
         manager.stop_all()
-        worker.join(timeout=5)
+        for worker in workers:
+            worker.join(timeout=5)
         if owns_db:
             db.close()
 

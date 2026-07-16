@@ -315,6 +315,8 @@ class EmotionWorker(threading.Thread):
         confidence_threshold: Optional[float] = None,
         daemon: bool = True,
         enable_logging: bool = True,
+        worker_id: int = 0,
+        total_workers: int = 1,
     ):
         """
         Initialize the emotion processing worker thread.
@@ -329,12 +331,16 @@ class EmotionWorker(threading.Thread):
             confidence_threshold: Minimum confidence for storing emotions
             daemon: Whether thread should run as daemon
             enable_logging: Whether to use structured logging
+            worker_id: The ID of this worker for modulo-based partitioning
+            total_workers: The total number of parallel workers active
         """
         super().__init__(daemon=daemon)
 
         # Core dependencies
         self.db = db
         self.emotion_manager = emotion_manager
+        self.worker_id = worker_id
+        self.total_workers = total_workers
 
         # Configuration
         self.poll_interval = poll_interval or getattr(
@@ -637,13 +643,22 @@ class EmotionWorker(threading.Thread):
         Raises:
             EmotionDBError: If database access fails
         """
-        query = """
-        SELECT w.id, w.term
-        FROM words w
-        LEFT JOIN word_emotion we ON w.id = we.word_id
-        WHERE we.word_id IS NULL
-        LIMIT ?
-        """
+        if self.total_workers > 1:
+            query = f"""
+            SELECT w.id, w.term
+            FROM words w
+            LEFT JOIN word_emotion we ON w.id = we.word_id
+            WHERE we.word_id IS NULL AND (w.id % {self.total_workers}) = {self.worker_id}
+            LIMIT ?
+            """
+        else:
+            query = """
+            SELECT w.id, w.term
+            FROM words w
+            LEFT JOIN word_emotion we ON w.id = we.word_id
+            WHERE we.word_id IS NULL
+            LIMIT ?
+            """
         connection = None
         try:
             connection = sqlite3.connect(self.db.db_path)

@@ -85,7 +85,7 @@ def test_render_graph_viewer_is_standalone_accessible_and_script_safe() -> None:
     assert 'id="wf-language"' in document
     assert 'id="wf-neighborhood"' in document
     assert "Content-Security-Policy" in document
-    assert "connect-src 'none'" in document
+    assert "connect-src 'self'" in document
     assert "cdn.example.invalid" not in document
     assert '<script id="unsafe">' not in document
     assert "\\u003c/script\\u003e" in document

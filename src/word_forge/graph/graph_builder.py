@@ -358,7 +358,7 @@ class GraphBuilder:
             self.logger.info(
                 "Graph is empty, performing initial build instead of update."
             )
-            self.build_graph()
+            self.build_graph(compute_layout=False)
             return int(self.manager.g.number_of_nodes())
 
         self.logger.info("Initiating incremental graph update.")

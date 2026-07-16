@@ -45,7 +45,7 @@ from nltk.stem import WordNetLemmatizer  # type: ignore
 
 from word_forge.configs.config_essentials import LexicalDataset
 from word_forge.database.database_manager import DBManager
-from word_forge.parser.lexical_functions import create_lexical_dataset
+from word_forge.parser.lexical_functions import WORDNET_LOCK, create_lexical_dataset
 from word_forge.parser.linguistics import (
     canonicalize_language_tag,
     lookup_pronunciations,
@@ -124,6 +124,24 @@ class TermExtractor:
     # Class-level flag to track whether NER is available
     _ner_available: bool = True
 
+    _BCP47_TO_STOPWORDS = {
+        "en": "english",
+        "da": "danish",
+        "nl": "dutch",
+        "fi": "finnish",
+        "fr": "french",
+        "de": "german",
+        "hu": "hungarian",
+        "it": "italian",
+        "no": "norwegian",
+        "pt": "portuguese",
+        "ro": "romanian",
+        "ru": "russian",
+        "es": "spanish",
+        "sv": "swedish",
+        "tr": "turkish",
+    }
+
     def __init__(self) -> None:
         """Initialize the term extractor with necessary NLP components."""
         ensure_nltk_data()
@@ -173,7 +191,7 @@ class TermExtractor:
         return cast(str, tag_map.get(treebank_tag[:1].upper(), wn.NOUN))
 
     def extract_terms(
-        self, definition: str, examples: List[str], original_term: str
+        self, definition: str, examples: List[str], original_term: str, language: str = "en"
     ) -> Tuple[List[str], List[str]]:
         """
         Extract high-value lexical terms from definitions and examples.
@@ -182,6 +200,7 @@ class TermExtractor:
             definition: Consolidated definition text
             examples: List of usage examples
             original_term: The term being processed (to exclude from results)
+            language: BCP 47 language of the definition text
 
         Returns:
             Tuple of (priority_terms, standard_terms) for processing
@@ -201,12 +220,19 @@ class TermExtractor:
         }
         discovered_terms.update(regex_terms)
 
+        primary_lang = language.split("-", 1)[0].lower()
+        stopwords_lang = self._BCP47_TO_STOPWORDS.get(primary_lang, "english")
+        try:
+            stop_words = frozenset(nltk.corpus.stopwords.words(stopwords_lang))
+        except Exception:
+            stop_words = self._stop_words
+
         try:
             # Process text with advanced NLP techniques
             sentences: List[str] = nltk.sent_tokenize(text_to_parse)  # type: ignore
             for sentence in sentences:
                 self._process_sentence(
-                    sentence, discovered_terms, multiword_expressions, named_entities
+                    sentence, discovered_terms, multiword_expressions, named_entities, stop_words
                 )
 
             # Extract semantically related terms via WordNet
@@ -236,6 +262,7 @@ class TermExtractor:
         discovered_terms: Set[str],
         multiword_expressions: Set[str],
         named_entities: Set[str],
+        stop_words: FrozenSet[str],
     ) -> None:
         """
         Process a single sentence with multiple NLP techniques.
@@ -245,6 +272,7 @@ class TermExtractor:
             discovered_terms: Set to collect individual terms
             multiword_expressions: Set to collect multiword expressions
             named_entities: Set to collect named entities
+            stop_words: Active set of language-specific stopwords
         """
         # Basic tokenization and POS tagging
         tokens = nltk.word_tokenize(sentence)  # type: ignore
@@ -258,7 +286,7 @@ class TermExtractor:
             if (
                 len(word_lower) < 3
                 or not word_lower.isalpha()
-                or word_lower in self._stop_words
+                or word_lower in stop_words
             ):
                 continue
 
@@ -269,7 +297,7 @@ class TermExtractor:
                 discovered_terms.add(lemma)
 
         # Named Entity Recognition for proper nouns and terms
-        self._extract_named_entities(tagged, named_entities, discovered_terms)
+        self._extract_named_entities(tagged, named_entities, discovered_terms, stop_words)
 
         # Detect useful multiword expressions
         self._extract_multiword_expressions(tagged, multiword_expressions)
@@ -279,6 +307,7 @@ class TermExtractor:
         tagged: List[Tuple[str, str]],
         named_entities: Set[str],
         discovered_terms: Set[str],
+        stop_words: FrozenSet[str],
     ) -> None:
         """
         Extract named entities from tagged tokens.
@@ -287,6 +316,7 @@ class TermExtractor:
             tagged: POS-tagged tokens
             named_entities: Set to add named entities to
             discovered_terms: Set to add component terms to
+            stop_words: Active set of language-specific stopwords
         """
         # Skip NER if it previously failed (e.g., missing NLTK corpus data)
         if not TermExtractor._ner_available:
@@ -306,7 +336,7 @@ class TermExtractor:
                         # Also add individual terms from the entity
                         for word in entity_lower.split():
                             lemma = self._lemmatizer.lemmatize(word)
-                            if len(lemma) >= 3 and lemma not in self._stop_words:
+                            if len(lemma) >= 3 and lemma not in stop_words:
                                 discovered_terms.add(lemma)
         except Exception as e:
             # Soft fail for NER - disable for future calls and continue
@@ -395,33 +425,34 @@ class TermExtractor:
                 semantic_terms.add(processed_name)
 
         # Process each base term
-        for base_term in term_sample:
-            try:
-                # Retrieve all synsets (word senses) for the term
-                synsets: List[WordNetSynset] = wn.synsets(base_term)  # type: ignore
-                for synset in synsets:
-                    # 1. Process direct synonyms from the synset
-                    for lemma in synset.lemmas():  # type: ignore
-                        _process_lemma(lemma)  # type: ignore
-
-                    # 2. Process hypernyms (broader/parent categories)
-                    for hypernym in synset.hypernyms():  # type: ignore
-                        for lemma in hypernym.lemmas():  # type: ignore
+        with WORDNET_LOCK:
+            for base_term in term_sample:
+                try:
+                    # Retrieve all synsets (word senses) for the term
+                    synsets: List[WordNetSynset] = wn.synsets(base_term)  # type: ignore
+                    for synset in synsets:
+                        # 1. Process direct synonyms from the synset
+                        for lemma in synset.lemmas():  # type: ignore
                             _process_lemma(lemma)  # type: ignore
 
-                    # 3. Process hyponyms (more specific/child categories)
-                    for hyponym in synset.hyponyms():  # type: ignore
-                        for lemma in hyponym.lemmas():  # type: ignore
-                            _process_lemma(lemma)  # type: ignore
+                        # 2. Process hypernyms (broader/parent categories)
+                        for hypernym in synset.hypernyms():  # type: ignore
+                            for lemma in hypernym.lemmas():  # type: ignore
+                                _process_lemma(lemma)  # type: ignore
 
-            except (LookupError, AttributeError, ValueError, TypeError):
-                continue
-            except Exception as unexpected_e:
-                logger.warning(
-                    f"Unexpected error during WordNet lookup for '{base_term}': {unexpected_e}",
-                    exc_info=True,
-                )
-                continue
+                        # 3. Process hyponyms (more specific/child categories)
+                        for hyponym in synset.hyponyms():  # type: ignore
+                            for lemma in hyponym.lemmas():  # type: ignore
+                                _process_lemma(lemma)  # type: ignore
+
+                except (LookupError, AttributeError, ValueError, TypeError):
+                    continue
+                except Exception as unexpected_e:
+                    logger.warning(
+                        f"Unexpected error during WordNet lookup for '{base_term}': {unexpected_e}",
+                        exc_info=True,
+                    )
+                    continue
 
         # Limit returned set to prevent overwhelming downstream processing
         return set(sorted(semantic_terms, key=normalize_term)[:200])
@@ -630,19 +661,14 @@ class ParserRefiner:
             relationship_future = self._executor.submit(
                 self._process_relationships, display_term, dataset
             )
-            discovery_future = (
-                self._executor.submit(
-                    self._discover_new_terms,
-                    display_term,
-                    full_definition,
-                    usage_examples,
-                )
-                if self.language.split("-", 1)[0] == "en"
-                else None
+            discovery_future = self._executor.submit(
+                self._discover_new_terms,
+                display_term,
+                full_definition,
+                usage_examples,
             )
             relationship_future.result()
-            if discovery_future is not None:
-                discovery_future.result()
+            discovery_future.result()
 
             self.stats.increment_successful()
             return True
@@ -893,6 +919,28 @@ class ParserRefiner:
             for ant in wn_data.get("antonyms", []):
                 record_relationship(ant, "antonym", wn_data["source"])
 
+            # Extract multilingual OMW translations from Princeton WordNet
+            synset_id = wn_data.get("synset_id")
+            if synset_id:
+                try:
+                    from nltk.corpus import wordnet as wn
+                    from word_forge.parser.wordnet_languages import _PRIMARY_TO_WORDNET
+                    
+                    synset = wn.synset(synset_id)
+                    for primary_lang, nltk_lang in _PRIMARY_TO_WORDNET.items():
+                        if primary_lang == base_language.split("-", 1)[0]:
+                            continue
+                        omw_lemmas = synset.lemma_names(lang=nltk_lang)
+                        for lemma in omw_lemmas:
+                            record_relationship(
+                                lemma.replace("_", " "),
+                                "translation",
+                                "nltk-omw",
+                                related_language=primary_lang,
+                            )
+                except Exception:
+                    pass
+
         # OpenThesaurus synonyms
         for s in dataset.get("openthesaurus_synonyms", []):
             record_relationship(s, "synonym", "local-openthesaurus")
@@ -929,7 +977,7 @@ class ParserRefiner:
             examples: List of usage examples for the term
         """
         priority_terms, standard_terms = self.term_extractor.extract_terms(
-            definition, examples, term
+            definition, examples, term, language=self.language
         )
 
         # Enqueue priority terms first (multiword expressions and specialized terms)
