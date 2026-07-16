@@ -970,6 +970,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Emit machine-readable JSON",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Launch the interactive web UI explorer",
+    )
+    serve_parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Bind address (default: 0.0.0.0)",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port number (default: 8000)",
+    )
+    serve_parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Override the configured SQLite database path",
+    )
+
     models_parser = subparsers.add_parser(
         "models", help="List or recommend local language-model profiles"
     )
@@ -1282,6 +1305,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         print(output)
         exit_code = 0 if report.ok else 1
+    elif args.command == "serve":
+        try:
+            from word_forge.web.app import WebApp
+
+            webapp = WebApp(
+                db_path=args.db_path,
+                host=args.host,
+                port=args.port,
+            )
+            webapp.run()
+        except ImportError as exc:
+            LOGGER.error(
+                "Web UI dependencies missing.  Install with: "
+                "pip install 'word_forge[web]'\n  (%s)",
+                exc,
+            )
+            exit_code = 1
+        except Exception as exc:
+            LOGGER.error("Web UI failed: %s", exc)
+            exit_code = 1
     else:
         parser.print_help()
         exit_code = 1

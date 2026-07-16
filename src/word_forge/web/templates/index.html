@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Word Forge — Interactive lexical analysis and word relationship explorer with 2D/3D graph visualization.">
+    <title>Word Forge — Lexical Explorer</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- App CSS -->
+    <link rel="stylesheet" href="/static/css/app.css">
+
+    <!-- vis-network CDN -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js" defer></script>
+    <!-- 3d-force-graph CDN (lazy — loaded on demand by graph3d.js) -->
+
+    <!-- App JS — order matters: modules first, then controller -->
+    <script src="/static/js/search.js" defer></script>
+    <script src="/static/js/graph2d.js" defer></script>
+    <script src="/static/js/graph3d.js" defer></script>
+    <script src="/static/js/inspector.js" defer></script>
+    <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+
+    <!-- ═══════════════════════════════════════════
+         LOADING OVERLAY
+         ═══════════════════════════════════════════ -->
+    <div id="wf-loading-overlay" class="wf-loading-overlay" aria-hidden="true">
+        <div class="wf-spinner"></div>
+        <span class="wf-loading-text">Loading…</span>
+    </div>
+
+    <!-- ═══════════════════════════════════════════
+         MAIN LAYOUT
+         ═══════════════════════════════════════════ -->
+    <div class="wf-layout">
+
+        <!-- ─── LEFT SIDEBAR ─── -->
+        <aside id="wf-sidebar" class="wf-sidebar" role="complementary" aria-label="Controls">
+            <header class="wf-sidebar__header">
+                <h1 class="wf-logo">
+                    <span class="wf-logo__icon">⬡</span>
+                    <span class="wf-logo__text">Word Forge</span>
+                </h1>
+                <p class="wf-sidebar__tagline">Lexical Explorer</p>
+            </header>
+
+            <!-- Search -->
+            <section class="wf-sidebar__section">
+                <label class="wf-label" for="wf-search-input">Search Term</label>
+                <div class="wf-search-wrap">
+                    <input
+                        id="wf-search-input"
+                        class="wf-search-input"
+                        type="search"
+                        placeholder="Type a word…"
+                        autocomplete="off"
+                        spellcheck="false"
+                        aria-label="Search for a word"
+                    >
+                    <span class="wf-search-icon" aria-hidden="true">⌕</span>
+                    <div id="wf-search-results" class="wf-search-results" role="listbox" aria-label="Search results"></div>
+                </div>
+            </section>
+
+            <!-- Graph Controls -->
+            <section class="wf-sidebar__section">
+                <h2 class="wf-section-title">Graph Controls</h2>
+
+                <!-- Depth slider -->
+                <div class="wf-control-group">
+                    <label class="wf-label" for="wf-depth-slider">
+                        Depth <span id="wf-depth-value" class="wf-label__value">2</span>
+                    </label>
+                    <input
+                        id="wf-depth-slider"
+                        class="wf-slider"
+                        type="range"
+                        min="1" max="5" value="2" step="1"
+                    >
+                </div>
+
+                <!-- Dimensions -->
+                <div class="wf-control-group">
+                    <span class="wf-label">Dimensions</span>
+                    <div class="wf-dimension-tags">
+                        <label class="wf-dim-tag wf-dim-tag--lexical">
+                            <input type="checkbox" id="wf-dim-lexical" value="lexical" checked>
+                            <span class="wf-dim-tag__label">Lexical</span>
+                        </label>
+                        <label class="wf-dim-tag wf-dim-tag--emotional">
+                            <input type="checkbox" id="wf-dim-emotional" value="emotional" checked>
+                            <span class="wf-dim-tag__label">Emotional</span>
+                        </label>
+                        <label class="wf-dim-tag wf-dim-tag--affective">
+                            <input type="checkbox" id="wf-dim-affective" value="affective">
+                            <span class="wf-dim-tag__label">Affective</span>
+                        </label>
+                        <label class="wf-dim-tag wf-dim-tag--connotative">
+                            <input type="checkbox" id="wf-dim-connotative" value="connotative">
+                            <span class="wf-dim-tag__label">Connotative</span>
+                        </label>
+                        <label class="wf-dim-tag wf-dim-tag--contextual">
+                            <input type="checkbox" id="wf-dim-contextual" value="contextual">
+                            <span class="wf-dim-tag__label">Contextual</span>
+                        </label>
+                        <label class="wf-dim-tag wf-dim-tag--translation">
+                            <input type="checkbox" id="wf-dim-translation" value="translation">
+                            <span class="wf-dim-tag__label">Translation</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Toggles row -->
+                <div class="wf-control-group wf-toggles-row">
+                    <label class="wf-toggle" title="Show entire graph instead of focused subgraph">
+                        <input type="checkbox" id="wf-whole-graph">
+                        <span class="wf-toggle__track"><span class="wf-toggle__thumb"></span></span>
+                        <span class="wf-toggle__label">Whole Graph</span>
+                    </label>
+                    <label class="wf-toggle" title="Switch between 2D and 3D rendering">
+                        <input type="checkbox" id="wf-3d-mode">
+                        <span class="wf-toggle__track"><span class="wf-toggle__thumb"></span></span>
+                        <span class="wf-toggle__label">3D Mode</span>
+                    </label>
+                    <label class="wf-toggle" title="Enable or disable physics simulation">
+                        <input type="checkbox" id="wf-physics" checked>
+                        <span class="wf-toggle__track"><span class="wf-toggle__thumb"></span></span>
+                        <span class="wf-toggle__label">Live Physics</span>
+                    </label>
+                </div>
+
+                <!-- Compute button -->
+                <button id="wf-compute-btn" class="wf-btn wf-btn--primary" type="button">
+                    <span class="wf-btn__icon">▶</span>
+                    Compute Graph
+                </button>
+            </section>
+
+            <!-- Stats HUD -->
+            <section class="wf-sidebar__section wf-sidebar__section--stats">
+                <h2 class="wf-section-title">Database</h2>
+                <div class="wf-stats-grid">
+                    <div class="wf-stat">
+                        <span class="wf-stat__value" id="wf-stat-words">—</span>
+                        <span class="wf-stat__label">Words</span>
+                    </div>
+                    <div class="wf-stat">
+                        <span class="wf-stat__value" id="wf-stat-rels">—</span>
+                        <span class="wf-stat__label">Relations</span>
+                    </div>
+                    <div class="wf-stat">
+                        <span class="wf-stat__value" id="wf-stat-langs">—</span>
+                        <span class="wf-stat__label">Languages</span>
+                    </div>
+                    <div class="wf-stat">
+                        <span class="wf-stat__value" id="wf-stat-stubs">—</span>
+                        <span class="wf-stat__label">Stubs</span>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="wf-sidebar__footer">
+                <span class="wf-footer-text">Word Forge · Eidosian</span>
+            </footer>
+        </aside>
+
+        <!-- ─── MAIN VIEWPORT ─── -->
+        <main id="wf-viewport" class="wf-viewport" role="main" aria-label="Graph visualization">
+            <!-- Graph container (shared by 2D / 3D) -->
+            <div id="wf-graph-container" class="wf-graph-container"></div>
+
+            <!-- Top-right overlay toolbar -->
+            <div class="wf-viewport-toolbar">
+                <button id="wf-btn-fit" class="wf-toolbar-btn" title="Fit view" aria-label="Fit view">⊡</button>
+                <button id="wf-btn-zoom-in" class="wf-toolbar-btn" title="Zoom in" aria-label="Zoom in">＋</button>
+                <button id="wf-btn-zoom-out" class="wf-toolbar-btn" title="Zoom out" aria-label="Zoom out">－</button>
+                <button id="wf-btn-export" class="wf-toolbar-btn" title="Export PNG" aria-label="Export as PNG">⤓</button>
+            </div>
+
+            <!-- Bottom-right graph stats HUD -->
+            <div class="wf-graph-hud">
+                <span class="wf-hud-badge" id="wf-hud-nodes">0 nodes</span>
+                <span class="wf-hud-badge" id="wf-hud-edges">0 edges</span>
+            </div>
+
+            <!-- Large-graph warning -->
+            <div id="wf-large-graph-warning" class="wf-warning-banner" aria-hidden="true">
+                ⚠ Large graph detected — physics auto-disabled for performance
+            </div>
+
+            <!-- Empty state -->
+            <div id="wf-empty-state" class="wf-empty-state">
+                <div class="wf-empty-state__icon">⬡</div>
+                <h2 class="wf-empty-state__title">No Graph Loaded</h2>
+                <p class="wf-empty-state__text">Search for a word or toggle "Whole Graph" and hit Compute.</p>
+            </div>
+        </main>
+
+        <!-- ─── RIGHT INSPECTOR DRAWER ─── -->
+        <aside id="wf-inspector" class="wf-inspector" role="complementary" aria-label="Word details" aria-hidden="true">
+            <div class="wf-inspector__inner">
+                <!-- Close button -->
+                <button id="wf-inspector-close" class="wf-inspector__close" aria-label="Close inspector" title="Close">&times;</button>
+
+                <!-- Loading state -->
+                <div id="wf-inspector-loading" class="wf-inspector__loading" aria-hidden="true">
+                    <div class="wf-spinner wf-spinner--sm"></div>
+                    <span>Loading word data…</span>
+                </div>
+
+                <!-- Content (filled by inspector.js) -->
+                <div id="wf-inspector-content" class="wf-inspector__content">
+                    <!-- Header -->
+                    <header id="wf-insp-header" class="wf-insp-section wf-insp-header"></header>
+
+                    <!-- Definition -->
+                    <section id="wf-insp-definition" class="wf-insp-section wf-insp-definition"></section>
+
+                    <!-- Pronunciations -->
+                    <section id="wf-insp-pronunciations" class="wf-insp-section wf-insp-pronunciations">
+                        <h3 class="wf-insp-section__title">Pronunciation</h3>
+                        <div id="wf-insp-pron-list" class="wf-insp-pron-list"></div>
+                    </section>
+
+                    <!-- Emotion -->
+                    <section id="wf-insp-emotion" class="wf-insp-section wf-insp-emotion">
+                        <h3 class="wf-insp-section__title">Emotion</h3>
+                        <div id="wf-insp-emotion-content"></div>
+                    </section>
+
+                    <!-- Relationships -->
+                    <section id="wf-insp-relationships" class="wf-insp-section wf-insp-relationships">
+                        <h3 class="wf-insp-section__title">Relationships</h3>
+                        <div id="wf-insp-rel-tabs" class="wf-rel-tabs"></div>
+                        <div id="wf-insp-rel-content" class="wf-rel-content"></div>
+                    </section>
+
+                    <!-- Graphemes -->
+                    <section id="wf-insp-graphemes" class="wf-insp-section wf-insp-graphemes">
+                        <h3 class="wf-insp-section__title">Graphemes</h3>
+                        <div id="wf-insp-grapheme-table-wrap"></div>
+                    </section>
+
+                    <!-- Usage Examples -->
+                    <section id="wf-insp-examples" class="wf-insp-section wf-insp-examples">
+                        <h3 class="wf-insp-section__title">Usage Examples</h3>
+                        <div id="wf-insp-examples-list"></div>
+                    </section>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Toast container for notifications -->
+    <div id="wf-toast-container" class="wf-toast-container" aria-live="polite"></div>
+
+</body>
+</html>
